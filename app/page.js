@@ -164,44 +164,11 @@ function LoginScreen({ onLogin }) {
                 Masuk
               </Button>
             </form>
-
-            <Separator className="my-5" />
-            <div className="text-xs text-muted-foreground mb-3">Demo akun (klik untuk isi):</div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <button
-                onClick={() => quickPick('owner', 'owner123')}
-                className="p-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-left transition"
-              >
-                <div className="font-semibold">Owner</div>
-                <div className="text-muted-foreground">owner / owner123</div>
-              </button>
-              <button
-                onClick={() => quickPick('cindy', 'cindy123')}
-                className="p-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-left transition"
-              >
-                <div className="font-semibold">Cindy (staff)</div>
-                <div className="text-muted-foreground">cindy / cindy123</div>
-              </button>
-              <button
-                onClick={() => quickPick('hayu', 'hayu123')}
-                className="p-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-left transition"
-              >
-                <div className="font-semibold">Hayu (staff)</div>
-                <div className="text-muted-foreground">hayu / hayu123</div>
-              </button>
-              <button
-                onClick={() => quickPick('dian', 'dian123')}
-                className="p-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-left transition"
-              >
-                <div className="font-semibold">Dian (staff)</div>
-                <div className="text-muted-foreground">dian / dian123</div>
-              </button>
-            </div>
           </CardContent>
         </Card>
 
         <div className="text-center text-xs text-muted-foreground mt-6">
-          Merdeka Inventory System · Pharmacy cycle count management
+          Merdeka Inventory System
         </div>
       </motion.div>
     </div>
