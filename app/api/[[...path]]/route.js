@@ -492,6 +492,24 @@ async function handleRequest(req, path, method) {
     });
   }
 
+  // Reset products (danger)
+  if (path === 'products/reset' && method === 'POST') {
+    const user = await getUserFromRequest(req);
+    if (!user || user.role !== 'owner') return err('unauthorized', 401);
+    const [pRes, tRes, hRes] = await Promise.all([
+      db.collection('products').deleteMany({}),
+      db.collection('daily_tasks').deleteMany({}),
+      db.collection('sku_history').deleteMany({}),
+    ]);
+    return json({
+      deleted: {
+        products: pRes.deletedCount,
+        daily_tasks: tRes.deletedCount,
+        sku_history: hRes.deletedCount,
+      },
+    });
+  }
+
   // SKU History
   const skuHistoryMatch = path.match(/^products\/([^/]+)\/history$/);
   if (skuHistoryMatch && method === 'GET') {

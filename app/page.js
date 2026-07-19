@@ -546,6 +546,22 @@ function ImportView() {
     URL.revokeObjectURL(url);
   }
 
+  const [resetting, setResetting] = useState(false);
+  async function resetAll() {
+    if (!confirm('Yakin hapus SEMUA produk, tugas hari ini, dan riwayat counting?\n\nAksi ini tidak bisa dibatalkan.')) return;
+    setResetting(true);
+    try {
+      const r = await api('products/reset', { method: 'POST' });
+      toast.success(`Reset selesai · ${r.deleted.products} produk, ${r.deleted.daily_tasks} tugas, ${r.deleted.sku_history} riwayat dihapus`);
+      setResult(null);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setResetting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -574,6 +590,15 @@ function ImportView() {
             <Button variant="outline" onClick={downloadTemplate} className="gap-2">
               <FileSpreadsheet className="w-4 h-4" />
               Template CSV
+            </Button>
+            <Button
+              variant="outline"
+              onClick={resetAll}
+              disabled={resetting}
+              className="gap-2 border-rose-500/40 text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
+            >
+              {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              Reset Semua
             </Button>
           </div>
 
