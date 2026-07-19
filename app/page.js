@@ -455,7 +455,7 @@ function Sidebar(props) {
   );
 }
 
-// ---------- Mobile Shell (sticky header + drawer + bottom nav) ----------
+// ---------- Mobile Shell (sticky header + drawer only, no bottom nav) ----------
 function MobileShell({ user, active, onNav, onLogout, children }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -475,29 +475,6 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
     'ad:users': 'User Management',
   };
   const currentLabel = labels[active] || 'MIS';
-
-  const hasCC = userHasModule(user, 'cycle_count');
-  const hasOM = userHasModule(user, 'order_management');
-  const isStaff = user.role === 'staff';
-  const bottomItems = [];
-  if (hasCC) {
-    bottomItems.push({
-      key: isStaff ? 'cc:tasks' : 'cc:dashboard',
-      label: 'Cycle',
-      icon: Package,
-    });
-  }
-  if (hasOM) {
-    bottomItems.push({ key: 'om:dashboard', label: 'Orders', icon: ShoppingCart });
-    bottomItems.push({ key: 'om:scan_pack', label: 'Packing', icon: ScanBarcodeIcon });
-    bottomItems.push({ key: 'om:scan_deliver', label: 'Kurir', icon: Truck });
-  }
-  if (hasCC) {
-    bottomItems.push({ key: 'cc:history', label: 'Riwayat', icon: History });
-  }
-  bottomItems.push({ key: '__more__', label: 'Menu', icon: MenuIcon, action: () => setDrawerOpen(true) });
-  const shownItems = bottomItems.slice(0, 5);
-  const gridCols = ['', 'grid-cols-1', 'grid-cols-2', 'grid-cols-3', 'grid-cols-4', 'grid-cols-5'][shownItems.length] || 'grid-cols-5';
 
   return (
     <div className="min-h-screen bg-[#09090b] flex flex-col">
@@ -557,33 +534,9 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
         )}
       </AnimatePresence>
 
-      <main className="flex-1 px-4 py-4 pb-bottom-nav overflow-x-hidden">
+      <main className="flex-1 px-4 py-4 pb-8 overflow-x-hidden pb-safe">
         {children}
       </main>
-
-      <nav
-        className="fixed bottom-0 inset-x-0 z-30 bg-[#0a0a0c]/95 backdrop-blur-xl border-t border-white/5 pb-safe"
-      >
-        <div className={`grid ${gridCols} h-16`}>
-          {shownItems.map((it) => {
-            const Icon = it.icon;
-            const isActive = active === it.key && it.key !== '__more__';
-            return (
-              <button
-                key={it.key}
-                onClick={() => (it.action ? it.action() : onNav(it.key))}
-                className={`relative flex flex-col items-center justify-center gap-1 select-none-app transition ${
-                  isActive ? 'text-blue-400' : 'text-muted-foreground active:text-white'
-                }`}
-              >
-                {isActive && <span className="absolute top-0 h-0.5 w-8 rounded-full bg-blue-400" />}
-                <Icon className="w-5 h-5" />
-                <span className="text-[10px] font-medium">{it.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
     </div>
   );
 }
@@ -593,12 +546,6 @@ const MenuIcon = ({ className }) => (
     <line x1="4" y1="7" x2="20" y2="7" />
     <line x1="4" y1="12" x2="20" y2="12" />
     <line x1="4" y1="17" x2="20" y2="17" />
-  </svg>
-);
-const ScanBarcodeIcon = ({ className }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 5v3M3 16v3M8 5v3M8 16v3M13 5v3M13 16v3M18 5v3M18 16v3" />
-    <path d="M3 12h18" />
   </svg>
 );
 
