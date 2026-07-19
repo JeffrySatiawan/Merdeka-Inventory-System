@@ -682,17 +682,20 @@ function OMScanPrintView({ user }) {
 }
 
 // ============================================================
-// VIEW: Scan Mulai Packing (Phase 2)
-// - NO expedition dropdown. Auto-inherits from print record.
-// - Scan → lookup → fill form (foto, sku, item) inline → Simpan → next scan
+// VIEW: Scan Mulai Packing (Phase 2) — STEP-BY-STEP WIZARD
+// SCAN → SKU → ITEM → FOTO → SIMPAN (sequential, auto-focus)
 // ============================================================
 function OMScanPackView({ user }) {
   const [tracking, setTracking] = useState('');
-  const [pending, setPending] = useState(null); // { shipment, expedition_name }
-  const [form, setForm] = useState({ sku_count: 1, item_count: 1, photo_data_url: null, photo_size: 0 });
+  const [pending, setPending] = useState(null); // { shipment }
+  const [step, setStep] = useState('sku'); // sku | item | photo | ready
+  const [form, setForm] = useState({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
   const [compressing, setCompressing] = useState(false);
   const [saving, setSaving] = useState(false);
   const photoRef = useRef(null);
+  const skuRef = useRef(null);
+  const itemRef = useRef(null);
+  const saveBtnRef = useRef(null);
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
@@ -709,6 +712,18 @@ function OMScanPackView({ user }) {
     } catch {}
   }
 
+  // Auto-focus per step
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(() => {
+      if (step === 'sku') { skuRef.current?.focus(); skuRef.current?.select(); }
+      else if (step === 'item') { itemRef.current?.focus(); itemRef.current?.select(); }
+      else if (step === 'photo') { photoRef.current?.click(); }
+      else if (step === 'ready') { saveBtnRef.current?.focus(); }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [step, pending]);
+
   async function lookup(value) {
     if (processingRef.current) return;
     const v = String(value || '').trim();
@@ -721,8 +736,6 @@ function OMScanPackView({ user }) {
     processingRef.current = true;
     setTracking('');
     try {
-      // Frontend triggers a "dry" lookup by requesting with dummy sku/item to test — but that would create data.
-      // Instead: fetch shipment record via shipments endpoint with q=tracking (exact).
       const d = await omApi(`shipments?q=${encodeURIComponent(v)}&limit=1`);
       const s = (d.items || []).find((x) => x.tracking_number === v);
       if (!s || !s.printed_at) {
@@ -736,14 +749,13 @@ function OMScanPackView({ user }) {
           message: fmtDuplicateMsg('Sudah dipacking', {
             operator: s.packed_by_name,
             at: s.packed_at,
-            expedition: s.expedition_name,
           }),
         });
       } else {
-        // Ready to pack — open inline form
         feedback('ok');
         setPending({ shipment: s });
-        setForm({ sku_count: 1, item_count: 1, photo_data_url: null, photo_size: 0 });
+        setForm({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
+        setStep('sku'); // start wizard at SKU input
       }
     } catch (e) {
       feedback('err');
@@ -753,14 +765,31 @@ function OMScanPackView({ user }) {
     }
   }
 
+  function nextFromSku() {
+    const n = Number(form.sku_count);
+    if (!Number.isFinite(n) || n < 1) { feedback('warn'); return; }
+    setStep('item');
+  }
+  function nextFromItem() {
+    const n = Number(form.item_count);
+    if (!Number.isFinite(n) || n < 1) { feedback('warn'); return; }
+    setStep('photo'); // will auto-open camera
+  }
+
   async function onPhotoSelected(e) {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file) {
+      // User cancelled camera — allow retry manually
+      return;
+    }
     setCompressing(true);
     try {
       const { dataUrl, sizeBytes } = await compressToWebp(file, { maxWidth: 900, targetKB: 220 });
       setForm((f) => ({ ...f, photo_data_url: dataUrl, photo_size: sizeBytes }));
+      feedback('ok');
+      setStep('ready');
     } catch (err) {
+      feedback('err');
       addQueue({ type: 'err', tracking: pending?.shipment?.tracking_number, message: 'Kompresi foto gagal' });
     } finally {
       setCompressing(false);
@@ -771,23 +800,22 @@ function OMScanPackView({ user }) {
   async function save() {
     if (!pending) return;
     const s = pending.shipment;
-    if (!form.photo_data_url) { addQueue({ type: 'warn', tracking: s.tracking_number, message: 'Foto wajib' }); feedback('warn'); return; }
-    if (form.sku_count < 1 || form.item_count < 1) { addQueue({ type: 'warn', tracking: s.tracking_number, message: 'SKU/Item minimal 1' }); feedback('warn'); return; }
     setSaving(true);
     try {
       const resp = await omApi('scan/pack', {
         method: 'POST',
         body: JSON.stringify({
           tracking_number: s.tracking_number,
-          sku_count: form.sku_count,
-          item_count: form.item_count,
+          sku_count: Number(form.sku_count),
+          item_count: Number(form.item_count),
           photo_data_url: form.photo_data_url,
         }),
       });
       feedback('ok');
-      addQueue({ type: 'ok', tracking: s.tracking_number, message: `Packing · ${resp.shipment.expedition_name}` });
+      addQueue({ type: 'ok', tracking: s.tracking_number, message: `Packing selesai · ${resp.shipment.expedition_name}` });
       setStats((st) => ({ ...st, packed: (st.packed || 0) + 1 }));
       setPending(null);
+      setStep('sku');
     } catch (e) {
       feedback('err');
       addQueue({ type: 'err', tracking: s.tracking_number, message: e.message || 'Error' });
@@ -798,7 +826,11 @@ function OMScanPackView({ user }) {
 
   function cancel() {
     setPending(null);
+    setStep('sku');
+    setForm({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
   }
+
+  const stepIdx = { sku: 0, item: 1, photo: 2, ready: 3 }[step] || 0;
 
   return (
     <ScannerShell
@@ -825,15 +857,15 @@ function OMScanPackView({ user }) {
           animate={{ opacity: 1, y: 0 }}
           className="rounded-xl border-2 border-blue-500/40 bg-blue-500/5 p-3 space-y-3"
         >
-          <div className="flex items-start justify-between gap-2">
+          {/* Info resi + ekspedisi (auto-inherit) */}
+          <div className="flex items-start justify-between gap-2 pb-2 border-b border-white/10">
             <div>
-              <div className="text-[10px] uppercase tracking-widest text-blue-300">Siap Packing</div>
+              <div className="text-[10px] uppercase tracking-widest text-blue-300">Resi Siap Packing</div>
               <div className="font-mono text-lg font-bold">{pending.shipment.tracking_number}</div>
               <div className="text-xs text-muted-foreground mt-0.5">
-                Ekspedisi: <span className="text-white font-semibold">{pending.shipment.expedition_name}</span>
-              </div>
-              <div className="text-[10px] text-muted-foreground">
-                Dicetak oleh {pending.shipment.printed_by_name}
+                <span className="text-white font-semibold">{pending.shipment.expedition_name}</span>
+                <span className="mx-1.5">·</span>
+                Dicetak: {pending.shipment.printed_by_name}
               </div>
             </div>
             <Button variant="ghost" size="icon" onClick={cancel} disabled={saving}>
@@ -841,51 +873,177 @@ function OMScanPackView({ user }) {
             </Button>
           </div>
 
-          {/* Photo */}
-          {form.photo_data_url ? (
-            <div className="relative">
-              <img src={form.photo_data_url} alt="preview" className="w-full max-h-48 object-cover rounded-lg border border-white/10" />
-              <div className="absolute top-2 right-2 flex gap-1">
-                <Badge variant="outline" className="bg-black/60 text-[9px]">{(form.photo_size / 1024).toFixed(0)} KB</Badge>
-                <Button size="sm" variant="secondary" onClick={() => photoRef.current?.click()} className="h-6 text-[10px]">Ganti</Button>
+          {/* Step indicator */}
+          <div className="flex items-center gap-1">
+            {['SKU', 'ITEM', 'FOTO', 'SIMPAN'].map((label, i) => (
+              <div
+                key={label}
+                className={`flex-1 h-1.5 rounded-full transition-all ${
+                  i <= stepIdx ? 'bg-blue-500' : 'bg-white/10'
+                }`}
+              />
+            ))}
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            {['1 · SKU', '2 · ITEM', '3 · FOTO', '4 · SIMPAN'].map((label, i) => (
+              <div key={label} className={`flex-1 text-center ${i === stepIdx ? 'text-blue-300 font-bold' : ''}`}>
+                {label}
               </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => photoRef.current?.click()}
-              disabled={compressing}
-              className="w-full aspect-[16/9] rounded-lg border-2 border-dashed border-white/10 hover:border-blue-500/40 hover:bg-blue-500/5 transition flex flex-col items-center justify-center gap-2 text-muted-foreground disabled:opacity-50"
-            >
-              {compressing ? (
-                <><Loader2 className="w-5 h-5 animate-spin" /><span className="text-xs">Kompres...</span></>
-              ) : (
-                <><Camera className="w-5 h-5" /><span className="text-xs">Foto Isi Paket</span></>
-              )}
-            </button>
-          )}
-          <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onPhotoSelected} />
-
-          {/* Counts */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <Label className="text-[10px]">Jumlah SKU</Label>
-              <Input type="number" min={1} value={form.sku_count} onChange={(e) => setForm({ ...form, sku_count: Number(e.target.value) })} className="h-12 text-lg tabular-nums" />
-            </div>
-            <div>
-              <Label className="text-[10px]">Total Item</Label>
-              <Input type="number" min={1} value={form.item_count} onChange={(e) => setForm({ ...form, item_count: Number(e.target.value) })} className="h-12 text-lg tabular-nums" />
-            </div>
+            ))}
           </div>
 
-          {/* Save */}
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={cancel} className="flex-1 h-12" disabled={saving}>Batal</Button>
-            <Button onClick={save} disabled={saving || compressing} className="flex-1 h-12 gap-2 bg-blue-600 hover:bg-blue-500">
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Simpan
-            </Button>
-          </div>
+          {/* STEP 1: SKU */}
+          <AnimatePresence mode="wait">
+            {step === 'sku' && (
+              <motion.div
+                key="sku"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="space-y-2"
+              >
+                <Label className="text-xs">Langkah 1 · Isi Jumlah SKU</Label>
+                <Input
+                  ref={skuRef}
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  placeholder="Jumlah SKU"
+                  value={form.sku_count}
+                  onChange={(e) => setForm({ ...form, sku_count: e.target.value })}
+                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), nextFromSku())}
+                  className="h-14 text-2xl text-center tabular-nums font-bold"
+                />
+                <Button onClick={nextFromSku} className="w-full h-12 gap-2" disabled={!form.sku_count || Number(form.sku_count) < 1}>
+                  Lanjut ke Item <ArrowRight className="w-4 h-4" />
+                </Button>
+              </motion.div>
+            )}
+
+            {/* STEP 2: ITEM */}
+            {step === 'item' && (
+              <motion.div
+                key="item"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="space-y-2"
+              >
+                <div className="text-[10px] text-muted-foreground">
+                  ✓ SKU: <span className="font-bold text-white">{form.sku_count}</span>
+                </div>
+                <Label className="text-xs">Langkah 2 · Isi Total Item</Label>
+                <Input
+                  ref={itemRef}
+                  type="number"
+                  min={1}
+                  inputMode="numeric"
+                  placeholder="Total Item"
+                  value={form.item_count}
+                  onChange={(e) => setForm({ ...form, item_count: e.target.value })}
+                  onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), nextFromItem())}
+                  className="h-14 text-2xl text-center tabular-nums font-bold"
+                />
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setStep('sku')} className="flex-1 h-12">
+                    Kembali
+                  </Button>
+                  <Button onClick={nextFromItem} className="flex-1 h-12 gap-2" disabled={!form.item_count || Number(form.item_count) < 1}>
+                    Lanjut Foto <ArrowRight className="w-4 h-4" />
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* STEP 3: FOTO */}
+            {step === 'photo' && (
+              <motion.div
+                key="photo"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="space-y-2"
+              >
+                <div className="text-[10px] text-muted-foreground">
+                  ✓ SKU: <span className="font-bold text-white">{form.sku_count}</span> · Item: <span className="font-bold text-white">{form.item_count}</span>
+                </div>
+                <Label className="text-xs">Langkah 3 · Foto Isi Paket</Label>
+                <button
+                  type="button"
+                  onClick={() => photoRef.current?.click()}
+                  disabled={compressing}
+                  className="w-full aspect-[16/9] rounded-lg border-2 border-dashed border-blue-500/40 bg-blue-500/5 hover:bg-blue-500/10 transition flex flex-col items-center justify-center gap-2 text-blue-300 disabled:opacity-50"
+                >
+                  {compressing ? (
+                    <><Loader2 className="w-6 h-6 animate-spin" /><span className="text-xs">Kompres foto...</span></>
+                  ) : (
+                    <>
+                      <Camera className="w-8 h-8" />
+                      <span className="text-sm font-semibold">Aktifkan Kamera</span>
+                      <span className="text-[10px] text-muted-foreground">Otomatis dikompres · WebP ~200KB · disimpan 10 hari</span>
+                    </>
+                  )}
+                </button>
+                <input
+                  ref={photoRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={onPhotoSelected}
+                />
+                <Button variant="outline" onClick={() => setStep('item')} className="w-full h-12">
+                  Kembali
+                </Button>
+              </motion.div>
+            )}
+
+            {/* STEP 4: SIMPAN */}
+            {step === 'ready' && (
+              <motion.div
+                key="ready"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="space-y-2"
+              >
+                <div className="text-[10px] text-muted-foreground">
+                  ✓ SKU: <span className="font-bold text-white">{form.sku_count}</span> · Item: <span className="font-bold text-white">{form.item_count}</span>
+                </div>
+                <Label className="text-xs">Langkah 4 · Cek Foto & Simpan</Label>
+                {form.photo_data_url && (
+                  <div className="relative">
+                    <img src={form.photo_data_url} alt="preview" className="w-full max-h-56 object-cover rounded-lg border border-emerald-500/40" />
+                    <div className="absolute top-2 right-2 flex gap-1">
+                      <Badge variant="outline" className="bg-black/60 text-[9px] border-emerald-500/40 text-emerald-300">
+                        ✓ {(form.photo_size / 1024).toFixed(0)} KB · WEBP
+                      </Badge>
+                      <Button size="sm" variant="secondary" onClick={() => photoRef.current?.click()} className="h-6 text-[10px]">
+                        Foto Ulang
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <input
+                  ref={photoRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={onPhotoSelected}
+                />
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setStep('photo')} className="flex-1 h-12" disabled={saving}>
+                    Kembali
+                  </Button>
+                  <Button ref={saveBtnRef} onClick={save} disabled={saving} className="flex-[2] h-14 gap-2 bg-emerald-600 hover:bg-emerald-500 text-base font-bold">
+                    {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
+                    SIMPAN PACKING
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
       )}
     </ScannerShell>
