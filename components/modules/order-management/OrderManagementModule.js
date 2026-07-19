@@ -57,6 +57,275 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { omApi, compressToWebp } from './api';
+import { feedback, startCameraScanner } from './scanner';
+
+// ============================================================
+// SHARED: Scanner Mode Layout
+// ============================================================
+function useRealtimeClock() {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setT(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return t;
+}
+function formatTime(d) {
+  return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+function formatShort(d) {
+  return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function ScannerCounter({ label, value, tone = 'default' }) {
+  const map = {
+    default: 'text-white',
+    blue: 'text-blue-400',
+    emerald: 'text-emerald-400',
+    amber: 'text-amber-400',
+    rose: 'text-rose-400',
+  };
+  return (
+    <div className="flex-1 min-w-0 text-center">
+      <div className="text-[9px] uppercase tracking-wider text-muted-foreground truncate">{label}</div>
+      <div className={`text-2xl md:text-3xl font-black tabular-nums ${map[tone]}`}>{value}</div>
+    </div>
+  );
+}
+
+function LiveScanQueue({ items }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+      <div className="px-3 py-2 border-b border-white/5 flex items-center gap-2">
+        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+        <div className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">
+          Live Scan Queue
+        </div>
+        <div className="ml-auto text-[10px] text-muted-foreground tabular-nums">{items.length}/10</div>
+      </div>
+      {items.length === 0 ? (
+        <div className="p-6 text-center text-xs text-muted-foreground">
+          Belum ada scan. Arahkan scanner ke barcode.
+        </div>
+      ) : (
+        <ul className="divide-y divide-white/5 max-h-[42vh] overflow-y-auto">
+          <AnimatePresence initial={false}>
+            {items.map((it) => {
+              const tone =
+                it.type === 'ok'
+                  ? 'bg-emerald-500/5 border-l-emerald-500'
+                  : it.type === 'warn'
+                  ? 'bg-amber-500/5 border-l-amber-500'
+                  : it.type === 'err'
+                  ? 'bg-rose-500/5 border-l-rose-500'
+                  : 'bg-white/[0.02] border-l-blue-500';
+              const dot =
+                it.type === 'ok' ? '🟢' : it.type === 'warn' ? '🟡' : it.type === 'err' ? '🔴' : '🔵';
+              return (
+                <motion.li
+                  key={it.id}
+                  initial={{ opacity: 0, x: -12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className={`px-3 py-2 border-l-2 ${tone}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">{dot}</span>
+                    <span className="font-mono text-xs font-semibold truncate">{it.tracking || '-'}</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">{it.time}</span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground ml-6 truncate">{it.message}</div>
+                </motion.li>
+              );
+            })}
+          </AnimatePresence>
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ScannerShell — reusable scanner-mode layout.
+ * Props:
+ *   pageName, moduleName, user, stats (array), children (form area), queue,
+ *   scanValue, onScanChange, onScanEnter, cameraSupported (default true),
+ *   scanPlaceholder, disabled
+ */
+function ScannerShell({
+  moduleName = 'Order Management',
+  pageName,
+  user,
+  stats = [],
+  scanValue,
+  onScanChange,
+  onScanEnter,
+  scanPlaceholder = 'Menunggu scan...',
+  disabled = false,
+  queue = [],
+  children,
+  onScanDecoded, // called when camera decodes a barcode
+}) {
+  const scanRef = useRef(null);
+  const clock = useRealtimeClock();
+  const [cameraOn, setCameraOn] = useState(false);
+  const [cameraErr, setCameraErr] = useState(null);
+  const stopCameraRef = useRef(null);
+  const lastDecodeRef = useRef({ code: '', ts: 0 });
+
+  // Autofocus scan input while camera not active
+  useEffect(() => {
+    if (cameraOn || disabled) return;
+    const id = setInterval(() => {
+      if (document.activeElement !== scanRef.current) scanRef.current?.focus();
+    }, 1500);
+    scanRef.current?.focus();
+    return () => clearInterval(id);
+  }, [cameraOn, disabled]);
+
+  // Camera start/stop
+  useEffect(() => {
+    if (!cameraOn) return;
+    let mounted = true;
+    setCameraErr(null);
+    startCameraScanner(
+      'om-camera',
+      (decoded) => {
+        if (!mounted) return;
+        // Debounce identical decode within 1.2s to avoid double reads
+        const now = Date.now();
+        if (lastDecodeRef.current.code === decoded && now - lastDecodeRef.current.ts < 1200) return;
+        lastDecodeRef.current = { code: decoded, ts: now };
+        onScanDecoded && onScanDecoded(decoded);
+      },
+      (msg) => {}
+    )
+      .then((stopFn) => {
+        stopCameraRef.current = stopFn;
+      })
+      .catch((e) => {
+        setCameraErr(String(e?.message || e));
+        setCameraOn(false);
+      });
+    return () => {
+      mounted = false;
+      if (stopCameraRef.current) {
+        stopCameraRef.current().catch(() => {});
+        stopCameraRef.current = null;
+      }
+    };
+  }, [cameraOn, onScanDecoded]);
+
+  return (
+    <div className="space-y-3 max-w-2xl mx-auto">
+      {/* Compact scanner header */}
+      <div className="rounded-xl border border-white/10 bg-gradient-to-br from-blue-500/5 to-transparent p-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge variant="outline" className="border-blue-500/40 text-blue-300 text-[9px] py-0 h-4">
+            SCANNER MODE
+          </Badge>
+          <div className="text-[10px] text-muted-foreground uppercase tracking-widest">
+            {moduleName}
+          </div>
+          <div className="ml-auto text-xs font-mono tabular-nums text-muted-foreground">
+            {formatTime(clock)}
+          </div>
+        </div>
+        <div className="mt-1 flex items-center justify-between">
+          <div className="font-semibold text-base leading-tight">{pageName}</div>
+          <div className="text-[11px] text-muted-foreground">👤 {user?.name}</div>
+        </div>
+      </div>
+
+      {/* Counter row */}
+      {stats.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2">
+          <div className="text-[9px] uppercase tracking-widest text-muted-foreground text-center pb-1">
+            Hari Ini
+          </div>
+          <div className="flex items-stretch divide-x divide-white/5">
+            {stats.map((s) => (
+              <ScannerCounter key={s.label} {...s} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Scan area */}
+      <div className="rounded-xl border-2 border-blue-500/30 bg-blue-500/5 p-3 space-y-2">
+        {!cameraOn ? (
+          <>
+            <Input
+              ref={scanRef}
+              value={scanValue}
+              onChange={(e) => onScanChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  onScanEnter && onScanEnter();
+                }
+              }}
+              placeholder={scanPlaceholder}
+              className="text-center text-lg font-mono tracking-wider h-14 border-blue-500/40 bg-black/40"
+              autoFocus
+              inputMode="text"
+              autoComplete="off"
+              disabled={disabled}
+            />
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <span>Auto-focus aktif · scanner USB/BT siap</span>
+              <button
+                type="button"
+                onClick={() => setCameraOn(true)}
+                className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 flex items-center gap-1"
+              >
+                <Camera className="w-3 h-3" /> Kamera
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              id="om-camera"
+              className="w-full aspect-[16/10] rounded-lg overflow-hidden bg-black border border-white/10"
+            />
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <span>Arahkan barcode ke kamera</span>
+              <button
+                type="button"
+                onClick={() => setCameraOn(false)}
+                className="px-2.5 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 flex items-center gap-1"
+              >
+                <X className="w-3 h-3" /> Matikan Kamera
+              </button>
+            </div>
+            {cameraErr && (
+              <div className="text-[10px] text-rose-400 mt-1">Kamera error: {cameraErr}</div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Optional inline form (children) */}
+      {children}
+
+      {/* Live scan queue */}
+      <LiveScanQueue items={queue} />
+    </div>
+  );
+}
+
+function useScanQueue(max = 10) {
+  const [items, setItems] = useState([]);
+  const add = (entry) => {
+    setItems((prev) => [
+      { id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, time: formatShort(new Date()), ...entry },
+      ...prev,
+    ].slice(0, max));
+  };
+  return { items, add };
+}
 
 // ---------- Small components ----------
 function StatCard({ label, value, sub, tone = 'default', icon: Icon }) {
@@ -204,21 +473,26 @@ function OMDashboardView() {
           ) : (
             <div className="space-y-2">
               {data.by_expedition.map((e) => {
-                const rate = e.packed ? Math.round((e.delivered / e.packed) * 100) : 0;
+                const cetak = e.printed || 0;
+                const packing = e.packed || 0;
+                const kirim = e.delivered || 0;
+                const selisih = e.diff !== undefined ? e.diff : (Math.max(cetak, packing) - kirim);
                 return (
-                  <div key={e.expedition_id} className="flex items-center gap-3 p-2 rounded-lg border border-white/5">
-                    <div className="w-8 h-8 rounded-md bg-blue-500/10 flex items-center justify-center">
+                  <div key={e.expedition_id} className="p-3 rounded-lg border border-white/5 bg-white/[0.02]">
+                    <div className="flex items-center gap-2">
                       <Truck className="w-4 h-4 text-blue-400" />
+                      <div className="font-semibold text-sm">{e.expedition_name}</div>
+                      {selisih > 0 && (
+                        <Badge variant="outline" className="ml-auto border-rose-500/40 text-rose-400 text-[9px]">
+                          Selisih {selisih}
+                        </Badge>
+                      )}
                     </div>
-                    <div className="flex-1">
-                      <div className="font-medium text-sm">{e.expedition_name}</div>
-                      <div className="w-full h-1.5 rounded-full bg-white/5 overflow-hidden mt-1.5">
-                        <div className="h-full bg-gradient-to-r from-emerald-500 to-blue-500" style={{ width: `${rate}%` }} />
-                      </div>
-                    </div>
-                    <div className="text-right tabular-nums">
-                      <div className="text-sm font-semibold">{e.delivered}/{e.packed}</div>
-                      <div className="text-[10px] text-muted-foreground">{rate}%</div>
+                    <div className="mt-2 grid grid-cols-4 gap-1 text-center">
+                      <div><div className="text-[9px] text-muted-foreground uppercase">Cetak</div><div className="text-lg font-bold tabular-nums">{cetak}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground uppercase">Packing</div><div className="text-lg font-bold tabular-nums text-blue-400">{packing}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground uppercase">Kirim</div><div className="text-lg font-bold tabular-nums text-emerald-400">{kirim}</div></div>
+                      <div><div className="text-[9px] text-muted-foreground uppercase">Selisih</div><div className={`text-lg font-bold tabular-nums ${selisih > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{selisih}</div></div>
                     </div>
                   </div>
                 );
@@ -281,74 +555,201 @@ function OMDashboardView() {
   );
 }
 
-// ============================================================
-// VIEW: Scan Mulai Packing
-// ============================================================
-function OMScanPackView() {
-  const scanRef = useRef(null);
-  const [tracking, setTracking] = useState('');
-  const [step, setStep] = useState('scan'); // scan | form | saving
-  const [expeditions, setExpeditions] = useState([]);
-  const [form, setForm] = useState({
-    tracking_number: '',
-    expedition_id: '',
-    sku_count: 1,
-    item_count: 1,
-    photo_data_url: null,
-    photo_size: 0,
-  });
-  const [counter, setCounter] = useState(0);
-  const [saving, setSaving] = useState(false);
-  const [compressing, setCompressing] = useState(false);
-  const photoFileRef = useRef(null);
 
-  async function loadExpeditions() {
-    try {
-      const d = await omApi('expeditions');
-      setExpeditions(d.items || []);
-    } catch (e) {
-      toast.error(e.message);
-    }
-  }
-  async function loadCounter() {
+// ============================================================
+// SHARED: Duplicate message formatter (for queue entries)
+// ============================================================
+function fmtDuplicateMsg(prefix, dup) {
+  if (!dup) return prefix;
+  const dt = dup.at
+    ? new Date(dup.at).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    : '-';
+  return `${prefix} · ${dup.operator || '-'} · ${dt}`;
+}
+
+// ============================================================
+// VIEW: Scan Cetak Resi (Phase 1)
+// - Batch mode: pilih ekspedisi sekali, scan banyak resi
+// ============================================================
+function OMScanPrintView({ user }) {
+  const [expeditions, setExpeditions] = useState([]);
+  const [expeditionId, setExpeditionId] = useState('');
+  const [tracking, setTracking] = useState('');
+  const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
+  const { items: queue, add: addQueue } = useScanQueue(10);
+  const processingRef = useRef(false);
+
+  useEffect(() => {
+    omApi('expeditions').then((d) => {
+      const list = d.items || [];
+      setExpeditions(list);
+      if (list[0]) setExpeditionId(list[0].id);
+    }).catch(() => {});
+    refreshStats();
+    const t = setInterval(refreshStats, 8000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function refreshStats() {
     try {
       const d = await omApi('dashboard');
-      setCounter(d?.today?.packed || 0);
+      setStats(d.today || {});
     } catch {}
   }
 
-  useEffect(() => {
-    loadExpeditions();
-    loadCounter();
-  }, []);
-
-  // Autofocus scan input when in 'scan' step
-  useEffect(() => {
-    if (step === 'scan') {
-      const t = setTimeout(() => {
-        scanRef.current?.focus();
-      }, 100);
-      return () => clearTimeout(t);
+  async function process(value) {
+    if (processingRef.current) return;
+    const v = String(value || '').trim();
+    if (!v) return;
+    if (!expeditionId) {
+      feedback('warn');
+      addQueue({ type: 'warn', tracking: v, message: 'Pilih ekspedisi terlebih dahulu' });
+      return;
     }
-  }, [step]);
+    processingRef.current = true;
+    setTracking('');
+    try {
+      const resp = await omApi('scan/print', {
+        method: 'POST',
+        body: JSON.stringify({ tracking_number: v, expedition_id: expeditionId }),
+      });
+      feedback('ok');
+      addQueue({
+        type: 'ok',
+        tracking: v,
+        message: `Cetak · ${resp.shipment.expedition_name}`,
+      });
+      setStats((s) => ({ ...s, printed: (s.printed || 0) + 1 }));
+    } catch (e) {
+      const dup = e?.data?.duplicate || (typeof e === 'object' && e.duplicate);
+      if (e.status === 409) {
+        feedback('warn');
+        addQueue({
+          type: 'warn',
+          tracking: v,
+          message: fmtDuplicateMsg('Sudah dicetak', dup),
+        });
+      } else {
+        feedback('err');
+        addQueue({ type: 'err', tracking: v, message: e.message || 'Error' });
+      }
+    } finally {
+      processingRef.current = false;
+    }
+  }
 
-  // Handle Enter/tab from USB barcode scanner
-  function onScanKey(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const v = tracking.trim();
-      if (!v) return;
-      setForm((f) => ({
-        ...f,
-        tracking_number: v,
-        expedition_id: expeditions.find((x) => x.active)?.id || '',
-        sku_count: 1,
-        item_count: 1,
-        photo_data_url: null,
-        photo_size: 0,
-      }));
-      setTracking('');
-      setStep('form');
+  const expName = expeditions.find((e) => e.id === expeditionId)?.name || '';
+
+  return (
+    <ScannerShell
+      moduleName="Order Management"
+      pageName="Scan Cetak Resi"
+      user={user}
+      stats={[
+        { label: 'Cetak', value: stats.printed || 0, tone: 'blue' },
+        { label: 'Packing', value: stats.packed || 0, tone: 'default' },
+        { label: 'Kirim', value: stats.delivered || 0, tone: 'emerald' },
+        { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
+      ]}
+      scanValue={tracking}
+      onScanChange={setTracking}
+      onScanEnter={() => process(tracking)}
+      onScanDecoded={(v) => process(v)}
+      scanPlaceholder={expName ? `Scan resi ${expName}...` : 'Pilih ekspedisi dulu'}
+      disabled={!expeditionId}
+      queue={queue}
+    >
+      {/* Batch expedition selector */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
+        <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+          Ekspedisi (pilih sekali, scan banyak resi)
+        </Label>
+        <Select value={expeditionId} onValueChange={setExpeditionId}>
+          <SelectTrigger className="h-12 text-base font-semibold">
+            <SelectValue placeholder="Pilih ekspedisi" />
+          </SelectTrigger>
+          <SelectContent>
+            {expeditions.filter((e) => e.active).map((e) => (
+              <SelectItem key={e.id} value={e.id} className="text-base py-3">
+                {e.name} {e.code && `· ${e.code}`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </ScannerShell>
+  );
+}
+
+// ============================================================
+// VIEW: Scan Mulai Packing (Phase 2)
+// - NO expedition dropdown. Auto-inherits from print record.
+// - Scan → lookup → fill form (foto, sku, item) inline → Simpan → next scan
+// ============================================================
+function OMScanPackView({ user }) {
+  const [tracking, setTracking] = useState('');
+  const [pending, setPending] = useState(null); // { shipment, expedition_name }
+  const [form, setForm] = useState({ sku_count: 1, item_count: 1, photo_data_url: null, photo_size: 0 });
+  const [compressing, setCompressing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const photoRef = useRef(null);
+  const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
+  const { items: queue, add: addQueue } = useScanQueue(10);
+  const processingRef = useRef(false);
+
+  useEffect(() => {
+    refreshStats();
+    const t = setInterval(refreshStats, 8000);
+    return () => clearInterval(t);
+  }, []);
+  async function refreshStats() {
+    try {
+      const d = await omApi('dashboard');
+      setStats(d.today || {});
+    } catch {}
+  }
+
+  async function lookup(value) {
+    if (processingRef.current) return;
+    const v = String(value || '').trim();
+    if (!v) return;
+    if (pending) {
+      addQueue({ type: 'warn', tracking: v, message: 'Selesaikan resi sebelumnya dulu' });
+      feedback('warn');
+      return;
+    }
+    processingRef.current = true;
+    setTracking('');
+    try {
+      // Frontend triggers a "dry" lookup by requesting with dummy sku/item to test — but that would create data.
+      // Instead: fetch shipment record via shipments endpoint with q=tracking (exact).
+      const d = await omApi(`shipments?q=${encodeURIComponent(v)}&limit=1`);
+      const s = (d.items || []).find((x) => x.tracking_number === v);
+      if (!s || !s.printed_at) {
+        feedback('err');
+        addQueue({ type: 'err', tracking: v, message: 'Resi belum terdaftar pada proses Scan Cetak Resi.' });
+      } else if (s.status === 'packed' || s.status === 'delivered') {
+        feedback('warn');
+        addQueue({
+          type: 'warn',
+          tracking: v,
+          message: fmtDuplicateMsg('Sudah dipacking', {
+            operator: s.packed_by_name,
+            at: s.packed_at,
+            expedition: s.expedition_name,
+          }),
+        });
+      } else {
+        // Ready to pack — open inline form
+        feedback('ok');
+        setPending({ shipment: s });
+        setForm({ sku_count: 1, item_count: 1, photo_data_url: null, photo_size: 0 });
+      }
+    } catch (e) {
+      feedback('err');
+      addQueue({ type: 'err', tracking: v, message: e.message || 'Error' });
+    } finally {
+      processingRef.current = false;
     }
   }
 
@@ -360,400 +761,214 @@ function OMScanPackView() {
       const { dataUrl, sizeBytes } = await compressToWebp(file, { maxWidth: 900, targetKB: 220 });
       setForm((f) => ({ ...f, photo_data_url: dataUrl, photo_size: sizeBytes }));
     } catch (err) {
-      toast.error('Gagal memproses foto: ' + err.message);
+      addQueue({ type: 'err', tracking: pending?.shipment?.tracking_number, message: 'Kompresi foto gagal' });
     } finally {
       setCompressing(false);
-      // Reset input so same file can be reselected
-      if (photoFileRef.current) photoFileRef.current.value = '';
+      if (photoRef.current) photoRef.current.value = '';
     }
   }
 
-  function resetToScan() {
-    setForm({
-      tracking_number: '',
-      expedition_id: '',
-      sku_count: 1,
-      item_count: 1,
-      photo_data_url: null,
-      photo_size: 0,
-    });
-    setTracking('');
-    setStep('scan');
-  }
-
-  async function submit() {
-    if (!form.tracking_number) return toast.error('Nomor resi kosong');
-    if (!form.expedition_id) return toast.error('Pilih ekspedisi');
-    if (!form.photo_data_url) return toast.error('Foto isi paket wajib');
-    if (form.sku_count < 1) return toast.error('Jumlah SKU minimal 1');
-    if (form.item_count < 1) return toast.error('Jumlah item minimal 1');
-
+  async function save() {
+    if (!pending) return;
+    const s = pending.shipment;
+    if (!form.photo_data_url) { addQueue({ type: 'warn', tracking: s.tracking_number, message: 'Foto wajib' }); feedback('warn'); return; }
+    if (form.sku_count < 1 || form.item_count < 1) { addQueue({ type: 'warn', tracking: s.tracking_number, message: 'SKU/Item minimal 1' }); feedback('warn'); return; }
     setSaving(true);
     try {
       const resp = await omApi('scan/pack', {
         method: 'POST',
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          tracking_number: s.tracking_number,
+          sku_count: form.sku_count,
+          item_count: form.item_count,
+          photo_data_url: form.photo_data_url,
+        }),
       });
-      toast.success(resp.message || 'Berhasil disimpan');
-      setCounter((c) => c + 1);
-      resetToScan();
+      feedback('ok');
+      addQueue({ type: 'ok', tracking: s.tracking_number, message: `Packing · ${resp.shipment.expedition_name}` });
+      setStats((st) => ({ ...st, packed: (st.packed || 0) + 1 }));
+      setPending(null);
     } catch (e) {
-      toast.error(e.message);
+      feedback('err');
+      addQueue({ type: 'err', tracking: s.tracking_number, message: e.message || 'Error' });
     } finally {
       setSaving(false);
     }
   }
 
+  function cancel() {
+    setPending(null);
+  }
+
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div>
-        <div className="flex items-center gap-2">
-          <ScanLine className="w-5 h-5 text-blue-400" />
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Scan Mulai Packing</h1>
-        </div>
-        <p className="text-muted-foreground text-xs md:text-sm mt-1">
-          Scan barcode resi kemudian lengkapi form packing.
-        </p>
-      </div>
-
-      {/* Counter */}
-      <div className="rounded-xl border border-blue-500/30 bg-gradient-to-br from-blue-500/10 to-transparent p-4 flex items-center gap-4">
-        <div className="w-12 h-12 rounded-lg bg-blue-500/20 flex items-center justify-center">
-          <PackageCheck className="w-6 h-6 text-blue-400" />
-        </div>
-        <div className="flex-1">
-          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Hari Ini</div>
-          <div className="text-sm text-muted-foreground">Total Resi Dipacking</div>
-        </div>
-        <div className="text-4xl font-black tabular-nums text-blue-400">{counter}</div>
-      </div>
-
-      {step === 'scan' && (
+    <ScannerShell
+      moduleName="Order Management"
+      pageName="Scan Mulai Packing"
+      user={user}
+      stats={[
+        { label: 'Cetak', value: stats.printed || 0, tone: 'default' },
+        { label: 'Packing', value: stats.packed || 0, tone: 'blue' },
+        { label: 'Kirim', value: stats.delivered || 0, tone: 'emerald' },
+        { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
+      ]}
+      scanValue={tracking}
+      onScanChange={setTracking}
+      onScanEnter={() => lookup(tracking)}
+      onScanDecoded={(v) => lookup(v)}
+      scanPlaceholder="Scan resi yang sudah dicetak..."
+      disabled={!!pending}
+      queue={queue}
+    >
+      {pending && (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 md:p-10"
+          className="rounded-xl border-2 border-blue-500/40 bg-blue-500/5 p-3 space-y-3"
         >
-          <div className="flex flex-col items-center text-center gap-4">
-            <div className="w-16 h-16 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
-              <ScanLine className="w-8 h-8 text-blue-400 animate-pulse" />
-            </div>
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <div className="text-lg font-semibold">Scan Barcode Resi</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Arahkan scanner ke barcode resi, kemudian sistem akan menampilkan form.
+              <div className="text-[10px] uppercase tracking-widest text-blue-300">Siap Packing</div>
+              <div className="font-mono text-lg font-bold">{pending.shipment.tracking_number}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Ekspedisi: <span className="text-white font-semibold">{pending.shipment.expedition_name}</span>
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Dicetak oleh {pending.shipment.printed_by_name}
               </div>
             </div>
-            <Input
-              ref={scanRef}
-              value={tracking}
-              onChange={(e) => setTracking(e.target.value)}
-              onKeyDown={onScanKey}
-              placeholder="Menunggu scan..."
-              className="text-center text-lg font-mono tracking-wider max-w-md h-12"
-              autoFocus
-              inputMode="text"
-              autoComplete="off"
-            />
-            <div className="text-[10px] text-muted-foreground">
-              atau ketik manual lalu tekan <kbd className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[9px]">Enter</kbd>
-            </div>
-          </div>
-        </motion.div>
-      )}
-
-      {step === 'form' && (
-        <motion.div
-          key="form"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-white/10 bg-white/[0.02] p-5 md:p-6 space-y-4"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-[10px] uppercase text-muted-foreground tracking-widest">Nomor Resi</div>
-              <div className="font-mono text-lg md:text-xl font-bold">{form.tracking_number}</div>
-            </div>
-            <Button variant="ghost" size="icon" onClick={resetToScan} title="Batal">
+            <Button variant="ghost" size="icon" onClick={cancel} disabled={saving}>
               <X className="w-4 h-4" />
             </Button>
           </div>
 
-          {/* Photo capture */}
-          <div className="space-y-2">
-            <Label className="text-xs">Foto Isi Paket <span className="text-rose-400">*</span></Label>
-            {form.photo_data_url ? (
-              <div className="relative">
-                <img
-                  src={form.photo_data_url}
-                  alt="preview"
-                  className="w-full max-h-64 object-cover rounded-lg border border-white/10"
-                />
-                <div className="absolute top-2 right-2 flex gap-1">
-                  <Badge variant="outline" className="bg-black/60 text-[9px]">
-                    {(form.photo_size / 1024).toFixed(0)} KB · WEBP
-                  </Badge>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => photoFileRef.current?.click()}
-                    className="h-6 text-[10px]"
-                  >
-                    Ganti
-                  </Button>
-                </div>
+          {/* Photo */}
+          {form.photo_data_url ? (
+            <div className="relative">
+              <img src={form.photo_data_url} alt="preview" className="w-full max-h-48 object-cover rounded-lg border border-white/10" />
+              <div className="absolute top-2 right-2 flex gap-1">
+                <Badge variant="outline" className="bg-black/60 text-[9px]">{(form.photo_size / 1024).toFixed(0)} KB</Badge>
+                <Button size="sm" variant="secondary" onClick={() => photoRef.current?.click()} className="h-6 text-[10px]">Ganti</Button>
               </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => photoFileRef.current?.click()}
-                disabled={compressing}
-                className="w-full aspect-video rounded-lg border-2 border-dashed border-white/10 hover:border-blue-500/40 hover:bg-blue-500/5 transition flex flex-col items-center justify-center gap-2 text-muted-foreground disabled:opacity-50"
-              >
-                {compressing ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    <div className="text-xs">Memproses foto...</div>
-                  </>
-                ) : (
-                  <>
-                    <Camera className="w-6 h-6" />
-                    <div className="text-xs">Ambil foto isi paket</div>
-                    <div className="text-[10px]">Otomatis dikompres ke ~200KB WebP</div>
-                  </>
-                )}
-              </button>
-            )}
-            <input
-              ref={photoFileRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={onPhotoSelected}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="space-y-1.5 md:col-span-1">
-              <Label className="text-xs">Ekspedisi <span className="text-rose-400">*</span></Label>
-              <Select
-                value={form.expedition_id}
-                onValueChange={(v) => setForm((f) => ({ ...f, expedition_id: v }))}
-              >
-                <SelectTrigger><SelectValue placeholder="Pilih ekspedisi" /></SelectTrigger>
-                <SelectContent>
-                  {expeditions.filter((x) => x.active).map((e) => (
-                    <SelectItem key={e.id} value={e.id}>
-                      {e.name} {e.code && `(${e.code})`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Jumlah SKU</Label>
-              <Input
-                type="number"
-                min={1}
-                value={form.sku_count}
-                onChange={(e) => setForm((f) => ({ ...f, sku_count: Number(e.target.value) }))}
-                className="h-11 text-lg tabular-nums"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Total Item</Label>
-              <Input
-                type="number"
-                min={1}
-                value={form.item_count}
-                onChange={(e) => setForm((f) => ({ ...f, item_count: Number(e.target.value) }))}
-                className="h-11 text-lg tabular-nums"
-              />
-            </div>
-          </div>
-
-          <div className="flex gap-2 pt-2">
-            <Button variant="ghost" onClick={resetToScan} className="flex-1" disabled={saving}>
-              Batal
-            </Button>
-            <Button
-              onClick={submit}
-              disabled={saving || compressing}
-              className="flex-1 gap-2"
+          ) : (
+            <button
+              type="button"
+              onClick={() => photoRef.current?.click()}
+              disabled={compressing}
+              className="w-full aspect-[16/9] rounded-lg border-2 border-dashed border-white/10 hover:border-blue-500/40 hover:bg-blue-500/5 transition flex flex-col items-center justify-center gap-2 text-muted-foreground disabled:opacity-50"
             >
+              {compressing ? (
+                <><Loader2 className="w-5 h-5 animate-spin" /><span className="text-xs">Kompres...</span></>
+              ) : (
+                <><Camera className="w-5 h-5" /><span className="text-xs">Foto Isi Paket</span></>
+              )}
+            </button>
+          )}
+          <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onPhotoSelected} />
+
+          {/* Counts */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-[10px]">Jumlah SKU</Label>
+              <Input type="number" min={1} value={form.sku_count} onChange={(e) => setForm({ ...form, sku_count: Number(e.target.value) })} className="h-12 text-lg tabular-nums" />
+            </div>
+            <div>
+              <Label className="text-[10px]">Total Item</Label>
+              <Input type="number" min={1} value={form.item_count} onChange={(e) => setForm({ ...form, item_count: Number(e.target.value) })} className="h-12 text-lg tabular-nums" />
+            </div>
+          </div>
+
+          {/* Save */}
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={cancel} className="flex-1 h-12" disabled={saving}>Batal</Button>
+            <Button onClick={save} disabled={saving || compressing} className="flex-1 h-12 gap-2 bg-blue-600 hover:bg-blue-500">
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Simpan
             </Button>
           </div>
         </motion.div>
       )}
-    </div>
+    </ScannerShell>
   );
 }
 
 // ============================================================
-// VIEW: Scan Serah Terima Kurir
+// VIEW: Scan Serah Terima Kurir (Phase 3)
 // ============================================================
-function OMScanDeliveryView() {
-  const scanRef = useRef(null);
+function OMScanDeliveryView({ user }) {
   const [tracking, setTracking] = useState('');
-  const [counter, setCounter] = useState(0);
-  const [lastResult, setLastResult] = useState(null); // { type: 'ok'|'err'|'already', ...}
-  const [pending, setPending] = useState(0);
-  const [processing, setProcessing] = useState(false);
+  const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
+  const { items: queue, add: addQueue } = useScanQueue(10);
+  const processingRef = useRef(false);
 
-  async function loadStats() {
+  useEffect(() => {
+    refreshStats();
+    const t = setInterval(refreshStats, 8000);
+    return () => clearInterval(t);
+  }, []);
+  async function refreshStats() {
     try {
       const d = await omApi('dashboard');
-      setCounter(d?.today?.delivered || 0);
-      setPending(d?.today?.pending || 0);
+      setStats(d.today || {});
     } catch {}
   }
 
-  useEffect(() => {
-    loadStats();
-    // Autofocus
-    const t = setTimeout(() => scanRef.current?.focus(), 100);
-    return () => clearTimeout(t);
-  }, []);
-
-  async function process(v) {
-    if (!v || processing) return;
-    setProcessing(true);
+  async function process(value) {
+    if (processingRef.current) return;
+    const v = String(value || '').trim();
+    if (!v) return;
+    processingRef.current = true;
     setTracking('');
     try {
       const resp = await omApi('scan/deliver', {
         method: 'POST',
         body: JSON.stringify({ tracking_number: v }),
       });
-      if (resp.already) {
-        setLastResult({ type: 'already', message: resp.message, shipment: resp.shipment });
-        toast.info(resp.message);
-      } else {
-        setLastResult({ type: 'ok', message: resp.message, shipment: resp.shipment });
-        toast.success(resp.message);
-        setCounter((c) => c + 1);
-        setPending((p) => Math.max(0, p - 1));
-      }
+      feedback('ok');
+      addQueue({ type: 'ok', tracking: v, message: `Diserahkan · ${resp.shipment.expedition_name}` });
+      setStats((s) => ({ ...s, delivered: (s.delivered || 0) + 1 }));
     } catch (e) {
-      setLastResult({ type: 'err', message: e.message });
-      toast.error(e.message);
+      if (e.status === 409) {
+        feedback('warn');
+        const dup = e?.data?.duplicate;
+        addQueue({
+          type: 'warn',
+          tracking: v,
+          message: dup ? fmtDuplicateMsg('Sudah diserahkan', dup) : (e.message || 'Belum melalui Packing'),
+        });
+      } else if (e.status === 404) {
+        feedback('err');
+        addQueue({ type: 'err', tracking: v, message: e.message || 'Resi tidak ditemukan' });
+      } else {
+        feedback('err');
+        addQueue({ type: 'err', tracking: v, message: e.message || 'Error' });
+      }
     } finally {
-      setProcessing(false);
-      // Refocus for next scan
-      setTimeout(() => scanRef.current?.focus(), 100);
-    }
-  }
-
-  function onScanKey(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const v = tracking.trim();
-      if (v) process(v);
+      processingRef.current = false;
     }
   }
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div>
-        <div className="flex items-center gap-2">
-          <Truck className="w-5 h-5 text-emerald-400" />
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Scan Serah Terima Kurir</h1>
-        </div>
-        <p className="text-muted-foreground text-xs md:text-sm mt-1">
-          Scan setiap resi saat menyerahkan ke kurir untuk memastikan tidak ada yang tertinggal.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <StatCard label="Diserahkan Hari Ini" value={counter} tone="emerald" icon={CheckCircle2} />
-        <StatCard label="Sisa Belum Diserahkan" value={pending} tone={pending > 0 ? 'amber' : 'emerald'} icon={Clock} />
-      </div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-transparent p-6 md:p-10"
-      >
-        <div className="flex flex-col items-center text-center gap-4">
-          <div className="w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-            <ScanLine className="w-8 h-8 text-emerald-400 animate-pulse" />
-          </div>
-          <div>
-            <div className="text-lg font-semibold">Scan Barcode Resi</div>
-            <div className="text-xs text-muted-foreground mt-1">
-              Scan setiap resi yang akan diserahkan ke kurir.
-            </div>
-          </div>
-          <Input
-            ref={scanRef}
-            value={tracking}
-            onChange={(e) => setTracking(e.target.value)}
-            onKeyDown={onScanKey}
-            placeholder="Menunggu scan..."
-            className="text-center text-lg font-mono tracking-wider max-w-md h-12"
-            autoFocus
-            inputMode="text"
-            autoComplete="off"
-            disabled={processing}
-          />
-          {processing && (
-            <div className="text-xs text-muted-foreground flex items-center gap-2">
-              <Loader2 className="w-3 h-3 animate-spin" /> Memproses...
-            </div>
-          )}
-        </div>
-      </motion.div>
-
-      {/* Last result */}
-      <AnimatePresence mode="wait">
-        {lastResult && (
-          <motion.div
-            key={lastResult.type + (lastResult.shipment?.id || Math.random())}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className={`rounded-xl border p-4 ${
-              lastResult.type === 'ok'
-                ? 'border-emerald-500/40 bg-emerald-500/10'
-                : lastResult.type === 'already'
-                ? 'border-amber-500/40 bg-amber-500/10'
-                : 'border-rose-500/40 bg-rose-500/10'
-            }`}
-          >
-            <div className="flex items-start gap-3">
-              {lastResult.type === 'ok' ? (
-                <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
-              ) : lastResult.type === 'already' ? (
-                <AlertTriangle className="w-6 h-6 text-amber-400 shrink-0" />
-              ) : (
-                <AlertTriangle className="w-6 h-6 text-rose-400 shrink-0" />
-              )}
-              <div className="flex-1">
-                <div className="font-semibold">
-                  {lastResult.type === 'ok' && 'Berhasil Diserahkan'}
-                  {lastResult.type === 'already' && 'Sudah Diserahkan Sebelumnya'}
-                  {lastResult.type === 'err' && 'Gagal'}
-                </div>
-                <div className="text-sm text-muted-foreground mt-1">{lastResult.message}</div>
-                {lastResult.shipment && (
-                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                    <Badge variant="outline">Ekspedisi: {lastResult.shipment.expedition_name}</Badge>
-                    <Badge variant="outline">Operator Packing: {lastResult.shipment.packed_by_name}</Badge>
-                    <Badge variant="outline">
-                      {lastResult.shipment.sku_count} SKU · {lastResult.shipment.item_count} item
-                    </Badge>
-                  </div>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+    <ScannerShell
+      moduleName="Order Management"
+      pageName="Scan Serah Terima Kurir"
+      user={user}
+      stats={[
+        { label: 'Cetak', value: stats.printed || 0, tone: 'default' },
+        { label: 'Packing', value: stats.packed || 0, tone: 'default' },
+        { label: 'Kirim', value: stats.delivered || 0, tone: 'emerald' },
+        { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
+      ]}
+      scanValue={tracking}
+      onScanChange={setTracking}
+      onScanEnter={() => process(tracking)}
+      onScanDecoded={(v) => process(v)}
+      scanPlaceholder="Scan resi yang sudah dipacking..."
+      queue={queue}
+    />
   );
 }
+
 
 // ============================================================
 // VIEW: Master Ekspedisi
@@ -1280,8 +1495,9 @@ export default function OrderManagementModule({ view, user }) {
   const isOwner = user?.role === 'owner';
   switch (view) {
     case 'om:dashboard': return <OMDashboardView />;
-    case 'om:scan_pack': return <OMScanPackView />;
-    case 'om:scan_deliver': return <OMScanDeliveryView />;
+    case 'om:scan_print': return <OMScanPrintView user={user} />;
+    case 'om:scan_pack': return <OMScanPackView user={user} />;
+    case 'om:scan_deliver': return <OMScanDeliveryView user={user} />;
     case 'om:reports': return <OMReportsView user={user} />;
     case 'om:expeditions': return <OMExpeditionsView isOwner={isOwner} />;
     case 'om:settings': return <OMSettingsView isOwner={isOwner} />;

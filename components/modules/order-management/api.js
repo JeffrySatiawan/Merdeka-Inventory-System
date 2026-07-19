@@ -8,14 +8,11 @@ export async function omApi(path, opts = {}) {
   };
   const res = await fetch(`/api/om/${path}`, { ...opts, headers });
   if (!res.ok) {
-    let msg;
-    try {
-      msg = (await res.json()).error;
-    } catch {
-      msg = `HTTP ${res.status}`;
-    }
-    const e = new Error(msg || `HTTP ${res.status}`);
+    let data = null;
+    try { data = await res.json(); } catch {}
+    const e = new Error((data && data.error) || `HTTP ${res.status}`);
     e.status = res.status;
+    e.data = data;
     throw e;
   }
   const contentType = res.headers.get('content-type') || '';

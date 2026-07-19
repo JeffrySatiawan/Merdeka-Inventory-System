@@ -260,6 +260,7 @@ function buildNav(user) {
           module: 'order_management',
           children: [
             { key: 'om:dashboard', label: 'Dashboard' },
+            { key: 'om:scan_print', label: 'Scan Cetak Resi' },
             { key: 'om:scan_pack', label: 'Scan Mulai Packing' },
             { key: 'om:scan_deliver', label: 'Scan Serah Terima Kurir' },
             { key: 'om:reports', label: 'Laporan' },
@@ -486,13 +487,12 @@ function bottomNavForModule(moduleKey, user) {
   if (moduleKey === 'order_management') {
     const isOwner = user?.role === 'owner';
     const items = [
-      { key: 'om:dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { key: 'om:dashboard', label: 'Home', icon: LayoutDashboard },
+      { key: 'om:scan_print', label: 'Cetak', icon: FileSpreadsheet },
       { key: 'om:scan_pack', label: 'Packing', icon: ScanBarcodeIcon },
       { key: 'om:scan_deliver', label: 'Kurir', icon: Truck },
-      { key: 'om:reports', label: 'Laporan', icon: FileSpreadsheet },
     ];
-    // 5th: Master (owner) or Setting
-    if (isOwner) items.push({ key: 'om:expeditions', label: 'Master', icon: Package });
+    if (isOwner) items.push({ key: 'om:reports', label: 'Laporan', icon: History });
     return items;
   }
   return [];
@@ -510,6 +510,7 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
     'cc:history': 'Riwayat SKU',
     'mod:order_management': 'Order Management',
     'om:dashboard': 'OM Dashboard',
+    'om:scan_print': 'Scan Cetak Resi',
     'om:scan_pack': 'Scan Mulai Packing',
     'om:scan_deliver': 'Scan Serah Terima',
     'om:reports': 'Laporan',
