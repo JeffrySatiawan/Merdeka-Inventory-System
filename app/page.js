@@ -237,12 +237,6 @@ function isAdminRole(user) {
 function buildNav(user) {
   const sections = [
     {
-      title: 'General',
-      items: [
-        { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      ],
-    },
-    {
       title: 'Modules',
       items: [
         {
@@ -311,14 +305,17 @@ function buildNav(user) {
     .filter(Boolean);
 }
 
-// Get default view for user based on their allowed modules and role
 function getDefaultView(user) {
-  if (!user) return 'dashboard';
+  if (!user) return 'cc:dashboard';
   const mods = userModules(user);
-  if (isAdminRole(user)) return 'dashboard';
-  // staff: prefer cycle_count tasks
+  if (isAdminRole(user)) {
+    if (mods.includes('cycle_count')) return 'cc:dashboard';
+    if (mods.includes('order_management')) return 'om:dashboard';
+    return 'no_access';
+  }
+  // staff
   if (mods.includes('cycle_count')) return 'cc:tasks';
-  if (mods.includes('order_management')) return 'mod:order_management';
+  if (mods.includes('order_management')) return 'om:dashboard';
   return 'no_access';
 }
 
