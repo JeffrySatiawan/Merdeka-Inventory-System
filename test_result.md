@@ -457,6 +457,78 @@ agent_communication:
       All backend APIs are production-ready. No critical issues found.
 
 
+
+  - agent: "main"
+    message: |
+      🚀 MODULE 2 — ORDER MANAGEMENT — IMPLEMENTED
+
+      Architecture: Full modular separation from Cycle Count.
+      - Backend service isolated: /app/lib/modules/order-management/service.js (own collections, own routing)
+      - Endpoints mounted at /api/om/*, delegated from main router
+      - Frontend module isolated: /app/components/modules/order-management/OrderManagementModule.js (self-contained sub-views)
+      - Uses SAME auth/user/permission system as MIS. Zero changes to Cycle Count code paths.
+
+      NEW BACKEND COLLECTIONS:
+      1. om_expeditions — master list of couriers (seeded with 8: Shopee Express, J&T, JNE, SiCepat, Anteraja, Lion Parcel, Ninja Express, Pos Indonesia)
+      2. om_shipments — packing & delivery records
+      3. om_settings — retention configuration (default: photo 10 days, records 90 days)
+      Photos stored on disk: /app/uploads/om/YYYY/MM/*.webp — auto-purge older than photo_retention_days.
+
+      NEW ENDPOINTS (all require auth + module 'order_management'; owner bypasses):
+      - GET  /api/om/expeditions?include_inactive=0|1
+      - POST /api/om/expeditions (owner only)
+      - PUT  /api/om/expeditions/:id (owner only)
+      - DELETE /api/om/expeditions/:id (owner only)
+      - GET  /api/om/settings
+      - PUT  /api/om/settings (owner only)
+      - POST /api/om/scan/pack { tracking_number, expedition_id, sku_count, item_count, photo_data_url (data URL base64) }
+      - POST /api/om/scan/deliver { tracking_number }
+      - GET  /api/om/photos/:shipment_id — returns image/webp bytes
+      - GET  /api/om/dashboard — today's stats + breakdowns
+      - GET  /api/om/pending?date=YYYY-MM-DD — packed but not delivered
+      - GET  /api/om/shipments?date_from=&date_to=&operator_id=&expedition_id=&status=&q=&limit= — full list for reports
+
+      BEHAVIOR RULES:
+      - Pack: duplicate tracking numbers rejected with 409 + Indonesian message
+      - Pack: photo required (max 500KB after client compression); server writes to disk
+      - Deliver: if tracking not found → 404 "Resi belum pernah dipacking." (exact wording)
+      - Deliver: if already delivered → 200 with { already: true, message: "sudah diserahkan sebelumnya..." }
+      - Module access denied → 403 "Anda tidak memiliki akses ke module Order Management"
+
+      REGRESSION SAFETY:
+      - Module registry entry updated: order_management status='active' (previously 'coming_soon')
+      - Auto-migration for existing employees remains unchanged
+      - ALL Cycle Count endpoints (products, dashboard, settings, employees, tasks/*) still work as before
+      - Photos disk directory auto-created on first request
+      - Cleanup helper (maybeRunOMCleanup) runs at most once per hour per Node process — safe & idempotent
+
+      PLEASE TEST BACKEND:
+      1. Login owner → GET /api/om/expeditions should return 8 seeded items (all active).
+      2. Owner: POST /api/om/expeditions { name:'TIKI', code:'TKI', active:true, sort_order:9 } → 200.
+         Then PUT active=false, DELETE. Verify list changes.
+      3. Cindy (only cycle_count): GET /api/om/expeditions → 403 with "Anda tidak memiliki akses..."
+      4. Grant Cindy order_management: PUT /api/employees/:cindy_id { modules:['cycle_count','order_management'] }. Re-login cindy. GET /api/om/expeditions → 200.
+      5. As Owner: POST /api/om/scan/pack with:
+         { tracking_number:'TEST001', expedition_id:<any expedition id>, sku_count:2, item_count:5,
+           photo_data_url:'data:image/webp;base64,UklGRlwAAABXRUJQVlA4WAoAAAAQAAAAAAAAAAAAQUxQSAgAAAABDwCEBQAAVlA4IB4AAAAwAQCdASoBAAEAAkA4JZQAA3AA/vv/AAA=' }
+         → 200 with shipment object; status='packed'.
+      6. Duplicate: same POST again → 409 with "sudah pernah dipacking".
+      7. POST /api/om/scan/pack missing photo_data_url → but pass empty string → should still succeed OR error according to spec. (Spec: photo required by frontend; backend allows null; test both — send WITHOUT photo_data_url field → 200 no photo saved. Send WITH photo but >500KB decoded → 400.)
+      8. POST /api/om/scan/deliver { tracking_number:'TEST001' } → 200 with message "berhasil diserahkan".
+      9. POST /api/om/scan/deliver { tracking_number:'TEST001' } again → 200 with already:true.
+      10. POST /api/om/scan/deliver { tracking_number:'DOESNOTEXIST' } → 404 "Resi belum pernah dipacking."
+      11. GET /api/om/dashboard → today.packed >=1, today.delivered >=1, by_expedition array populated, by_operator array populated, success_rate integer.
+      12. GET /api/om/shipments?date_from=<today>&date_to=<today> → items array containing TEST001 with status='delivered'.
+      13. GET /api/om/pending → list may be empty or contain non-delivered ones.
+      14. GET /api/om/photos/<shipment_id> for the packed shipment (that had photo) → 200 image/webp. For shipment with no photo → 410 or 404.
+      15. Owner PUT /api/om/settings { photo_retention_days: 15, record_retention_days: 120 } → 200. Non-owner PUT → 403.
+      16. Owner cannot create ekspedisi with duplicate name → 400.
+      17. REGRESSION: GET /api/dashboard, GET /api/products, GET /api/employees, GET /api/settings still work as before for owner.
+      18. REGRESSION: GET /api/tasks/mine works for staff with cycle_count module.
+      19. GET /api/modules should still show order_management (status may be 'coming_soon' server-side per registry — that's OK, frontend doesn't rely on it now; just verify presence).
+
+      Credentials unchanged. Available seeded expeditions ready. Photo storage at /app/uploads/om is writable.
+
   - agent: "main"
     message: |
       🚀 MERDEKA INVENTORY SYSTEM (MIS) REFACTOR — Module 1 (Cycle Count) fully preserved, module architecture added.

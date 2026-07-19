@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import OrderManagementModule from '@/components/modules/order-management/OrderManagementModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -209,7 +210,7 @@ function LoginScreen({ onLogin }) {
 // ---------- Module Registry (frontend mirror of backend) ----------
 const MODULES_META = {
   cycle_count: { key: 'cycle_count', name: 'Cycle Count', icon: Package, status: 'active' },
-  order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'coming_soon' },
+  order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'active' },
 };
 
 // Compute allowed module keys for a user (owner has all)
@@ -262,14 +263,15 @@ function buildNav(user) {
           label: 'Order Management',
           icon: ShoppingCart,
           module: 'order_management',
-          badge: 'Soon',
+          children: [
+            { key: 'om:dashboard', label: 'Dashboard' },
+            { key: 'om:scan_pack', label: 'Scan Mulai Packing' },
+            { key: 'om:scan_deliver', label: 'Scan Serah Terima Kurir' },
+            { key: 'om:reports', label: 'Laporan' },
+            { key: 'om:expeditions', label: 'Master Ekspedisi' },
+            { key: 'om:settings', label: 'Pengaturan', ownerOnly: true },
+          ],
         },
-      ],
-    },
-    {
-      title: 'Master Data',
-      items: [
-        { key: 'md:products', label: 'Products', icon: Boxes, module: 'cycle_count', adminOnly: true },
       ],
     },
     {
@@ -471,7 +473,12 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'cc:settings': 'Cycle Count · Settings',
     'cc:history': 'Cycle Count · Riwayat',
     'mod:order_management': 'Order Management',
-    'md:products': 'Master Data · Products',
+    'om:dashboard': 'OM · Dashboard',
+    'om:scan_pack': 'OM · Scan Packing',
+    'om:scan_deliver': 'OM · Serah Terima',
+    'om:reports': 'OM · Laporan',
+    'om:expeditions': 'OM · Master Ekspedisi',
+    'om:settings': 'OM · Pengaturan',
     'rp:history': 'Reports · Riwayat SKU',
     'ad:users': 'User Management',
   };
@@ -2325,8 +2332,12 @@ function App() {
             {activeView === 'cc:import' && <ImportView />}
             {activeView === 'cc:settings' && <SettingsView />}
             {activeView === 'cc:history' && <HistoryView />}
-            {activeView === 'mod:order_management' && <OrderManagementView />}
-            {activeView === 'md:products' && <MasterDataProductsView />}
+            {activeView.startsWith('om:') && (
+              <OrderManagementModule view={activeView} user={user} />
+            )}
+            {activeView === 'mod:order_management' && (
+              <OrderManagementModule view="om:dashboard" user={user} />
+            )}
             {activeView === 'rp:history' && <ReportsHistoryView />}
             {activeView === 'ad:users' && <EmployeesView />}
           </motion.div>

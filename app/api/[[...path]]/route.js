@@ -3,6 +3,7 @@ import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
+import { handleOMRequest } from '@/lib/modules/order-management/service';
 
 // ---------- Mongo ----------
 let cachedClient = null;
@@ -369,6 +370,16 @@ async function handleRequest(req, path, method) {
   await ensureSeeded(db);
   const url = new URL(req.url);
   const q = url.searchParams;
+
+  // ============================================================
+  // MODULE 2 — Order Management (delegated to its own service)
+  // ============================================================
+  if (path.startsWith('om/')) {
+    const user = await getUserFromRequest(req);
+    const omResp = await handleOMRequest(req, path.slice(3), method, { db, user });
+    if (omResp) return omResp;
+    return err('not found', 404);
+  }
 
   // ---------- AUTH ----------
   if (path === 'auth/login' && method === 'POST') {
