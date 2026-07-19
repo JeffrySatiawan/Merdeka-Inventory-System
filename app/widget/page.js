@@ -67,11 +67,11 @@ export default function WidgetPage() {
       .map((e) => `${e.name} ${e.pct}%`)
       .join(' · ');
     try {
-      new Notification('Cycle Count Update', {
+      new Notification('Merdeka Inventory System', {
         body: `Progress: ${data.today.progressPct}% · Sisa ${data.today.remaining} SKU\n${notFinished || 'Semua selesai!'}`,
         icon: '/manifest.json',
         badge: '/manifest.json',
-        tag: 'cyclecount-hourly',
+        tag: 'mis-hourly',
       });
       lastNotifRef.current = now;
     } catch {}
@@ -112,12 +112,12 @@ export default function WidgetPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/30">
-            <Sparkles className="w-4 h-4 text-white" />
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/30 font-black text-white text-[10px] tracking-tight">
+            MIS
           </div>
           <div>
-            <div className="font-bold text-sm leading-none">Cycle Count</div>
-            <div className="text-[10px] text-neutral-400">Widget</div>
+            <div className="font-bold text-sm leading-none">Merdeka Inventory</div>
+            <div className="text-[10px] text-neutral-400 mt-0.5">System · Widget</div>
           </div>
         </div>
         <div className="flex items-center gap-1">

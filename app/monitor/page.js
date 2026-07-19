@@ -78,12 +78,12 @@ export default function MonitorPage() {
         {/* Top bar */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/30">
-              <Sparkles className="w-6 h-6 text-white" />
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-500/30 font-black text-white text-sm tracking-tight">
+              MIS
             </div>
             <div>
-              <div className="font-bold text-2xl tracking-tight">Cycle Count Monitor</div>
-              <div className="text-xs text-neutral-400">Live · update tiap 3 detik</div>
+              <div className="font-bold text-2xl tracking-tight">Merdeka Inventory System</div>
+              <div className="text-xs text-neutral-400">Live Monitor · update tiap 3 detik</div>
             </div>
           </div>
           <div className="flex items-center gap-4">

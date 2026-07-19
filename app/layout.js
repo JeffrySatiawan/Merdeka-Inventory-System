@@ -3,8 +3,8 @@ import { Providers } from './providers'
 import { Toaster } from 'sonner'
 
 export const metadata = {
-  title: 'CycleCount — Pharmacy',
-  description: 'Modern pharmacy cycle count management',
+  title: 'Merdeka Inventory System',
+  description: 'Merdeka Inventory System — Cycle count & stock management',
 }
 
 export default function RootLayout({ children }) {
