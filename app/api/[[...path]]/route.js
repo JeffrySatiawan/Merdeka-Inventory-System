@@ -527,11 +527,27 @@ async function handleRequest(req, path, method) {
     });
   }
 
+  // Lookup for staff/owner - search products by SKU or name (any authenticated user)
+  if (path === 'lookup' && method === 'GET') {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    const qs = (q.get('q') || '').trim();
+    if (!qs) return json({ items: [] });
+    const filter = {
+      $or: [
+        { sku_code: { $regex: qs, $options: 'i' } },
+        { product_name: { $regex: qs, $options: 'i' } },
+      ],
+    };
+    const items = await db.collection('products').find(filter).sort({ sku_code: 1 }).limit(20).toArray();
+    return json({ items: items.map(({ _id, ...r }) => r) });
+  }
+
   // SKU History
   const skuHistoryMatch = path.match(/^products\/([^/]+)\/history$/);
   if (skuHistoryMatch && method === 'GET') {
     const user = await getUserFromRequest(req);
-    if (!user || user.role !== 'owner') return err('unauthorized', 401);
+    if (!user) return err('unauthorized', 401);
     const sku = skuHistoryMatch[1];
     const product = await db.collection('products').findOne({ sku_code: sku });
     if (!product) return err('product not found', 404);

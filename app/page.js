@@ -200,6 +200,7 @@ function Sidebar({ user, active, onNav, onLogout }) {
     { key: 'import', label: 'Product Import', icon: Upload },
     { key: 'employees', label: 'Employee Management', icon: Users },
     { key: 'settings', label: 'Cycle Count Settings', icon: SettingsIcon },
+    { key: 'history', label: 'Riwayat SKU', icon: History },
   ];
   return (
     <aside className="w-64 shrink-0 border-r border-white/5 bg-[#0a0a0b] h-screen sticky top-0 flex flex-col">
@@ -477,6 +478,187 @@ function CircularProgress({ value }) {
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <div className="text-5xl font-bold tabular-nums">{value}%</div>
       </div>
+    </div>
+  );
+}
+
+// ---------- Shared SKU History Finder ----------
+function SkuHistoryFinder({ compact = false }) {
+  const [q, setQ] = useState('');
+  const [items, setItems] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [loadingSearch, setLoadingSearch] = useState(false);
+  const [loadingHist, setLoadingHist] = useState(false);
+
+  // Debounced search
+  useEffect(() => {
+    if (!q.trim()) {
+      setItems([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setLoadingSearch(true);
+      try {
+        const d = await api(`lookup?q=${encodeURIComponent(q)}`);
+        setItems(d.items);
+      } catch (e) {
+        toast.error(e.message);
+      } finally {
+        setLoadingSearch(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [q]);
+
+  async function pickProduct(p) {
+    setSelected(p);
+    setLoadingHist(true);
+    setHistory([]);
+    try {
+      const d = await api(`products/${encodeURIComponent(p.sku_code)}/history`);
+      setHistory(d.history || []);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoadingHist(false);
+    }
+  }
+
+  function reset() {
+    setSelected(null);
+    setHistory([]);
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Search box */}
+      <div className="relative">
+        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            reset();
+          }}
+          placeholder="Ketik kode SKU atau nama produk..."
+          className="pl-9 h-11 text-base"
+          autoFocus
+        />
+      </div>
+
+      {/* Autocomplete suggestions */}
+      {q && !selected && (
+        <div className="rounded-lg border border-white/10 bg-[#0a0a0b] max-h-72 overflow-y-auto">
+          {loadingSearch ? (
+            <div className="p-4 text-center text-muted-foreground text-sm">
+              <Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Mencari...
+            </div>
+          ) : items.length === 0 ? (
+            <div className="p-4 text-center text-muted-foreground text-sm">Tidak ada produk cocok</div>
+          ) : (
+            items.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => pickProduct(p)}
+                className="w-full flex items-center gap-3 p-3 text-left hover:bg-white/5 border-b border-white/5 last:border-0 transition"
+              >
+                <div className="flex-1">
+                  <div className="text-sm font-medium">{p.product_name}</div>
+                  <div className="text-xs text-muted-foreground font-mono mt-0.5">{p.sku_code}</div>
+                </div>
+                <CategoryBadge cat={p.category} />
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Selected product + history */}
+      {selected && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-xl border border-white/10 bg-white/[0.02] p-5"
+        >
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <div className="text-xs text-muted-foreground font-mono">{selected.sku_code}</div>
+              <div className="text-xl font-bold mt-1">{selected.product_name}</div>
+              <div className="mt-2 flex items-center gap-2">
+                <CategoryBadge cat={selected.category} />
+                <span className="text-xs text-muted-foreground">
+                  {selected.last_counted_at
+                    ? `Terakhir dihitung: ${new Date(selected.last_counted_at).toLocaleString('id-ID')}`
+                    : 'Belum pernah dihitung'}
+                </span>
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" onClick={reset} className="gap-1">
+              <RefreshCw className="w-3.5 h-3.5" /> Ganti
+            </Button>
+          </div>
+          <Separator className="my-3" />
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+            Riwayat perhitungan
+          </div>
+          {loadingHist ? (
+            <div className="text-center text-muted-foreground py-8 text-sm">
+              <Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Memuat...
+            </div>
+          ) : history.length === 0 ? (
+            <div className="text-center text-muted-foreground py-8 text-sm">
+              Belum ada riwayat counting untuk SKU ini
+            </div>
+          ) : (
+            <div className={`space-y-2 ${compact ? 'max-h-64 overflow-y-auto pr-1' : ''}`}>
+              {history.map((h, idx) => {
+                const dt = new Date(h.counted_at);
+                return (
+                  <motion.div
+                    key={h.id}
+                    initial={{ opacity: 0, x: -5 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: idx * 0.02 }}
+                    className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.03] border border-white/5"
+                  >
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500/40 to-purple-500/40 flex items-center justify-center text-xs font-bold shrink-0">
+                      {h.employee_name?.[0] || '?'}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold">{h.employee_name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {dt.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}
+                        {' · '}
+                        {dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  </motion.div>
+                );
+              })}
+            </div>
+          )}
+        </motion.div>
+      )}
+    </div>
+  );
+}
+
+function HistoryView() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Riwayat SKU</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          Cari kode SKU atau nama produk untuk melihat siapa saja yang pernah menghitungnya
+        </p>
+      </div>
+      <Card className="border-white/10 bg-white/[0.02]">
+        <CardContent className="pt-6">
+          <SkuHistoryFinder />
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -1144,6 +1326,7 @@ function StaffScreen({ user, onLogout }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(new Set());
+  const [showHistory, setShowHistory] = useState(false);
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -1211,10 +1394,32 @@ function StaffScreen({ user, onLogout }) {
             <div className="text-xs text-muted-foreground">Halo,</div>
             <h1 className="text-2xl font-bold">{user.name}</h1>
           </div>
-          <Button variant="ghost" size="sm" onClick={onLogout} className="gap-2 text-muted-foreground">
-            <LogOut className="w-4 h-4" /> Keluar
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowHistory(true)}
+              className="gap-2"
+            >
+              <History className="w-4 h-4" /> Riwayat SKU
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onLogout} className="gap-2 text-muted-foreground">
+              <LogOut className="w-4 h-4" /> Keluar
+            </Button>
+          </div>
         </div>
+
+        <Dialog open={showHistory} onOpenChange={setShowHistory}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Cari Riwayat SKU</DialogTitle>
+              <div className="text-xs text-muted-foreground">
+                Masukkan kode SKU atau nama produk untuk melihat siapa saja yang pernah menghitung
+              </div>
+            </DialogHeader>
+            <SkuHistoryFinder compact />
+          </DialogContent>
+        </Dialog>
 
         <motion.div
           initial={{ opacity: 0, y: 15 }}
@@ -1355,6 +1560,7 @@ function App() {
             {view === 'import' && <ImportView />}
             {view === 'employees' && <EmployeesView />}
             {view === 'settings' && <SettingsView />}
+            {view === 'history' && <HistoryView />}
           </motion.div>
         </AnimatePresence>
       </main>
