@@ -1,0 +1,19 @@
+{
+  "name": "CycleCount Widget",
+  "short_name": "CycleCount",
+  "description": "Realtime pharmacy cycle count widget",
+  "start_url": "/widget",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#09090b",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%233b82f6'/%3E%3Cpath d='M256 128 L332 168 L332 260 Q332 340 256 384 Q180 340 180 260 L180 168 Z' fill='white' stroke='white' stroke-width='6'/%3E%3Cpath d='M220 260 L246 286 L296 232' fill='none' stroke='%233b82f6' stroke-width='24' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

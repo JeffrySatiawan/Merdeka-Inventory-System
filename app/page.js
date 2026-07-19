@@ -27,6 +27,9 @@ import {
   RefreshCw,
   FileSpreadsheet,
   Activity,
+  Monitor,
+  ExternalLink,
+  AlertCircle,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -331,20 +334,59 @@ function DashboardView() {
   }
 
   const t = data.today;
+
+  function openMonitor() {
+    window.open('/monitor', '_blank', 'noopener,noreferrer');
+  }
+  function openWidget() {
+    // Popup sized for mini app on desktop
+    window.open('/widget', 'CycleCountWidget', 'width=380,height=620,resizable=yes,menubar=no,toolbar=no,location=no,status=no,scrollbars=yes');
+  }
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground text-sm mt-1">
             Realtime cycle count monitoring · {data.today.date} · {data.today.time} WITA
           </p>
         </div>
-        <Badge variant="outline" className="border-emerald-500/30 text-emerald-400 gap-1.5 py-1.5">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          Working {data.working.start} – {data.working.end} WITA
-        </Badge>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button variant="outline" size="sm" onClick={openMonitor} className="gap-2">
+            <Monitor className="w-4 h-4" /> Live Monitor
+            <ExternalLink className="w-3 h-3 opacity-60" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={openWidget} className="gap-2 border-blue-500/40 text-blue-400 hover:bg-blue-500/10">
+            <Sparkles className="w-4 h-4" /> Launch Mini App
+          </Button>
+          <Badge
+            variant="outline"
+            className={`gap-1.5 py-1.5 ${
+              data.is_closed ? 'border-rose-500/40 text-rose-400' : 'border-emerald-500/30 text-emerald-400'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${data.is_closed ? 'bg-rose-400' : 'bg-emerald-400 animate-pulse'}`} />
+            {data.is_closed ? 'Session Closed' : `Working ${data.working.start} – ${data.working.end} WITA`}
+          </Badge>
+        </div>
       </div>
+
+      {data.is_closed && (
+        <motion.div
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 flex items-center gap-3"
+        >
+          <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+          <div className="text-sm">
+            <div className="font-semibold text-rose-300">Session ditutup otomatis</div>
+            <div className="text-xs text-rose-300/70">
+              Di luar jam kerja {data.working.start} – {data.working.end} WITA. Karyawan tidak bisa lagi mencentang tugas. Tugas yang belum selesai akan otomatis jadi backlog besok.
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard icon={Package} label="Total SKU" value={data.totals.totalSku.toLocaleString()} tone="default" delay={0} />
@@ -1420,6 +1462,22 @@ function StaffScreen({ user, onLogout }) {
             <SkuHistoryFinder compact />
           </DialogContent>
         </Dialog>
+
+        {data?.is_closed && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 flex items-center gap-3 text-sm"
+          >
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <div>
+              <div className="font-semibold text-rose-300">Session sudah ditutup</div>
+              <div className="text-xs text-rose-300/70">
+                Di luar jam kerja {data?.working?.start} – {data?.working?.end} WITA. Centang SKU baru bisa besok.
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         <motion.div
           initial={{ opacity: 0, y: 15 }}

@@ -38,6 +38,30 @@ function getWitaTime() {
     hour12: false,
   }).format(new Date());
 }
+// Returns {hour, minute} in WITA
+function getWitaHM() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Makassar',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const hh = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+  const mm = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+  return { hour: hh, minute: mm };
+}
+function toMinutes(hhmm) {
+  const [h, m] = String(hhmm || '22:00').split(':').map((v) => parseInt(v, 10) || 0);
+  return h * 60 + m;
+}
+function isSessionClosed(settings) {
+  const now = getWitaHM();
+  const cur = now.hour * 60 + now.minute;
+  const endM = toMinutes(settings?.working_end);
+  const startM = toMinutes(settings?.working_start);
+  // Closed if before opening OR after closing
+  return cur < startM || cur >= endM;
+}
 
 async function getUserFromRequest(req) {
   const auth = req.headers.get('authorization') || '';
@@ -357,7 +381,6 @@ async function handleRequest(req, path, method) {
     const remaining = target - completed;
     const progressPct = target > 0 ? Math.round((completed / target) * 100) : 0;
 
-    // Employee progress
     const employees = await db
       .collection('employees')
       .find({ role: 'staff' })
@@ -386,6 +409,7 @@ async function handleRequest(req, path, method) {
       .countDocuments({ date: { $lt: today }, completed: false });
 
     const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+    const closed = isSessionClosed(settings);
 
     return json({
       totals: { totalSku, fastSku, mediumSku, slowSku },
@@ -393,6 +417,43 @@ async function handleRequest(req, path, method) {
       employees: empProgress,
       backlog,
       working: { start: settings.working_start, end: settings.working_end, tz: 'WITA' },
+      is_closed: closed,
+    });
+  }
+
+  // ---------- PUBLIC MONITOR (no auth) ----------
+  if (path === 'monitor' && method === 'GET') {
+    const today = getWitaDate();
+    await generateDailyTasks(db, today);
+    const todaysTasks = await db.collection('daily_tasks').find({ date: today }).toArray();
+    const target = todaysTasks.length;
+    const completed = todaysTasks.filter((t) => t.completed).length;
+    const remaining = target - completed;
+    const progressPct = target > 0 ? Math.round((completed / target) * 100) : 0;
+    const employees = await db.collection('employees').find({ role: 'staff', status: 'active' }).toArray();
+    const activeSessions = await db.collection('sessions').find({}).toArray();
+    const loggedInIds = new Set(activeSessions.map((s) => s.employee_id));
+    const empProgress = employees
+      .map((e) => {
+        const own = todaysTasks.filter((t) => t.employee_id === e.id);
+        const done = own.filter((t) => t.completed).length;
+        return {
+          name: e.name,
+          assigned: own.length,
+          completed: done,
+          pct: own.length > 0 ? Math.round((done / own.length) * 100) : 0,
+          logged_in: loggedInIds.has(e.id),
+        };
+      })
+      .sort((a, b) => b.pct - a.pct);
+    const backlog = await db.collection('daily_tasks').countDocuments({ date: { $lt: today }, completed: false });
+    const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+    return json({
+      today: { target, completed, remaining, progressPct, date: today, time: getWitaTime() },
+      employees: empProgress,
+      backlog,
+      working: { start: settings.working_start, end: settings.working_end, tz: 'WITA' },
+      is_closed: isSessionClosed(settings),
     });
   }
 
@@ -691,10 +752,13 @@ async function handleRequest(req, path, method) {
       .find({ date: today, employee_id: user.id })
       .sort({ is_backlog: -1, category: 1, sku_code: 1 })
       .toArray();
+    const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
     return json({
       tasks: tasks.map(({ _id, ...t }) => t),
       date: today,
       time: getWitaTime(),
+      is_closed: isSessionClosed(settings),
+      working: { start: settings.working_start, end: settings.working_end },
     });
   }
 
@@ -708,6 +772,11 @@ async function handleRequest(req, path, method) {
     if (task.employee_id !== user.id && user.role !== 'owner') return err('forbidden', 403);
 
     if (action === 'complete') {
+      // Auto-close guard: reject if outside working hours
+      const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+      if (isSessionClosed(settings)) {
+        return err(`Session ditutup. Jam kerja ${settings.working_start} - ${settings.working_end} WITA`, 423);
+      }
       const now = new Date();
       await db.collection('daily_tasks').updateOne(
         { id: taskId },
