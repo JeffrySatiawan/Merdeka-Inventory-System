@@ -316,7 +316,7 @@ function getDefaultView(user) {
 }
 
 // ---------- Sidebar with hierarchical sections ----------
-function SidebarNav({ user, active, onNav, onLogout, onItemClick }) {
+function SidebarNav({ user, active, onNav, onLogout, onItemClick, onOpenPicker }) {
   const nav = useMemo(() => buildNav(user), [user]);
   // Which module groups are expanded
   const [expanded, setExpanded] = useState(() => {
@@ -430,6 +430,16 @@ function SidebarNav({ user, active, onNav, onLogout, onItemClick }) {
         ))}
       </nav>
       <div className="p-3 border-t border-white/5">
+        {userModules(user).length >= 2 && onOpenPicker && (
+          <button
+            onClick={onOpenPicker}
+            className="w-full mb-2 flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-blue-300 hover:bg-blue-500/10 hover:text-blue-200 transition border border-blue-500/20"
+          >
+            <Boxes className="w-4 h-4" />
+            <span className="flex-1 text-left">Ganti Module</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        )}
         <button
           onClick={async () => {
             try {
@@ -519,7 +529,7 @@ function bottomNavForModule(moduleKey, user) {
 }
 
 // ---------- Mobile Shell (sticky header + drawer + per-module bottom nav) ----------
-function MobileShell({ user, active, onNav, onLogout, children }) {
+function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const labels = {
@@ -624,6 +634,10 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
                 onLogout={() => {
                   setDrawerOpen(false);
                   onLogout();
+                }}
+                onOpenPicker={() => {
+                  setDrawerOpen(false);
+                  onOpenPicker && onOpenPicker();
                 }}
               />
             </motion.aside>
@@ -2428,10 +2442,212 @@ function StaffScreen({ user, onLogout }) {
 }
 
 // ---------- Root App ----------
+
+// ---------- Module Picker Screen (setelah login jika user punya >=2 module) ----------
+function useRealtimeClock() {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setT(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return t;
+}
+
+function ModulePickerScreen({ user, onPick, onLogout }) {
+  const clock = useRealtimeClock();
+  const [omStats, setOmStats] = useState(null);
+  const [ccStats, setCcStats] = useState(null);
+
+  useEffect(() => {
+    // Best-effort load stats teaser (tolerate errors)
+    if (userHasModule(user, 'order_management')) {
+      fetch('/api/om/dashboard', { headers: { Authorization: `Bearer ${localStorage.getItem('cc_token')}` } })
+        .then((r) => r.json()).then((d) => setOmStats(d)).catch(() => {});
+    }
+    if (userHasModule(user, 'cycle_count') && isAdminRole(user)) {
+      fetch('/api/dashboard', { headers: { Authorization: `Bearer ${localStorage.getItem('cc_token')}` } })
+        .then((r) => r.json()).then((d) => setCcStats(d)).catch(() => {});
+    }
+  }, [user]);
+
+  const mods = userModules(user);
+  const cards = [];
+  if (mods.includes('cycle_count')) {
+    cards.push({
+      key: 'cycle_count',
+      name: 'Cycle Count',
+      subtitle: 'Perhitungan stok SKU harian',
+      icon: Package,
+      gradient: 'from-blue-500/30 via-purple-500/20 to-transparent',
+      border: 'border-blue-500/40 hover:border-blue-500/70',
+      iconBg: 'bg-blue-500/20 border-blue-500/40',
+      iconColor: 'text-blue-400',
+      accentText: 'text-blue-300',
+      target: isAdminRole(user) ? 'cc:dashboard' : 'cc:tasks',
+      stats: ccStats
+        ? [
+            { label: 'Total SKU', value: ccStats?.totals?.total_products ?? '-' },
+            { label: 'Selesai Hari Ini', value: `${ccStats?.today?.completed ?? 0}/${ccStats?.today?.assigned ?? 0}` },
+          ]
+        : [],
+    });
+  }
+  if (mods.includes('order_management')) {
+    cards.push({
+      key: 'order_management',
+      name: 'Order Management',
+      subtitle: 'Cetak · Packing · Serah Terima Kurir',
+      icon: ShoppingCart,
+      gradient: 'from-amber-500/30 via-orange-500/20 to-transparent',
+      border: 'border-amber-500/40 hover:border-amber-500/70',
+      iconBg: 'bg-amber-500/20 border-amber-500/40',
+      iconColor: 'text-amber-400',
+      accentText: 'text-amber-300',
+      target: 'om:dashboard',
+      stats: omStats
+        ? [
+            { label: 'Cetak', value: omStats?.today?.printed ?? 0 },
+            { label: 'Packing', value: omStats?.today?.packed ?? 0 },
+            { label: 'Kirim', value: omStats?.today?.delivered ?? 0 },
+          ]
+        : [],
+    });
+  }
+
+  const timeLabel = clock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const dateLabel = clock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  return (
+    <div className="min-h-screen bg-[#09090b] flex flex-col pt-safe pb-safe">
+      {/* Ambient blobs */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute -top-32 -left-32 w-96 h-96 rounded-full bg-blue-500/10 blur-[100px]" />
+        <div className="absolute -bottom-32 -right-32 w-96 h-96 rounded-full bg-amber-500/10 blur-[100px]" />
+      </div>
+
+      {/* Header */}
+      <div className="relative px-4 md:px-8 pt-6 pb-4">
+        <div className="max-w-4xl mx-auto flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-black text-white text-xs tracking-tight shadow-lg shadow-blue-500/30">
+            MIS
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs text-muted-foreground">Merdeka Inventory System</div>
+            <div className="text-sm font-semibold truncate">Selamat datang, {user.name}</div>
+          </div>
+          <button
+            onClick={onLogout}
+            className="text-xs text-muted-foreground hover:text-white flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-white/5 active:bg-white/10"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Keluar
+          </button>
+        </div>
+      </div>
+
+      {/* Hero */}
+      <div className="relative px-4 md:px-8 pb-6">
+        <div className="max-w-4xl mx-auto text-center py-4">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+          >
+            <div className="text-4xl md:text-5xl font-black tabular-nums tracking-tight">{timeLabel}</div>
+            <div className="text-xs md:text-sm text-muted-foreground mt-1 capitalize">{dateLabel}</div>
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1, duration: 0.35 }}
+            className="mt-5"
+          >
+            <h1 className="text-xl md:text-3xl font-bold tracking-tight">Pilih Module untuk memulai</h1>
+            <p className="text-xs md:text-sm text-muted-foreground mt-1.5">
+              Anda memiliki akses ke {cards.length} module. Pilih salah satu untuk mulai bekerja.
+            </p>
+          </motion.div>
+        </div>
+      </div>
+
+      {/* Cards */}
+      <div className="relative flex-1 px-4 md:px-8 pb-8">
+        <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-4">
+          {cards.map((c, i) => {
+            const Icon = c.icon;
+            return (
+              <motion.button
+                key={c.key}
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.15 + i * 0.08, duration: 0.35 }}
+                onClick={() => onPick(c.target)}
+                whileTap={{ scale: 0.98 }}
+                className={`text-left rounded-2xl border-2 bg-gradient-to-br ${c.gradient} ${c.border} p-5 transition group relative overflow-hidden active:scale-[0.98]`}
+              >
+                <div className="flex items-start gap-4">
+                  <div className={`w-14 h-14 rounded-xl border ${c.iconBg} flex items-center justify-center shrink-0`}>
+                    <Icon className={`w-7 h-7 ${c.iconColor}`} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-[10px] uppercase tracking-widest ${c.accentText} font-semibold`}>
+                      Module
+                    </div>
+                    <div className="text-xl font-bold tracking-tight mt-0.5">{c.name}</div>
+                    <div className="text-xs text-muted-foreground mt-1">{c.subtitle}</div>
+                  </div>
+                  <ArrowRightIcon className="w-5 h-5 text-muted-foreground group-hover:text-white group-hover:translate-x-1 transition-all shrink-0" />
+                </div>
+
+                {/* Stats teaser */}
+                {c.stats.length > 0 && (
+                  <div className="mt-4 pt-3 border-t border-white/10 grid grid-cols-3 gap-2">
+                    {c.stats.map((s) => (
+                      <div key={s.label} className="text-center">
+                        <div className="text-[9px] uppercase tracking-wider text-muted-foreground truncate">
+                          {s.label}
+                        </div>
+                        <div className="text-lg font-bold tabular-nums mt-0.5">{s.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className={`mt-4 text-xs font-semibold ${c.accentText} flex items-center gap-1.5`}>
+                  Masuk ke module <ArrowRightIcon className="w-3.5 h-3.5" />
+                </div>
+              </motion.button>
+            );
+          })}
+        </div>
+
+        {/* Footer hints */}
+        <div className="max-w-4xl mx-auto mt-8 flex flex-wrap gap-2 justify-center text-[10px] text-muted-foreground">
+          <span className="px-2.5 py-1 rounded-full bg-white/5 border border-white/10">
+            👆 Tap module untuk mulai
+          </span>
+          <span className="px-2.5 py-1 rounded-full bg-white/5 border border-white/10">
+            ☰ Ganti module kapan saja via drawer
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ArrowRightIcon = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="5" y1="12" x2="19" y2="12" />
+    <polyline points="12 5 19 12 12 19" />
+  </svg>
+);
+
+
 function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
   const [view, setView] = useState('dashboard');
+  // showPicker = true means show module picker instead of any module view
+  const [showPicker, setShowPicker] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('cc_token');
@@ -2443,6 +2659,9 @@ function App() {
       .then((d) => {
         setUser(d.user);
         setView(getDefaultView(d.user));
+        // Show picker if user has multiple modules and is not on staff-only-cc path
+        const mods = userModules(d.user);
+        if (mods.length >= 2) setShowPicker(true);
       })
       .catch(() => localStorage.removeItem('cc_token'))
       .finally(() => setChecking(false));
@@ -2451,6 +2670,8 @@ function App() {
   function handleLogin(u) {
     setUser(u);
     setView(getDefaultView(u));
+    const mods = userModules(u);
+    if (mods.length >= 2) setShowPicker(true);
   }
 
   async function logout() {
@@ -2460,6 +2681,7 @@ function App() {
     localStorage.removeItem('cc_token');
     setUser(null);
     setView('dashboard');
+    setShowPicker(false);
   }
 
   // Guard the current view against permissions (in case user or perms changed)
@@ -2477,8 +2699,14 @@ function App() {
   }
 
   function safeNav(key) {
-    if (canView(key)) setView(key);
-    else toast.error('Anda tidak memiliki akses ke halaman ini');
+    if (canView(key)) {
+      setView(key);
+      setShowPicker(false);
+    } else toast.error('Anda tidak memiliki akses ke halaman ini');
+  }
+
+  function openPicker() {
+    setShowPicker(true);
   }
 
   if (checking) {
@@ -2501,6 +2729,20 @@ function App() {
     mods[0] === 'cycle_count'
   ) {
     return <StaffScreen user={user} onLogout={logout} />;
+  }
+
+  // If user has >= 2 modules and hasn't picked yet → show interactive module picker
+  if (showPicker && mods.length >= 2) {
+    return (
+      <ModulePickerScreen
+        user={user}
+        onLogout={logout}
+        onPick={(target) => {
+          setView(target);
+          setShowPicker(false);
+        }}
+      />
+    );
   }
 
   // No access at all
@@ -2560,7 +2802,7 @@ function App() {
     <>
       {/* Desktop: sidebar + main */}
       <div className="hidden md:flex min-h-screen bg-[#09090b]">
-        <Sidebar user={user} active={activeView} onNav={safeNav} onLogout={logout} />
+        <Sidebar user={user} active={activeView} onNav={safeNav} onLogout={logout} onOpenPicker={openPicker} />
         <main className="flex-1 p-8 overflow-x-hidden min-w-0">
           {content}
         </main>
@@ -2568,7 +2810,7 @@ function App() {
 
       {/* Mobile: sticky header + drawer + bottom nav */}
       <div className="md:hidden">
-        <MobileShell user={user} active={activeView} onNav={safeNav} onLogout={logout}>
+        <MobileShell user={user} active={activeView} onNav={safeNav} onLogout={logout} onOpenPicker={openPicker}>
           {content}
         </MobileShell>
       </div>
