@@ -30,6 +30,14 @@ import {
   Monitor,
   ExternalLink,
   AlertCircle,
+  ShoppingCart,
+  ChevronDown,
+  ChevronRight,
+  Shield,
+  Database,
+  BarChart3,
+  Boxes,
+  Lock,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -198,15 +206,140 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ---------- Owner Sidebar (desktop) + MobileHeader ----------
-function SidebarNav({ user, active, onNav, onLogout, onItemClick }) {
-  const items = [
-    { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { key: 'import', label: 'Product Import', icon: Upload },
-    { key: 'employees', label: 'Employee Management', icon: Users },
-    { key: 'settings', label: 'Cycle Count Settings', icon: SettingsIcon },
-    { key: 'history', label: 'Riwayat SKU', icon: History },
+// ---------- Module Registry (frontend mirror of backend) ----------
+const MODULES_META = {
+  cycle_count: { key: 'cycle_count', name: 'Cycle Count', icon: Package, status: 'active' },
+  order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'coming_soon' },
+};
+
+// Compute allowed module keys for a user (owner has all)
+function userModules(user) {
+  if (!user) return [];
+  if (user.role === 'owner') return Object.keys(MODULES_META);
+  return Array.isArray(user.modules) ? user.modules : [];
+}
+function userHasModule(user, key) {
+  return userModules(user).includes(key);
+}
+function isOwner(user) {
+  return user?.role === 'owner';
+}
+function isAdminRole(user) {
+  return user?.role === 'owner' || user?.role === 'supervisor';
+}
+
+// Navigation structure. Each item may specify:
+//   module?: string        -> requires user to have this module permission
+//   ownerOnly?: boolean    -> requires user.role === 'owner'
+//   adminOnly?: boolean    -> owner or supervisor
+//   staffOnly?: boolean    -> only for staff role
+function buildNav(user) {
+  const sections = [
+    {
+      title: 'General',
+      items: [
+        { key: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      ],
+    },
+    {
+      title: 'Modules',
+      items: [
+        {
+          key: 'mod:cycle_count',
+          label: 'Cycle Count',
+          icon: Package,
+          module: 'cycle_count',
+          children: [
+            { key: 'cc:dashboard', label: 'Realtime Monitor', adminOnly: true },
+            { key: 'cc:tasks', label: 'My Tasks' },
+            { key: 'cc:import', label: 'Product Import', ownerOnly: true },
+            { key: 'cc:settings', label: 'Cycle Settings', ownerOnly: true },
+            { key: 'cc:history', label: 'Riwayat SKU' },
+          ],
+        },
+        {
+          key: 'mod:order_management',
+          label: 'Order Management',
+          icon: ShoppingCart,
+          module: 'order_management',
+          badge: 'Soon',
+        },
+      ],
+    },
+    {
+      title: 'Master Data',
+      items: [
+        { key: 'md:products', label: 'Products', icon: Boxes, module: 'cycle_count', adminOnly: true },
+      ],
+    },
+    {
+      title: 'Reports',
+      items: [
+        { key: 'rp:history', label: 'Riwayat SKU', icon: History, module: 'cycle_count' },
+      ],
+    },
+    {
+      title: 'Admin',
+      items: [
+        { key: 'ad:users', label: 'User Management', icon: Shield, ownerOnly: true },
+      ],
+    },
   ];
+  // Filter based on permissions
+  const filterItem = (it) => {
+    if (it.ownerOnly && !isOwner(user)) return false;
+    if (it.adminOnly && !isAdminRole(user)) return false;
+    if (it.module && !userHasModule(user, it.module)) return false;
+    return true;
+  };
+  return sections
+    .map((s) => {
+      const items = s.items
+        .filter(filterItem)
+        .map((it) => {
+          if (it.children) {
+            const kids = it.children.filter(filterItem);
+            return kids.length ? { ...it, children: kids } : null;
+          }
+          return it;
+        })
+        .filter(Boolean);
+      return items.length ? { ...s, items } : null;
+    })
+    .filter(Boolean);
+}
+
+// Get default view for user based on their allowed modules and role
+function getDefaultView(user) {
+  if (!user) return 'dashboard';
+  const mods = userModules(user);
+  if (isAdminRole(user)) return 'dashboard';
+  // staff: prefer cycle_count tasks
+  if (mods.includes('cycle_count')) return 'cc:tasks';
+  if (mods.includes('order_management')) return 'mod:order_management';
+  return 'no_access';
+}
+
+// ---------- Sidebar with hierarchical sections ----------
+function SidebarNav({ user, active, onNav, onLogout, onItemClick }) {
+  const nav = useMemo(() => buildNav(user), [user]);
+  // Which module groups are expanded
+  const [expanded, setExpanded] = useState(() => {
+    // auto-expand the group containing active
+    const init = {};
+    for (const s of buildNav(user)) {
+      for (const it of s.items) {
+        if (it.children && it.children.some((c) => c.key === active)) init[it.key] = true;
+      }
+    }
+    return init;
+  });
+
+  function handleNav(key) {
+    onNav(key);
+    onItemClick && onItemClick();
+  }
+
   return (
     <div className="h-full flex flex-col">
       <div className="p-5 flex items-center gap-3 border-b border-white/5">
@@ -218,29 +351,88 @@ function SidebarNav({ user, active, onNav, onLogout, onItemClick }) {
           <div className="text-[10px] text-muted-foreground">System</div>
         </div>
       </div>
-      <nav className="p-3 flex-1 space-y-1 overflow-y-auto">
-        {items.map((i) => {
-          const Icon = i.icon;
-          const isActive = active === i.key;
-          return (
-            <button
-              key={i.key}
-              onClick={() => {
-                onNav(i.key);
-                onItemClick && onItemClick();
-              }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
-                isActive
-                  ? 'bg-white/10 text-white'
-                  : 'text-muted-foreground hover:bg-white/5 hover:text-white'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {i.label}
-              {isActive && <span className="ml-auto w-1 h-4 rounded-full bg-blue-500" />}
-            </button>
-          );
-        })}
+      <nav className="p-3 flex-1 space-y-4 overflow-y-auto">
+        {nav.map((section) => (
+          <div key={section.title}>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 px-3 mb-1.5 font-semibold">
+              {section.title}
+            </div>
+            <div className="space-y-0.5">
+              {section.items.map((it) => {
+                const Icon = it.icon;
+                if (it.children) {
+                  const open = !!expanded[it.key];
+                  const anyChildActive = it.children.some((c) => c.key === active);
+                  return (
+                    <div key={it.key}>
+                      <button
+                        onClick={() =>
+                          setExpanded((e) => ({ ...e, [it.key]: !e[it.key] }))
+                        }
+                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition ${
+                          anyChildActive
+                            ? 'text-white'
+                            : 'text-muted-foreground hover:bg-white/5 hover:text-white'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4" />
+                        <span className="flex-1 text-left">{it.label}</span>
+                        {open ? (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      {open && (
+                        <div className="ml-6 mt-0.5 space-y-0.5 border-l border-white/5 pl-2">
+                          {it.children.map((c) => {
+                            const isActive = active === c.key;
+                            return (
+                              <button
+                                key={c.key}
+                                onClick={() => handleNav(c.key)}
+                                className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition ${
+                                  isActive
+                                    ? 'bg-white/10 text-white'
+                                    : 'text-muted-foreground hover:bg-white/5 hover:text-white'
+                                }`}
+                              >
+                                <span className={`w-1 h-1 rounded-full ${isActive ? 'bg-blue-400' : 'bg-white/20'}`} />
+                                {c.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                const isActive = active === it.key;
+                const isComingSoon = it.badge === 'Soon';
+                return (
+                  <button
+                    key={it.key}
+                    onClick={() => handleNav(it.key)}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition ${
+                      isActive
+                        ? 'bg-white/10 text-white'
+                        : 'text-muted-foreground hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span className="flex-1 text-left">{it.label}</span>
+                    {isComingSoon && (
+                      <Badge variant="outline" className="text-[9px] py-0 h-4 border-amber-500/40 text-amber-400">
+                        Soon
+                      </Badge>
+                    )}
+                    {isActive && <span className="w-1 h-4 rounded-full bg-blue-500" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
       <div className="p-3 border-t border-white/5">
         <div className="flex items-center gap-3 px-3 py-2 mb-2">
@@ -273,10 +465,15 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
   const [open, setOpen] = useState(false);
   const labels = {
     dashboard: 'Dashboard',
-    import: 'Product Import',
-    employees: 'Employees',
-    settings: 'Settings',
-    history: 'Riwayat SKU',
+    'cc:dashboard': 'Cycle Count · Monitor',
+    'cc:tasks': 'Cycle Count · My Tasks',
+    'cc:import': 'Cycle Count · Import',
+    'cc:settings': 'Cycle Count · Settings',
+    'cc:history': 'Cycle Count · Riwayat',
+    'mod:order_management': 'Order Management',
+    'md:products': 'Master Data · Products',
+    'rp:history': 'Reports · Riwayat SKU',
+    'ad:users': 'User Management',
   };
   return (
     <div className="md:hidden sticky top-0 z-30 flex items-center justify-between px-4 py-3 bg-[#0a0a0b]/95 backdrop-blur border-b border-white/5">
@@ -1024,7 +1221,7 @@ function CategoryBadge({ cat }) {
   );
 }
 
-// ---------- Employees ----------
+// ---------- User Management (formerly Employees) ----------
 function EmployeesView() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1048,22 +1245,28 @@ function EmployeesView() {
   }, []);
 
   async function del(id) {
-    if (!confirm('Hapus karyawan ini?')) return;
+    if (!confirm('Hapus user ini?')) return;
     try {
       await api(`employees/${id}`, { method: 'DELETE' });
-      toast.success('Karyawan dihapus');
+      toast.success('User dihapus');
       load();
     } catch (e) {
       toast.error(e.message);
     }
   }
 
+  const roleBadge = (role) => {
+    if (role === 'owner') return <Badge variant="outline" className="border-purple-500/40 text-purple-400 text-[10px]">OWNER</Badge>;
+    if (role === 'supervisor') return <Badge variant="outline" className="border-cyan-500/40 text-cyan-400 text-[10px]">SUPERVISOR</Badge>;
+    return <Badge variant="outline" className="border-white/20 text-muted-foreground text-[10px]">STAFF</Badge>;
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Employee Management</h1>
-          <p className="text-muted-foreground text-xs md:text-sm mt-1">Kelola karyawan & bobot kerja</p>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">User Management</h1>
+          <p className="text-muted-foreground text-xs md:text-sm mt-1">Kelola user, role, bobot kerja & permission per module</p>
         </div>
         <Button
           onClick={() => {
@@ -1073,7 +1276,7 @@ function EmployeesView() {
           className="gap-2"
           size="sm"
         >
-          <Plus className="w-4 h-4" /> Tambah <span className="hidden sm:inline">Karyawan</span>
+          <Plus className="w-4 h-4" /> Tambah <span className="hidden sm:inline">User</span>
         </Button>
       </div>
 
@@ -1093,19 +1296,15 @@ function EmployeesView() {
                   initial={{ opacity: 0, y: 5 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: idx * 0.03 }}
-                  className="flex items-center gap-4 p-3 rounded-lg border border-white/5 hover:bg-white/[0.02]"
+                  className="flex flex-wrap items-center gap-3 p-3 rounded-lg border border-white/5 hover:bg-white/[0.02]"
                 >
                   <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500/40 to-purple-500/40 flex items-center justify-center font-bold">
                     {e.name[0]}
                   </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-[140px]">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <div className="font-semibold">{e.name}</div>
-                      {e.role === 'owner' && (
-                        <Badge variant="outline" className="border-purple-500/40 text-purple-400 text-[10px]">
-                          OWNER
-                        </Badge>
-                      )}
+                      {roleBadge(e.role)}
                       {e.status === 'inactive' && (
                         <Badge variant="outline" className="border-rose-500/40 text-rose-400 text-[10px]">
                           NON-AKTIF
@@ -1113,8 +1312,29 @@ function EmployeesView() {
                       )}
                     </div>
                     <div className="text-xs text-muted-foreground">@{e.username}</div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {(Array.isArray(e.modules) ? e.modules : []).map((mk) => (
+                        <Badge
+                          key={mk}
+                          variant="outline"
+                          className="text-[9px] py-0 h-4 border-blue-500/40 text-blue-300"
+                        >
+                          {MODULES_META[mk]?.name || mk}
+                        </Badge>
+                      ))}
+                      {e.role === 'owner' && (
+                        <Badge variant="outline" className="text-[9px] py-0 h-4 border-purple-500/40 text-purple-300">
+                          ALL MODULES
+                        </Badge>
+                      )}
+                      {e.role !== 'owner' && (!Array.isArray(e.modules) || e.modules.length === 0) && (
+                        <Badge variant="outline" className="text-[9px] py-0 h-4 border-rose-500/40 text-rose-300">
+                          NO ACCESS
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                  {e.role === 'staff' && (
+                  {e.role !== 'owner' && (
                     <div className="text-right">
                       <div className="text-xs text-muted-foreground">Bobot</div>
                       <div className="font-semibold tabular-nums">{e.weight}%</div>
@@ -1169,6 +1389,8 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
     password: '',
     weight: 100,
     status: 'active',
+    role: 'staff',
+    modules: ['cycle_count'],
   });
   const [saving, setSaving] = useState(false);
 
@@ -1176,11 +1398,26 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
     if (open) {
       setForm(
         editing
-          ? { name: editing.name, username: editing.username, password: '', weight: editing.weight, status: editing.status }
-          : { name: '', username: '', password: '', weight: 100, status: 'active' }
+          ? {
+              name: editing.name,
+              username: editing.username,
+              password: '',
+              weight: editing.weight,
+              status: editing.status,
+              role: editing.role === 'owner' ? 'owner' : editing.role || 'staff',
+              modules: Array.isArray(editing.modules) ? editing.modules : ['cycle_count'],
+            }
+          : { name: '', username: '', password: '', weight: 100, status: 'active', role: 'staff', modules: ['cycle_count'] }
       );
     }
   }, [open, editing]);
+
+  function toggleModule(key) {
+    setForm((f) => {
+      const has = f.modules.includes(key);
+      return { ...f, modules: has ? f.modules.filter((m) => m !== key) : [...f.modules, key] };
+    });
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -1189,11 +1426,16 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
       if (editing) {
         const payload = { ...form };
         if (!payload.password) delete payload.password;
+        // Cannot change role of owner via API — server enforces too
+        if (editing.role === 'owner') {
+          delete payload.role;
+          delete payload.modules;
+        }
         await api(`employees/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
-        toast.success('Karyawan diperbarui');
+        toast.success('User diperbarui');
       } else {
         await api('employees', { method: 'POST', body: JSON.stringify(form) });
-        toast.success('Karyawan ditambahkan');
+        toast.success('User ditambahkan');
       }
       onSaved();
     } catch (e) {
@@ -1203,20 +1445,24 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
     }
   }
 
+  const isOwnerEdit = editing?.role === 'owner';
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{editing ? 'Edit Karyawan' : 'Karyawan Baru'}</DialogTitle>
+          <DialogTitle>{editing ? 'Edit User' : 'User Baru'}</DialogTitle>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-3">
-          <div className="space-y-1.5">
-            <Label>Nama</Label>
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Username</Label>
-            <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Nama</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Username</Label>
+              <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label>Password {editing && <span className="text-xs text-muted-foreground">(kosongkan bila tidak diubah)</span>}</Label>
@@ -1227,9 +1473,23 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
               required={!editing}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="space-y-1.5">
-              <Label>Bobot Kerja (%)</Label>
+              <Label>Role</Label>
+              {isOwnerEdit ? (
+                <Input value="Owner" disabled />
+              ) : (
+                <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="staff">Staff</SelectItem>
+                    <SelectItem value="supervisor">Supervisor</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label>Bobot (%)</Label>
               <Input
                 type="number"
                 min={0}
@@ -1249,6 +1509,52 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
               </Select>
             </div>
           </div>
+
+          {!isOwnerEdit && (
+            <div className="space-y-2 rounded-lg border border-white/10 bg-white/[0.02] p-3">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-blue-400" />
+                <Label className="text-sm font-semibold">Permission Modules</Label>
+              </div>
+              <div className="text-xs text-muted-foreground -mt-1">
+                Centang module yang boleh diakses user ini.
+              </div>
+              <div className="space-y-2 pt-1">
+                {Object.values(MODULES_META).map((m) => {
+                  const Icon = m.icon;
+                  const checked = form.modules.includes(m.key);
+                  const disabled = m.status === 'coming_soon';
+                  return (
+                    <label
+                      key={m.key}
+                      className={`flex items-center gap-3 p-2.5 rounded-md border transition cursor-pointer ${
+                        checked
+                          ? 'border-blue-500/40 bg-blue-500/10'
+                          : 'border-white/10 hover:bg-white/[0.03]'
+                      } ${disabled ? 'opacity-60' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleModule(m.key)}
+                        className="w-4 h-4 rounded accent-blue-500"
+                      />
+                      <Icon className="w-4 h-4 text-blue-400" />
+                      <div className="flex-1">
+                        <div className="text-sm font-medium">{m.name}</div>
+                      </div>
+                      {m.status === 'coming_soon' && (
+                        <Badge variant="outline" className="text-[9px] py-0 h-4 border-amber-500/40 text-amber-400">
+                          Soon
+                        </Badge>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Batal</Button>
             <Button type="submit" disabled={saving}>
@@ -1416,6 +1722,285 @@ function PreviewRow({ label, total, daily, days }) {
         {total.toLocaleString()} SKU · tiap {days} hari
       </div>
       <div className="text-sm font-semibold tabular-nums">→ {daily} / hari</div>
+    </div>
+  );
+}
+
+// ---------- Module: Order Management (Coming Soon placeholder) ----------
+function OrderManagementView() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Order Management</h1>
+        <p className="text-muted-foreground text-xs md:text-sm mt-1">
+          Module 2 · Manajemen pesanan pembelian & penjualan
+        </p>
+      </div>
+
+      <Card className="border-white/10 bg-gradient-to-br from-amber-500/5 via-orange-500/5 to-transparent overflow-hidden">
+        <CardContent className="py-16 flex flex-col items-center text-center gap-4 relative">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[400px] h-[300px] rounded-full bg-amber-500/10 blur-[100px]" />
+          </div>
+          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-amber-500/30 to-orange-500/20 border border-amber-500/30 flex items-center justify-center relative">
+            <ShoppingCart className="w-10 h-10 text-amber-400" />
+          </div>
+          <div className="relative">
+            <Badge variant="outline" className="border-amber-500/40 text-amber-400 mb-3">
+              COMING SOON
+            </Badge>
+            <div className="text-2xl font-bold tracking-tight">Order Management</div>
+            <div className="text-sm text-muted-foreground max-w-md mt-2">
+              Module ini akan menangani purchase order, sales order, dan tracking pesanan.
+              Belum tersedia — akan segera diaktifkan setelah module Cycle Count stabil di produksi.
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 max-w-2xl w-full relative">
+            {[
+              { icon: FileSpreadsheet, label: 'PO / SO Entry' },
+              { icon: Activity, label: 'Order Tracking' },
+              { icon: BarChart3, label: 'Sales Report' },
+            ].map((f) => {
+              const Icon = f.icon;
+              return (
+                <div key={f.label} className="p-3 rounded-lg border border-white/5 bg-white/[0.02] text-xs text-muted-foreground flex items-center gap-2">
+                  <Icon className="w-4 h-4 text-amber-400/60" />
+                  {f.label}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function MasterDataProductsView() {
+  // Reuse the ImportView which already handles product list + import
+  return <ImportView />;
+}
+
+function ReportsHistoryView() {
+  // Reuse the HistoryView
+  return <HistoryView />;
+}
+
+function NoAccessView({ user }) {
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <Card className="border-white/10 bg-white/[0.02] max-w-md w-full">
+        <CardContent className="py-10 text-center">
+          <div className="w-14 h-14 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-7 h-7 text-rose-400" />
+          </div>
+          <div className="text-lg font-semibold">Tidak ada akses module</div>
+          <div className="text-sm text-muted-foreground mt-2">
+            Halo <span className="text-white">{user?.name}</span>, akun Anda belum memiliki akses ke module apapun.
+            Silakan hubungi Owner / Admin untuk mengaktifkan permission.
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// Landing view for Cycle Count module link (auto-routes to a sensible default)
+function CycleCountLandingView({ user, onNav }) {
+  useEffect(() => {
+    // Auto-redirect to a proper sub-view based on role
+    const target = isAdminRole(user) ? 'cc:dashboard' : 'cc:tasks';
+    onNav(target);
+  }, [user, onNav]);
+  return (
+    <div className="min-h-[40vh] flex items-center justify-center">
+      <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
+// Extract staff tasks content so it can render inside AppShell for cc:tasks view
+function StaffTasksView({ user }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState(new Set());
+  const [showHistory, setShowHistory] = useState(false);
+
+  async function load(silent = false) {
+    if (!silent) setLoading(true);
+    try {
+      const d = await api('tasks/mine');
+      setData(d);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    const t = setInterval(() => load(true), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function toggle(task) {
+    const action = task.completed ? 'uncomplete' : 'complete';
+    setPending((p) => new Set(p).add(task.id));
+    setData((d) => ({
+      ...d,
+      tasks: d.tasks.map((t) => (t.id === task.id ? { ...t, completed: !t.completed } : t)),
+    }));
+    try {
+      await api(`tasks/${task.id}/${action}`, { method: 'POST' });
+    } catch (e) {
+      toast.error(e.message);
+      load(true);
+    } finally {
+      setPending((p) => {
+        const n = new Set(p);
+        n.delete(task.id);
+        return n;
+      });
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-16 rounded-xl" />
+        <Skeleton className="h-40 rounded-2xl" />
+        <Skeleton className="h-96 rounded-2xl" />
+      </div>
+    );
+  }
+
+  const tasks = data?.tasks || [];
+  const completed = tasks.filter((t) => t.completed).length;
+  const total = tasks.length;
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  return (
+    <div className="space-y-6 max-w-2xl mx-auto">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xs text-muted-foreground">Halo,</div>
+          <h1 className="text-2xl font-bold">{user.name}</h1>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowHistory(true)}
+          className="gap-2"
+        >
+          <History className="w-4 h-4" /> <span className="hidden sm:inline">Riwayat SKU</span>
+        </Button>
+      </div>
+
+      <Dialog open={showHistory} onOpenChange={setShowHistory}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Cari Riwayat SKU</DialogTitle>
+            <div className="text-xs text-muted-foreground">
+              Masukkan kode SKU atau nama produk untuk melihat siapa saja yang pernah menghitung
+            </div>
+          </DialogHeader>
+          <SkuHistoryFinder compact />
+        </DialogContent>
+      </Dialog>
+
+      {data?.is_closed && (
+        <motion.div
+          initial={{ opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 flex items-center gap-3 text-sm"
+        >
+          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+          <div>
+            <div className="font-semibold text-rose-300">Session sudah ditutup</div>
+            <div className="text-xs text-rose-300/70">
+              Di luar jam kerja {data?.working?.start} – {data?.working?.end} WITA. Centang SKU baru bisa besok.
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      <motion.div
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="rounded-2xl border border-white/10 bg-gradient-to-br from-blue-500/10 via-purple-500/5 to-transparent p-4 sm:p-6 flex flex-col sm:flex-row items-center gap-4 sm:gap-6"
+      >
+        <CircularProgress value={pct} />
+        <div className="text-center sm:text-left">
+          <div className="text-xs text-muted-foreground uppercase tracking-wider">Today&apos;s Progress</div>
+          <div className="text-3xl sm:text-4xl font-bold mt-1 tabular-nums">
+            {completed} / {total}
+          </div>
+          <div className="text-sm text-muted-foreground mt-1">SKU Completed</div>
+          <div className="text-xs text-muted-foreground mt-3 flex items-center gap-1.5 justify-center sm:justify-start">
+            <Clock className="w-3 h-3" /> {data.date} · {data.time} WITA
+          </div>
+        </div>
+      </motion.div>
+
+      {total === 0 ? (
+        <Card className="border-white/10 bg-white/[0.02]">
+          <CardContent className="py-16 text-center">
+            <Sparkles className="w-8 h-8 mx-auto text-muted-foreground mb-3" />
+            <div className="font-semibold">Tidak ada tugas hari ini</div>
+            <div className="text-xs text-muted-foreground mt-1">Nikmati harimu</div>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          <AnimatePresence>
+            {tasks.map((t, idx) => {
+              const busy = pending.has(t.id);
+              return (
+                <motion.button
+                  key={t.id}
+                  onClick={() => toggle(t)}
+                  disabled={busy}
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ delay: Math.min(idx * 0.02, 0.3) }}
+                  className={`w-full flex items-center gap-4 p-4 rounded-xl border transition ${
+                    t.completed
+                      ? 'bg-emerald-500/5 border-emerald-500/20'
+                      : 'bg-white/[0.03] border-white/10 hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <div className="shrink-0">
+                    {t.completed ? (
+                      <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}>
+                        <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                      </motion.div>
+                    ) : (
+                      <Circle className="w-6 h-6 text-muted-foreground" />
+                    )}
+                  </div>
+                  <div className="flex-1 text-left">
+                    <div className="flex items-center gap-2">
+                      <div className="font-mono text-xs text-muted-foreground">{t.sku_code}</div>
+                      {t.is_backlog && (
+                        <Badge variant="outline" className="border-rose-500/40 text-rose-400 text-[9px] py-0">
+                          BACKLOG
+                        </Badge>
+                      )}
+                      <CategoryBadge cat={t.category} />
+                    </div>
+                    <div className={`font-medium mt-0.5 ${t.completed ? 'line-through text-muted-foreground' : ''}`}>
+                      {t.product_name}
+                    </div>
+                  </div>
+                  {busy && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+                </motion.button>
+              );
+            })}
+          </AnimatePresence>
+        </div>
+      )}
     </div>
   );
 }
@@ -1630,10 +2215,18 @@ function App() {
       return;
     }
     api('auth/me')
-      .then((d) => setUser(d.user))
+      .then((d) => {
+        setUser(d.user);
+        setView(getDefaultView(d.user));
+      })
       .catch(() => localStorage.removeItem('cc_token'))
       .finally(() => setChecking(false));
   }, []);
+
+  function handleLogin(u) {
+    setUser(u);
+    setView(getDefaultView(u));
+  }
 
   async function logout() {
     try {
@@ -1641,6 +2234,26 @@ function App() {
     } catch {}
     localStorage.removeItem('cc_token');
     setUser(null);
+    setView('dashboard');
+  }
+
+  // Guard the current view against permissions (in case user or perms changed)
+  function canView(key) {
+    if (!user) return false;
+    // Flatten allowed nav items
+    const flat = [];
+    for (const s of buildNav(user)) {
+      for (const it of s.items) {
+        if (it.children) it.children.forEach((c) => flat.push(c.key));
+        else flat.push(it.key);
+      }
+    }
+    return flat.includes(key);
+  }
+
+  function safeNav(key) {
+    if (canView(key)) setView(key);
+    else toast.error('Anda tidak memiliki akses ke halaman ini');
   }
 
   if (checking) {
@@ -1652,33 +2265,70 @@ function App() {
   }
 
   if (!user) {
-    return <LoginScreen onLogin={setUser} />;
+    return <LoginScreen onLogin={handleLogin} />;
   }
 
-  if (user.role !== 'owner') {
+  // Preserve original workflow: staff with ONLY cycle_count access -> keep StaffScreen
+  const mods = userModules(user);
+  if (
+    user.role === 'staff' &&
+    mods.length === 1 &&
+    mods[0] === 'cycle_count'
+  ) {
     return <StaffScreen user={user} onLogout={logout} />;
   }
+
+  // No access at all
+  if (mods.length === 0 && user.role !== 'owner') {
+    return (
+      <div className="min-h-screen bg-[#09090b] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-3 border-b border-white/5">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center font-black text-white text-[10px] tracking-tight">
+              MIS
+            </div>
+            <div className="text-sm font-semibold">Merdeka Inventory System</div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={logout} className="gap-2">
+            <LogOut className="w-4 h-4" /> Keluar
+          </Button>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-6">
+          <NoAccessView user={user} />
+        </div>
+      </div>
+    );
+  }
+
+  // Default: full AppShell with modular sidebar
+  const currentAllowed = canView(view);
+  const activeView = currentAllowed ? view : getDefaultView(user);
 
   return (
     <div className="min-h-screen bg-[#09090b] md:flex">
       <div className="hidden md:block">
-        <Sidebar user={user} active={view} onNav={setView} onLogout={logout} />
+        <Sidebar user={user} active={activeView} onNav={safeNav} onLogout={logout} />
       </div>
-      <MobileTopBar user={user} active={view} onNav={setView} onLogout={logout} />
+      <MobileTopBar user={user} active={activeView} onNav={safeNav} onLogout={logout} />
       <main className="flex-1 p-4 md:p-8 overflow-x-hidden min-w-0">
         <AnimatePresence mode="wait">
           <motion.div
-            key={view}
+            key={activeView}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -5 }}
             transition={{ duration: 0.2 }}
           >
-            {view === 'dashboard' && <DashboardView />}
-            {view === 'import' && <ImportView />}
-            {view === 'employees' && <EmployeesView />}
-            {view === 'settings' && <SettingsView />}
-            {view === 'history' && <HistoryView />}
+            {activeView === 'dashboard' && <DashboardView />}
+            {activeView === 'cc:dashboard' && <DashboardView />}
+            {activeView === 'cc:tasks' && <StaffTasksView user={user} />}
+            {activeView === 'cc:import' && <ImportView />}
+            {activeView === 'cc:settings' && <SettingsView />}
+            {activeView === 'cc:history' && <HistoryView />}
+            {activeView === 'mod:order_management' && <OrderManagementView />}
+            {activeView === 'md:products' && <MasterDataProductsView />}
+            {activeView === 'rp:history' && <ReportsHistoryView />}
+            {activeView === 'ad:users' && <EmployeesView />}
           </motion.div>
         </AnimatePresence>
       </main>

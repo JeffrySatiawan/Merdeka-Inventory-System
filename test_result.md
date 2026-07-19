@@ -294,23 +294,108 @@ frontend:
     priority: "high"
     needs_retesting: false
 
+  - task: "Module Registry endpoint + module-based permission system"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Refactor into Merdeka Inventory System (MIS) modular platform. Additive backend changes:
+          1) Added `modules` array field to employees. Default: owner → ['cycle_count','order_management'], staff → ['cycle_count'].
+          2) Auto-migration in ensureSeeded: any employee without `modules` gets backfilled based on role.
+          3) New endpoint GET /api/modules — returns registry [{key, name, description, status}, ...]. Requires auth.
+          4) POST /api/employees now accepts optional `role` (staff|supervisor; owner blocked) and `modules` (array, validated against registry). Defaults: role='staff', modules=['cycle_count'].
+          5) PUT /api/employees/:id now accepts `role` and `modules`. Cannot change role of owner user.
+          6) /api/auth/me returns user with `modules` (owner always gets full list).
+          7) Staff module guard: GET /api/tasks/mine and POST /api/tasks/:id/complete|uncomplete now require hasModule(user, 'cycle_count'). Owner bypasses check.
+          8) All existing Cycle Count endpoints unchanged — no regression to workflow.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 28 TESTS PASSED (100%) - Module refactor fully working with zero regressions.
+          
+          NEW FUNCTIONALITY (14/14 tests passed):
+          1. ✅ GET /api/modules with auth → 200, returns 2 modules (cycle_count status='active', order_management status='coming_soon')
+          2. ✅ GET /api/modules without auth → 401
+          3. ✅ POST /api/employees with role='supervisor' and modules=['cycle_count','order_management'] → 200, employee.role='supervisor', modules correct
+          4. ✅ POST /api/employees with role='owner' → 200, but role set to 'staff' (owner assignment blocked server-side)
+          5. ✅ POST /api/employees with modules=['unknown_module','cycle_count','cycle_count','order_management'] → 200, modules=['cycle_count','order_management'] (invalid filtered, duplicates removed)
+          6. ✅ PUT /api/employees/:cindy_id with modules=[] → 200, Cindy's modules set to empty array
+          7. ✅ Login as Cindy with empty modules → 200 (login still works)
+          8. ✅ GET /api/tasks/mine as Cindy (no cycle_count module) → 403 with Indonesian error "Anda tidak memiliki akses ke module Cycle Count"
+          9. ✅ POST /api/tasks/:id/complete as Cindy (no module) → 403 before task lookup
+          10. ✅ PUT /api/employees/:cindy_id with modules=['cycle_count'] → 200, modules restored
+          11. ✅ GET /api/tasks/mine as Cindy (with cycle_count) → 200 with tasks
+          12. ✅ PUT /api/employees/:owner_id with role='staff' → 403 with error "cannot modify owner"
+          13. ✅ Auto-migration: GET /api/employees → all 10 employees have modules field. Owner has ['cycle_count','order_management'], staff have ['cycle_count']
+          14. ✅ GET /api/auth/me as owner → user.modules=['cycle_count','order_management']. As Cindy → user.modules=['cycle_count']
+          
+          REGRESSION TESTS (14/14 tests passed):
+          1. ✅ POST /api/auth/login (owner/staff) → 200, invalid password → 401
+          2. ✅ GET /api/dashboard → 200 with 50 SKUs, 8 employees (6 original + 2 test staff created during module tests)
+          3. ✅ GET /api/products?search=paracetamol → 200 (owner-only)
+          4. ✅ POST /api/products/import with JSON → 200, upsert working
+          5. ✅ GET /api/products/PRD00001/history → 200
+          6. ✅ GET /api/lookup?q=para → 200
+          7. ✅ Employee CRUD: GET/POST/PUT/DELETE all working, owner deletion blocked with 403
+          8. ✅ GET /api/settings → 200 with breakdown, PUT /api/settings → 200
+          9. ✅ POST /api/tasks/generate with force:true → 200, created 5 tasks for 8 employees
+          10. ✅ GET /api/tasks/mine (staff with cycle_count) → 200 with tasks
+          11. ✅ POST /api/tasks/:id/complete (own task) → 200, product.last_counted_at updated, sku_history entry created
+          12. ✅ POST /api/tasks/:id/uncomplete → 200
+          13. ✅ POST /api/tasks/:id/complete (other employee's task) → 403
+          14. ✅ GET /api/monitor (no auth) → 200, GET /api/time (no auth) → 200
+          
+          Test file: /app/backend_test_modules.py
+          All module functionality working correctly. Zero breaking changes to existing Cycle Count system.
+
+frontend:
+  - task: "Modular sidebar shell (General/Modules/Master Data/Reports/Admin)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+
+  - task: "User Management with Role + Permission Modules checklist"
+    implemented: true
+    working: "NA"
+    file: "/app/app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+
+  - task: "Order Management Coming Soon placeholder"
+    implemented: true
+    working: "NA"
+    file: "/app/app/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+
+  - task: "Staff workflow preserved (StaffScreen unchanged for cycle_count-only staff)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+
 metadata:
   created_by: "main_agent"
-  version: "1.0"
-  test_sequence: 1
+  version: "1.1"
+  test_sequence: 2
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Auth (login/logout/me) with session token"
-    - "Auto-seed on first request (50 SKUs + 7 users + settings)"
-    - "Dashboard aggregate endpoint (realtime)"
-    - "Product list + Excel/CSV import"
-    - "Employee CRUD"
-    - "Cycle settings + estimation"
-    - "Daily task generator with weight-based distribution + backlog rollover"
-    - "Staff task fetch + toggle complete/uncomplete"
-    - "SKU history lookup"
+    - "Module Registry endpoint + module-based permission system"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -370,3 +455,57 @@ agent_communication:
       - Settings changes recalculate daily breakdown correctly ✅
       
       All backend APIs are production-ready. No critical issues found.
+
+
+  - agent: "main"
+    message: |
+      🚀 MERDEKA INVENTORY SYSTEM (MIS) REFACTOR — Module 1 (Cycle Count) fully preserved, module architecture added.
+
+      BACKEND CHANGES (additive only, no breaking changes):
+      1. Added `modules` (array) field to employees collection.
+         - Seed: owner → ['cycle_count','order_management']; all staff → ['cycle_count'].
+         - Auto-migration on every request: existing employees without `modules` get backfilled based on role.
+      2. New endpoint: GET /api/modules — returns registry [{key, name, description, status}, ...]. Auth required.
+      3. POST /api/employees & PUT /api/employees/:id now accept:
+         - `role`: 'staff' | 'supervisor' (owner cannot be set/changed via API)
+         - `modules`: array; server normalizes (dedup + filter against valid keys)
+      4. GET /api/auth/me returns user with `modules` (owner effectively gets full list even if not stored).
+      5. Staff module guard: GET /api/tasks/mine and POST /api/tasks/:id/complete|uncomplete now check hasModule(user,'cycle_count'). Returns 403 if not. Owner bypasses.
+      6. All existing Cycle Count endpoints (products, dashboard, settings, tasks/generate, sku_history, lookup, monitor, products/import, products/reset) unchanged.
+
+      PLEASE TEST:
+      • GET /api/modules with owner Bearer token → 200; returns 2 modules (cycle_count active, order_management coming_soon). Without token → 401.
+      • POST /api/employees body { name, username, password, role:'supervisor', modules:['cycle_count','order_management'] } → creates supervisor with those modules.
+      • POST /api/employees body { ..., role:'owner' } → creates as 'staff' (owner assignment blocked server-side).
+      • POST /api/employees body { ..., modules:['unknown_x','cycle_count','cycle_count'] } → creates with modules=['cycle_count'] (invalid filtered, deduped).
+      • PUT /api/employees/:staff_id body { modules: [] } → sets empty modules; subsequent GET /api/tasks/mine as that user → 403 with Indonesian error.
+      • PUT /api/employees/:staff_id body { modules: ['cycle_count'] } → restores; GET /api/tasks/mine works.
+      • PUT /api/employees/:owner_id body { role:'staff' } → 403 "cannot modify owner" (existing behavior preserved).
+      • Verify auto-migration: GET /api/employees → every item has `modules` array field (staff → ['cycle_count'], owner → ['cycle_count','order_management']).
+      • Regression: owner still can access /api/dashboard, /api/products (+ import + reset), /api/employees, /api/settings, /api/tasks/generate, /api/products/:sku/history, /api/lookup, /api/monitor.
+      • Regression: staff (with modules including 'cycle_count') can still GET /api/tasks/mine and complete/uncomplete their own tasks. Cross-employee completion still 403.
+
+      Credentials unchanged: owner/owner123, cindy/cindy123 hayu/hayu123 desak/desak123 naila/naila123 dian/dian123 shinta/shinta123.
+
+  - agent: "testing"
+    message: |
+      ✅ MODULE REFACTOR TESTING COMPLETE - 28/28 TESTS PASSED (100%)
+      
+      Comprehensive testing completed for module-based permission system refactor. Created /app/backend_test_modules.py with 28 test scenarios.
+      
+      NEW FUNCTIONALITY VERIFIED (14 tests):
+      ✅ GET /api/modules endpoint (with/without auth)
+      ✅ POST /api/employees with role & modules (supervisor, owner blocking, invalid filtering)
+      ✅ PUT /api/employees/:id with role & modules (owner protection, module removal/restoration)
+      ✅ Module permission checks (staff without cycle_count gets 403 with Indonesian error)
+      ✅ Auto-migration (all employees have modules field)
+      ✅ GET /api/auth/me returns modules
+      
+      REGRESSION VERIFIED (14 tests):
+      ✅ All existing auth endpoints work
+      ✅ Dashboard, products, employees, settings, tasks endpoints unchanged
+      ✅ Task generation, completion, and cross-employee protection working
+      ✅ Public endpoints (monitor, time) working
+      
+      ZERO BREAKING CHANGES. All existing Cycle Count functionality preserved.
+      Backend is production-ready for module-based architecture.

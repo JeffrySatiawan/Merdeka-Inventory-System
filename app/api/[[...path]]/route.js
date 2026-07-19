@@ -76,15 +76,48 @@ async function getUserFromRequest(req) {
   return safe;
 }
 
+// ---------- Module Registry ----------
+// Central place to register modules. To add Module 2, 3, ..., just add here.
+const AVAILABLE_MODULES = [
+  {
+    key: 'cycle_count',
+    name: 'Cycle Count',
+    description: 'Manajemen cycle count SKU harian, import produk, distribusi tugas per bobot karyawan, riwayat perhitungan.',
+    icon: 'Package',
+    status: 'active',
+  },
+  {
+    key: 'order_management',
+    name: 'Order Management',
+    description: 'Manajemen pesanan pembelian & penjualan. (Belum aktif — coming soon)',
+    icon: 'ShoppingCart',
+    status: 'coming_soon',
+  },
+];
+const VALID_MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
+const VALID_ROLES = ['owner', 'supervisor', 'staff'];
+
+function normalizeModules(input) {
+  if (!Array.isArray(input)) return null;
+  const set = new Set(input.filter((m) => VALID_MODULE_KEYS.includes(m)));
+  return Array.from(set);
+}
+
+function hasModule(user, moduleKey) {
+  if (!user) return false;
+  if (user.role === 'owner') return true; // Owner selalu punya akses semua module
+  return Array.isArray(user.modules) && user.modules.includes(moduleKey);
+}
+
 // ---------- Seed ----------
 const SEED_EMPLOYEES = [
-  { name: 'Owner', username: 'owner', password: 'owner123', weight: 0, status: 'active', role: 'owner' },
-  { name: 'Cindy', username: 'cindy', password: 'cindy123', weight: 120, status: 'active', role: 'staff' },
-  { name: 'Hayu', username: 'hayu', password: 'hayu123', weight: 100, status: 'active', role: 'staff' },
-  { name: 'Desak', username: 'desak', password: 'desak123', weight: 80, status: 'active', role: 'staff' },
-  { name: 'Naila', username: 'naila', password: 'naila123', weight: 90, status: 'active', role: 'staff' },
-  { name: 'Dian', username: 'dian', password: 'dian123', weight: 60, status: 'active', role: 'staff' },
-  { name: 'Shinta', username: 'shinta', password: 'shinta123', weight: 40, status: 'active', role: 'staff' },
+  { name: 'Owner', username: 'owner', password: 'owner123', weight: 0, status: 'active', role: 'owner', modules: ['cycle_count', 'order_management'] },
+  { name: 'Cindy', username: 'cindy', password: 'cindy123', weight: 120, status: 'active', role: 'staff', modules: ['cycle_count'] },
+  { name: 'Hayu', username: 'hayu', password: 'hayu123', weight: 100, status: 'active', role: 'staff', modules: ['cycle_count'] },
+  { name: 'Desak', username: 'desak', password: 'desak123', weight: 80, status: 'active', role: 'staff', modules: ['cycle_count'] },
+  { name: 'Naila', username: 'naila', password: 'naila123', weight: 90, status: 'active', role: 'staff', modules: ['cycle_count'] },
+  { name: 'Dian', username: 'dian', password: 'dian123', weight: 60, status: 'active', role: 'staff', modules: ['cycle_count'] },
+  { name: 'Shinta', username: 'shinta', password: 'shinta123', weight: 40, status: 'active', role: 'staff', modules: ['cycle_count'] },
 ];
 
 const SEED_PRODUCTS = [
@@ -162,6 +195,17 @@ async function ensureSeeded(db) {
   }
 
   const meta = await db.collection('_meta').findOne({ id: 'seed' });
+
+  // Migration: ensure every employee has `modules` array (backfill for existing installs)
+  const empsNeedingMigration = await db
+    .collection('employees')
+    .find({ modules: { $exists: false } })
+    .toArray();
+  for (const e of empsNeedingMigration) {
+    const defaults = e.role === 'owner' ? ['cycle_count', 'order_management'] : ['cycle_count'];
+    await db.collection('employees').updateOne({ id: e.id }, { $set: { modules: defaults } });
+  }
+
   if (meta?.done) return;
 
   // Employees
@@ -355,7 +399,21 @@ async function handleRequest(req, path, method) {
   if (path === 'auth/me' && method === 'GET') {
     const user = await getUserFromRequest(req);
     if (!user) return err('unauthorized', 401);
-    return json({ user });
+    // Owner always has all modules effectively
+    const effectiveModules =
+      user.role === 'owner'
+        ? VALID_MODULE_KEYS.slice()
+        : Array.isArray(user.modules)
+        ? user.modules
+        : [];
+    return json({ user: { ...user, modules: effectiveModules } });
+  }
+
+  // ---------- MODULES REGISTRY ----------
+  if (path === 'modules' && method === 'GET') {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    return json({ modules: AVAILABLE_MODULES });
   }
 
   // ---------- PUBLIC / DASHBOARD ----------
@@ -643,6 +701,9 @@ async function handleRequest(req, path, method) {
     if (!name || !username || !password) return err('name, username, password required');
     const exists = await db.collection('employees').findOne({ username: String(username).toLowerCase() });
     if (exists) return err('username already exists');
+    // role: owner cannot be created via this endpoint (only seeded owner)
+    const roleReq = body.role && VALID_ROLES.includes(body.role) && body.role !== 'owner' ? body.role : 'staff';
+    const modulesReq = normalizeModules(body.modules) ?? ['cycle_count'];
     const doc = {
       id: uuidv4(),
       name: String(name).trim(),
@@ -650,7 +711,8 @@ async function handleRequest(req, path, method) {
       password: hashPassword(password),
       weight: Number(weight) || 100,
       status: status || 'active',
-      role: 'staff',
+      role: roleReq,
+      modules: modulesReq,
       createdAt: new Date(),
     };
     await db.collection('employees').insertOne(doc);
@@ -679,6 +741,11 @@ async function handleRequest(req, path, method) {
     if (body.password) update.password = hashPassword(body.password);
     if (body.weight !== undefined) update.weight = Number(body.weight) || 0;
     if (body.status) update.status = body.status;
+    if (body.role && VALID_ROLES.includes(body.role) && body.role !== 'owner') {
+      update.role = body.role;
+    }
+    const mods = normalizeModules(body.modules);
+    if (mods !== null) update.modules = mods;
     update.updatedAt = new Date();
     await db.collection('employees').updateOne({ id }, { $set: update });
     const updated = await db.collection('employees').findOne({ id });
@@ -744,6 +811,7 @@ async function handleRequest(req, path, method) {
   if (path === 'tasks/mine' && method === 'GET') {
     const user = await getUserFromRequest(req);
     if (!user) return err('unauthorized', 401);
+    if (!hasModule(user, 'cycle_count')) return err('Anda tidak memiliki akses ke module Cycle Count', 403);
     const today = getWitaDate();
     // Ensure today's tasks exist
     await generateDailyTasks(db, today);
@@ -766,6 +834,7 @@ async function handleRequest(req, path, method) {
   if (taskActionMatch && method === 'POST') {
     const user = await getUserFromRequest(req);
     if (!user) return err('unauthorized', 401);
+    if (!hasModule(user, 'cycle_count')) return err('Anda tidak memiliki akses ke module Cycle Count', 403);
     const [, taskId, action] = taskActionMatch;
     const task = await db.collection('daily_tasks').findOne({ id: taskId });
     if (!task) return err('task not found', 404);
