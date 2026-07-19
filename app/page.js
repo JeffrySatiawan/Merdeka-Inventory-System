@@ -430,6 +430,26 @@ function SidebarNav({ user, active, onNav, onLogout, onItemClick }) {
         ))}
       </nav>
       <div className="p-3 border-t border-white/5">
+        <button
+          onClick={async () => {
+            try {
+              if ('serviceWorker' in navigator) {
+                const regs = await navigator.serviceWorker.getRegistrations();
+                await Promise.all(regs.map((r) => r.unregister()));
+              }
+              if ('caches' in window) {
+                const keys = await caches.keys();
+                await Promise.all(keys.map((k) => caches.delete(k)));
+              }
+            } catch {}
+            window.location.reload();
+          }}
+          className="w-full mb-2 flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-muted-foreground hover:bg-white/5 hover:text-white transition"
+        >
+          <RefreshCw className="w-4 h-4" />
+          <span className="flex-1 text-left">Refresh Aplikasi</span>
+          <span className="text-[9px] text-muted-foreground/60">clear cache</span>
+        </button>
         <div className="flex items-center gap-3 px-3 py-2 mb-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold">
             {user.name[0]}
