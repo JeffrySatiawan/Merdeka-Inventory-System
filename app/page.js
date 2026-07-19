@@ -455,7 +455,50 @@ function Sidebar(props) {
   );
 }
 
-// ---------- Mobile Shell (sticky header + drawer only, no bottom nav) ----------
+// Determine which module the current view belongs to
+function getActiveModule(view) {
+  if (!view) return null;
+  if (view.startsWith('cc:')) return 'cycle_count';
+  if (view.startsWith('om:') || view === 'mod:order_management') return 'order_management';
+  return null; // no module context (e.g. ad:users)
+}
+
+// Bottom-nav items per module (filtered by role/permission at render time)
+function bottomNavForModule(moduleKey, user) {
+  if (moduleKey === 'cycle_count') {
+    const isAdmin = isAdminRole(user);
+    // 4-5 items depending on role
+    if (isAdmin) {
+      return [
+        { key: 'cc:dashboard', label: 'Monitor', icon: LayoutDashboard },
+        { key: 'cc:tasks', label: 'Tasks', icon: CheckCircle2 },
+        { key: 'cc:import', label: 'Import', icon: Upload },
+        { key: 'cc:settings', label: 'Setting', icon: SettingsIcon },
+        { key: 'cc:history', label: 'Riwayat', icon: History },
+      ];
+    }
+    // Staff: My Tasks + Riwayat
+    return [
+      { key: 'cc:tasks', label: 'My Tasks', icon: CheckCircle2 },
+      { key: 'cc:history', label: 'Riwayat', icon: History },
+    ];
+  }
+  if (moduleKey === 'order_management') {
+    const isOwner = user?.role === 'owner';
+    const items = [
+      { key: 'om:dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { key: 'om:scan_pack', label: 'Packing', icon: ScanBarcodeIcon },
+      { key: 'om:scan_deliver', label: 'Kurir', icon: Truck },
+      { key: 'om:reports', label: 'Laporan', icon: FileSpreadsheet },
+    ];
+    // 5th: Master (owner) or Setting
+    if (isOwner) items.push({ key: 'om:expeditions', label: 'Master', icon: Package });
+    return items;
+  }
+  return [];
+}
+
+// ---------- Mobile Shell (sticky header + drawer + per-module bottom nav) ----------
 function MobileShell({ user, active, onNav, onLogout, children }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -474,7 +517,18 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
     'om:settings': 'Pengaturan OM',
     'ad:users': 'User Management',
   };
+  const moduleLabels = {
+    cycle_count: 'Cycle Count',
+    order_management: 'Order Management',
+  };
   const currentLabel = labels[active] || 'MIS';
+  const activeModule = getActiveModule(active);
+  const moduleSubtitle = moduleLabels[activeModule];
+
+  const bottomItems = bottomNavForModule(activeModule, user);
+  const showBottomNav = bottomItems.length > 0;
+  const gridColsMap = { 1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5' };
+  const gridCols = gridColsMap[bottomItems.length] || 'grid-cols-5';
 
   return (
     <div className="min-h-screen bg-[#09090b] flex flex-col">
@@ -488,7 +542,9 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
             <MenuIcon className="w-5 h-5" />
           </button>
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] text-muted-foreground leading-tight uppercase tracking-wider">MIS</div>
+            <div className="text-[10px] text-muted-foreground leading-tight uppercase tracking-wider">
+              {moduleSubtitle || 'MIS'}
+            </div>
             <div className="font-semibold text-sm leading-tight truncate">{currentLabel}</div>
           </div>
           <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold select-none-app">
@@ -534,9 +590,37 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
         )}
       </AnimatePresence>
 
-      <main className="flex-1 px-4 py-4 pb-8 overflow-x-hidden pb-safe">
+      <main
+        className={`flex-1 px-4 py-4 overflow-x-hidden ${
+          showBottomNav ? 'pb-bottom-nav' : 'pb-8 pb-safe'
+        }`}
+      >
         {children}
       </main>
+
+      {showBottomNav && (
+        <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#0a0a0c]/95 backdrop-blur-xl border-t border-white/5 pb-safe">
+          <div className={`grid ${gridCols} h-16`}>
+            {bottomItems.map((it) => {
+              const Icon = it.icon;
+              const isActive = active === it.key;
+              return (
+                <button
+                  key={it.key}
+                  onClick={() => onNav(it.key)}
+                  className={`relative flex flex-col items-center justify-center gap-1 select-none-app transition ${
+                    isActive ? 'text-blue-400' : 'text-muted-foreground active:text-white'
+                  }`}
+                >
+                  {isActive && <span className="absolute top-0 h-0.5 w-8 rounded-full bg-blue-400" />}
+                  <Icon className="w-5 h-5" />
+                  <span className="text-[10px] font-medium">{it.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+      )}
     </div>
   );
 }
@@ -546,6 +630,12 @@ const MenuIcon = ({ className }) => (
     <line x1="4" y1="7" x2="20" y2="7" />
     <line x1="4" y1="12" x2="20" y2="12" />
     <line x1="4" y1="17" x2="20" y2="17" />
+  </svg>
+);
+const ScanBarcodeIcon = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 5v3M3 16v3M8 5v3M8 16v3M13 5v3M13 16v3M18 5v3M18 16v3" />
+    <path d="M3 12h18" />
   </svg>
 );
 
