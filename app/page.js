@@ -548,6 +548,26 @@ function MobileShell({ user, active, onNav, onLogout, children }) {
             </div>
             <div className="font-semibold text-sm leading-tight truncate">{currentLabel}</div>
           </div>
+          <button
+            onClick={async () => {
+              try {
+                if ('serviceWorker' in navigator) {
+                  const regs = await navigator.serviceWorker.getRegistrations();
+                  await Promise.all(regs.map((r) => r.unregister()));
+                }
+                if ('caches' in window) {
+                  const keys = await caches.keys();
+                  await Promise.all(keys.map((k) => caches.delete(k)));
+                }
+              } catch {}
+              window.location.reload();
+            }}
+            className="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-white/5 active:bg-white/10"
+            title="Force refresh (clear cache)"
+            aria-label="Force refresh"
+          >
+            <RefreshCw className="w-4 h-4 text-muted-foreground" />
+          </button>
           <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold select-none-app">
             {user.name[0]}
           </div>

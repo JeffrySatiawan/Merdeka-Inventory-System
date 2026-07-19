@@ -31,7 +31,17 @@ export const viewport = {
 const swRegister = `
 if ('serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost')) {
   window.addEventListener('load', function() {
-    navigator.serviceWorker.register('/sw.js').catch(function(){});
+    navigator.serviceWorker.register('/sw.js').then(function(reg){
+      // Check for updates every 30s while app is open
+      setInterval(function(){ try { reg.update(); } catch(e){} }, 30000);
+      // When new worker takes control, reload to get fresh HTML/JS
+      var refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function(){
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    }).catch(function(){});
   });
 }
 `;

@@ -1,64 +1,57 @@
 // Merdeka Inventory System - Service Worker
-// Cache app shell for offline-lite experience. Never cache API responses.
-const CACHE_VERSION = 'mis-v2';
-const APP_SHELL = ['/', '/manifest.json'];
+// Cache only manifest + icons. NEVER cache app code (JS/CSS) so updates are always fresh.
+const CACHE_VERSION = 'mis-v5-2026-07-19';
 
 self.addEventListener('install', (event) => {
+  // Activate immediately, replace old worker
   self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(APP_SHELL).catch(() => null))
-  );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k)))
-      )
-      .then(() => self.clients.claim())
+    (async () => {
+      // Delete ALL old caches to guarantee fresh code on updates
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+      await self.clients.claim();
+      // Force all open pages to reload to pick up new HTML/JS
+      const clients = await self.clients.matchAll({ type: 'window' });
+      for (const c of clients) {
+        try { c.navigate(c.url); } catch {}
+      }
+    })()
   );
 });
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  const url = new URL(req.url);
-
-  // Only handle GET requests from same origin
   if (req.method !== 'GET') return;
+  const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // NEVER cache API responses (auth + realtime data)
+  // Never intercept API — always fresh from network
   if (url.pathname.startsWith('/api/')) return;
+  // Never intercept Next.js chunks / RSC / dev — always fresh
+  if (url.pathname.startsWith('/_next/')) return;
+  // Never intercept HTML documents — network-only so latest UI is always shown
+  const accept = req.headers.get('accept') || '';
+  if (req.mode === 'navigate' || accept.includes('text/html')) return;
 
-  // Cache-first for static assets; network-first for navigation
-  const isNav = req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
+  // Only cache: manifest.json, /sw.js, /icons/*, /favicon.ico, /public assets
+  const cacheableExt = /\.(png|jpg|jpeg|webp|svg|ico|json)$/i;
+  if (!cacheableExt.test(url.pathname)) return;
 
-  if (isNav) {
-    event.respondWith(
-      fetch(req)
-        .then((resp) => {
-          const copy = resp.clone();
-          caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy)).catch(() => {});
-          return resp;
-        })
-        .catch(() => caches.match(req).then((c) => c || caches.match('/')))
-    );
-    return;
-  }
-
-  // Static assets: cache-first
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((resp) => {
-        if (resp.ok && resp.type === 'basic') {
-          const copy = resp.clone();
-          caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy)).catch(() => {});
-        }
-        return resp;
-      }).catch(() => cached);
-    })
+    caches.open(CACHE_VERSION).then((cache) =>
+      cache.match(req).then((cached) => {
+        if (cached) return cached;
+        return fetch(req).then((resp) => {
+          if (resp.ok && resp.type === 'basic') {
+            try { cache.put(req, resp.clone()); } catch {}
+          }
+          return resp;
+        }).catch(() => cached);
+      })
+    )
   );
 });
