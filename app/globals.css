@@ -2,19 +2,70 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   MOBILE-FIRST GLOBAL RULES
+   ============================================================ */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --bottom-nav-h: 64px;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
-        "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
-        "Helvetica Neue", sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
+    "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: none;
 }
 
 code {
-    font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
-        monospace;
+  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
 }
+
+/* Safe area utilities */
+.pt-safe { padding-top: max(env(safe-area-inset-top, 0px), 0px); }
+.pb-safe { padding-bottom: max(env(safe-area-inset-bottom, 0px), 0px); }
+.pl-safe { padding-left: max(env(safe-area-inset-left, 0px), 0px); }
+.pr-safe { padding-right: max(env(safe-area-inset-right, 0px), 0px); }
+
+/* Bottom-nav aware content bottom-padding on mobile */
+.pb-bottom-nav {
+  padding-bottom: calc(var(--bottom-nav-h) + max(env(safe-area-inset-bottom, 0px), 0px) + 16px);
+}
+@media (min-width: 768px) {
+  .pb-bottom-nav { padding-bottom: 32px; }
+}
+
+/* Larger touch targets on mobile */
+@media (max-width: 767px) {
+  button, [role="button"], a.btn, input[type="button"], input[type="submit"] {
+    min-height: 44px;
+  }
+  /* Ensure inputs are big enough to avoid iOS auto-zoom */
+  input[type="text"], input[type="number"], input[type="password"], input[type="email"],
+  input[type="date"], input[type="search"], input[type="tel"], select, textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Hide scrollbars on mobile-only strips */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* App-like: prevent text selection on nav buttons */
+.select-none-app { -webkit-user-select: none; user-select: none; }
+
 
 .App {
     text-align: center;

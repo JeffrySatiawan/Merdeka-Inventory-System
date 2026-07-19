@@ -39,6 +39,7 @@ import {
   BarChart3,
   Boxes,
   Lock,
+  Truck,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -269,12 +270,6 @@ function buildNav(user) {
       ],
     },
     {
-      title: 'Reports',
-      items: [
-        { key: 'rp:history', label: 'Riwayat SKU', icon: History, module: 'cycle_count' },
-      ],
-    },
-    {
       title: 'Admin',
       items: [
         { key: 'ad:users', label: 'User Management', icon: Shield, ownerOnly: true },
@@ -459,6 +454,154 @@ function Sidebar(props) {
     </aside>
   );
 }
+
+// ---------- Mobile Shell (sticky header + drawer + bottom nav) ----------
+function MobileShell({ user, active, onNav, onLogout, children }) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const labels = {
+    'cc:dashboard': 'Realtime Monitor',
+    'cc:tasks': 'My Tasks',
+    'cc:import': 'Product Import',
+    'cc:settings': 'Cycle Settings',
+    'cc:history': 'Riwayat SKU',
+    'mod:order_management': 'Order Management',
+    'om:dashboard': 'OM Dashboard',
+    'om:scan_pack': 'Scan Mulai Packing',
+    'om:scan_deliver': 'Scan Serah Terima',
+    'om:reports': 'Laporan',
+    'om:expeditions': 'Master Ekspedisi',
+    'om:settings': 'Pengaturan OM',
+    'ad:users': 'User Management',
+  };
+  const currentLabel = labels[active] || 'MIS';
+
+  const hasCC = userHasModule(user, 'cycle_count');
+  const hasOM = userHasModule(user, 'order_management');
+  const isStaff = user.role === 'staff';
+  const bottomItems = [];
+  if (hasCC) {
+    bottomItems.push({
+      key: isStaff ? 'cc:tasks' : 'cc:dashboard',
+      label: 'Cycle',
+      icon: Package,
+    });
+  }
+  if (hasOM) {
+    bottomItems.push({ key: 'om:dashboard', label: 'Orders', icon: ShoppingCart });
+    bottomItems.push({ key: 'om:scan_pack', label: 'Packing', icon: ScanBarcodeIcon });
+    bottomItems.push({ key: 'om:scan_deliver', label: 'Kurir', icon: Truck });
+  }
+  if (hasCC) {
+    bottomItems.push({ key: 'cc:history', label: 'Riwayat', icon: History });
+  }
+  bottomItems.push({ key: '__more__', label: 'Menu', icon: MenuIcon, action: () => setDrawerOpen(true) });
+  const shownItems = bottomItems.slice(0, 5);
+  const gridCols = ['', 'grid-cols-1', 'grid-cols-2', 'grid-cols-3', 'grid-cols-4', 'grid-cols-5'][shownItems.length] || 'grid-cols-5';
+
+  return (
+    <div className="min-h-screen bg-[#09090b] flex flex-col">
+      <header className="sticky top-0 z-40 bg-[#09090b]/95 backdrop-blur border-b border-white/5 pt-safe">
+        <div className="flex items-center gap-3 px-4 h-14">
+          <button
+            onClick={() => setDrawerOpen(true)}
+            className="w-10 h-10 -ml-2 flex items-center justify-center rounded-lg hover:bg-white/5 active:bg-white/10 select-none-app"
+            aria-label="Open menu"
+          >
+            <MenuIcon className="w-5 h-5" />
+          </button>
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] text-muted-foreground leading-tight uppercase tracking-wider">MIS</div>
+            <div className="font-semibold text-sm leading-tight truncate">{currentLabel}</div>
+          </div>
+          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xs font-bold select-none-app">
+            {user.name[0]}
+          </div>
+        </div>
+      </header>
+
+      <AnimatePresence>
+        {drawerOpen && (
+          <>
+            <motion.div
+              key="scrim"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => setDrawerOpen(false)}
+              className="fixed inset-0 z-50 bg-black/60"
+            />
+            <motion.aside
+              key="drawer"
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'tween', duration: 0.22 }}
+              className="fixed top-0 left-0 bottom-0 z-50 w-72 max-w-[85vw] bg-[#0a0a0c] border-r border-white/5 flex flex-col pt-safe overflow-y-auto"
+            >
+              <SidebarNav
+                user={user}
+                active={active}
+                onNav={(k) => {
+                  onNav(k);
+                  setDrawerOpen(false);
+                }}
+                onLogout={() => {
+                  setDrawerOpen(false);
+                  onLogout();
+                }}
+              />
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      <main className="flex-1 px-4 py-4 pb-bottom-nav overflow-x-hidden">
+        {children}
+      </main>
+
+      <nav
+        className="fixed bottom-0 inset-x-0 z-30 bg-[#0a0a0c]/95 backdrop-blur-xl border-t border-white/5 pb-safe"
+      >
+        <div className={`grid ${gridCols} h-16`}>
+          {shownItems.map((it) => {
+            const Icon = it.icon;
+            const isActive = active === it.key && it.key !== '__more__';
+            return (
+              <button
+                key={it.key}
+                onClick={() => (it.action ? it.action() : onNav(it.key))}
+                className={`relative flex flex-col items-center justify-center gap-1 select-none-app transition ${
+                  isActive ? 'text-blue-400' : 'text-muted-foreground active:text-white'
+                }`}
+              >
+                {isActive && <span className="absolute top-0 h-0.5 w-8 rounded-full bg-blue-400" />}
+                <Icon className="w-5 h-5" />
+                <span className="text-[10px] font-medium">{it.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+const MenuIcon = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="4" y1="7" x2="20" y2="7" />
+    <line x1="4" y1="12" x2="20" y2="12" />
+    <line x1="4" y1="17" x2="20" y2="17" />
+  </svg>
+);
+const ScanBarcodeIcon = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 5v3M3 16v3M8 5v3M8 16v3M13 5v3M13 16v3M18 5v3M18 16v3" />
+    <path d="M3 12h18" />
+  </svg>
+);
+
 
 function MobileTopBar({ user, active, onNav, onLogout }) {
   const [open, setOpen] = useState(false);
@@ -2308,39 +2451,50 @@ function App() {
   const currentAllowed = canView(view);
   const activeView = currentAllowed ? view : getDefaultView(user);
 
+  const content = (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={activeView}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
+        transition={{ duration: 0.18 }}
+      >
+        {activeView === 'dashboard' && <DashboardView />}
+        {activeView === 'cc:dashboard' && <DashboardView />}
+        {activeView === 'cc:tasks' && <StaffTasksView user={user} />}
+        {activeView === 'cc:import' && <ImportView />}
+        {activeView === 'cc:settings' && <SettingsView />}
+        {activeView === 'cc:history' && <HistoryView />}
+        {activeView.startsWith('om:') && (
+          <OrderManagementModule view={activeView} user={user} />
+        )}
+        {activeView === 'mod:order_management' && (
+          <OrderManagementModule view="om:dashboard" user={user} />
+        )}
+        {activeView === 'rp:history' && <ReportsHistoryView />}
+        {activeView === 'ad:users' && <EmployeesView />}
+      </motion.div>
+    </AnimatePresence>
+  );
+
   return (
-    <div className="min-h-screen bg-[#09090b] md:flex">
-      <div className="hidden md:block">
+    <>
+      {/* Desktop: sidebar + main */}
+      <div className="hidden md:flex min-h-screen bg-[#09090b]">
         <Sidebar user={user} active={activeView} onNav={safeNav} onLogout={logout} />
+        <main className="flex-1 p-8 overflow-x-hidden min-w-0">
+          {content}
+        </main>
       </div>
-      <MobileTopBar user={user} active={activeView} onNav={safeNav} onLogout={logout} />
-      <main className="flex-1 p-4 md:p-8 overflow-x-hidden min-w-0">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeView}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -5 }}
-            transition={{ duration: 0.2 }}
-          >
-            {activeView === 'dashboard' && <DashboardView />}
-            {activeView === 'cc:dashboard' && <DashboardView />}
-            {activeView === 'cc:tasks' && <StaffTasksView user={user} />}
-            {activeView === 'cc:import' && <ImportView />}
-            {activeView === 'cc:settings' && <SettingsView />}
-            {activeView === 'cc:history' && <HistoryView />}
-            {activeView.startsWith('om:') && (
-              <OrderManagementModule view={activeView} user={user} />
-            )}
-            {activeView === 'mod:order_management' && (
-              <OrderManagementModule view="om:dashboard" user={user} />
-            )}
-            {activeView === 'rp:history' && <ReportsHistoryView />}
-            {activeView === 'ad:users' && <EmployeesView />}
-          </motion.div>
-        </AnimatePresence>
-      </main>
-    </div>
+
+      {/* Mobile: sticky header + drawer + bottom nav */}
+      <div className="md:hidden">
+        <MobileShell user={user} active={activeView} onNav={safeNav} onLogout={logout}>
+          {content}
+        </MobileShell>
+      </div>
+    </>
   );
 }
 
