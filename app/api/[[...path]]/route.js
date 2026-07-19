@@ -120,6 +120,23 @@ const SEED_PRODUCTS = [
 ];
 
 async function ensureSeeded(db) {
+  // Migration: convert old per_month fields to interval_days if needed
+  const existing = await db.collection('cycle_settings').findOne({ id: 'default' });
+  if (existing && existing.fast_per_month !== undefined && existing.fast_interval_days === undefined) {
+    const conv = (perMonth) => (perMonth > 0 ? Math.round(30 / perMonth) : 30);
+    await db.collection('cycle_settings').updateOne(
+      { id: 'default' },
+      {
+        $set: {
+          fast_interval_days: conv(existing.fast_per_month),
+          medium_interval_days: conv(existing.medium_per_month),
+          slow_interval_days: conv(existing.slow_per_month),
+        },
+        $unset: { fast_per_month: '', medium_per_month: '', slow_per_month: '' },
+      }
+    );
+  }
+
   const meta = await db.collection('_meta').findOne({ id: 'seed' });
   if (meta?.done) return;
 
@@ -147,9 +164,9 @@ async function ensureSeeded(db) {
   // Settings
   await db.collection('cycle_settings').insertOne({
     id: 'default',
-    fast_per_month: 4,
-    medium_per_month: 2,
-    slow_per_month: 1,
+    fast_interval_days: 7,
+    medium_interval_days: 15,
+    slow_interval_days: 30,
     working_start: '07:00',
     working_end: '22:00',
     timezone: 'WITA',
@@ -180,18 +197,18 @@ async function generateDailyTasks(db, dateStr) {
     .toArray();
   if (employees.length === 0) return { skipped: true, reason: 'no active employees' };
 
-  // Compute daily targets per category
+  // Compute daily targets per category (interval in DAYS)
   const categories = [
-    { key: 'FAST', perMonth: settings.fast_per_month },
-    { key: 'MEDIUM', perMonth: settings.medium_per_month },
-    { key: 'SLOW', perMonth: settings.slow_per_month },
+    { key: 'FAST', days: settings.fast_interval_days || 7 },
+    { key: 'MEDIUM', days: settings.medium_interval_days || 15 },
+    { key: 'SLOW', days: settings.slow_interval_days || 30 },
   ];
 
   const pickedProducts = [];
   for (const c of categories) {
     const total = await db.collection('products').countDocuments({ category: c.key });
     if (total === 0) continue;
-    const target = Math.max(1, Math.round((total * c.perMonth) / 30));
+    const target = Math.max(1, Math.round(total / c.days));
     // Order by last_counted_at asc (nulls first), then sku_code
     const list = await db
       .collection('products')
@@ -595,22 +612,24 @@ async function handleRequest(req, path, method) {
   // ---------- OWNER: SETTINGS ----------
   if (path === 'settings' && method === 'GET') {
     const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
-    // Also return estimate
     const [fast, medium, slow] = await Promise.all([
       db.collection('products').countDocuments({ category: 'FAST' }),
       db.collection('products').countDocuments({ category: 'MEDIUM' }),
       db.collection('products').countDocuments({ category: 'SLOW' }),
     ]);
-    const dailyFast = Math.round((fast * settings.fast_per_month) / 30);
-    const dailyMedium = Math.round((medium * settings.medium_per_month) / 30);
-    const dailySlow = Math.round((slow * settings.slow_per_month) / 30);
+    const fDays = settings.fast_interval_days || 7;
+    const mDays = settings.medium_interval_days || 15;
+    const sDays = settings.slow_interval_days || 30;
+    const dailyFast = Math.round(fast / fDays);
+    const dailyMedium = Math.round(medium / mDays);
+    const dailySlow = Math.round(slow / sDays);
     const { _id, ...safe } = settings;
     return json({
       settings: safe,
       breakdown: {
-        fast: { total: fast, daily: dailyFast },
-        medium: { total: medium, daily: dailyMedium },
-        slow: { total: slow, daily: dailySlow },
+        fast: { total: fast, daily: dailyFast, interval_days: fDays },
+        medium: { total: medium, daily: dailyMedium, interval_days: mDays },
+        slow: { total: slow, daily: dailySlow, interval_days: sDays },
         daily_total: dailyFast + dailyMedium + dailySlow,
       },
     });
@@ -621,9 +640,9 @@ async function handleRequest(req, path, method) {
     if (!user || user.role !== 'owner') return err('unauthorized', 401);
     const body = await req.json();
     const upd = {};
-    if (body.fast_per_month !== undefined) upd.fast_per_month = Number(body.fast_per_month);
-    if (body.medium_per_month !== undefined) upd.medium_per_month = Number(body.medium_per_month);
-    if (body.slow_per_month !== undefined) upd.slow_per_month = Number(body.slow_per_month);
+    if (body.fast_interval_days !== undefined) upd.fast_interval_days = Math.max(1, Number(body.fast_interval_days));
+    if (body.medium_interval_days !== undefined) upd.medium_interval_days = Math.max(1, Number(body.medium_interval_days));
+    if (body.slow_interval_days !== undefined) upd.slow_interval_days = Math.max(1, Number(body.slow_interval_days));
     if (body.working_start) upd.working_start = body.working_start;
     if (body.working_end) upd.working_end = body.working_end;
     upd.updatedAt = new Date();

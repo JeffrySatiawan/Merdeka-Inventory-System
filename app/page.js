@@ -984,7 +984,7 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
 // ---------- Settings ----------
 function SettingsView() {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ fast_per_month: 4, medium_per_month: 2, slow_per_month: 1, working_start: '07:00', working_end: '22:00' });
+  const [form, setForm] = useState({ fast_interval_days: 7, medium_interval_days: 15, slow_interval_days: 30, working_start: '07:00', working_end: '22:00' });
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
 
@@ -993,9 +993,9 @@ function SettingsView() {
       const d = await api('settings');
       setData(d);
       setForm({
-        fast_per_month: d.settings.fast_per_month,
-        medium_per_month: d.settings.medium_per_month,
-        slow_per_month: d.settings.slow_per_month,
+        fast_interval_days: d.settings.fast_interval_days || 7,
+        medium_interval_days: d.settings.medium_interval_days || 15,
+        slow_interval_days: d.settings.slow_interval_days || 30,
         working_start: d.settings.working_start,
         working_end: d.settings.working_end,
       });
@@ -1013,9 +1013,9 @@ function SettingsView() {
     const fast = data.breakdown.fast.total;
     const medium = data.breakdown.medium.total;
     const slow = data.breakdown.slow.total;
-    const dFast = Math.round((fast * form.fast_per_month) / 30);
-    const dMedium = Math.round((medium * form.medium_per_month) / 30);
-    const dSlow = Math.round((slow * form.slow_per_month) / 30);
+    const dFast = Math.round(fast / Math.max(1, form.fast_interval_days));
+    const dMedium = Math.round(medium / Math.max(1, form.medium_interval_days));
+    const dSlow = Math.round(slow / Math.max(1, form.slow_interval_days));
     return { fast, medium, slow, dFast, dMedium, dSlow, total: dFast + dMedium + dSlow };
   }, [data, form]);
 
@@ -1057,26 +1057,27 @@ function SettingsView() {
         <Card className="border-white/10 bg-white/[0.02]">
           <CardHeader>
             <CardTitle>Interval Counting</CardTitle>
-            <CardDescription>Berapa kali per bulan tiap kategori dihitung</CardDescription>
+            <CardDescription>Setiap berapa hari tiap kategori dihitung ulang</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {[
-              { key: 'fast_per_month', label: 'FAST' },
-              { key: 'medium_per_month', label: 'MEDIUM' },
-              { key: 'slow_per_month', label: 'SLOW' },
+              { key: 'fast_interval_days', label: 'FAST', hint: 'mis. 7 hari' },
+              { key: 'medium_interval_days', label: 'MEDIUM', hint: 'mis. 15 hari' },
+              { key: 'slow_interval_days', label: 'SLOW', hint: 'mis. 30 hari' },
             ].map((c) => (
               <div key={c.key} className="flex items-center gap-4">
                 <CategoryBadge cat={c.label} />
+                <div className="text-xs text-muted-foreground w-16">setiap</div>
                 <div className="flex-1">
                   <Input
                     type="number"
-                    min={0}
-                    max={30}
+                    min={1}
+                    max={365}
                     value={form[c.key]}
                     onChange={(e) => setForm({ ...form, [c.key]: Number(e.target.value) })}
                   />
                 </div>
-                <div className="text-xs text-muted-foreground w-16">kali / bulan</div>
+                <div className="text-xs text-muted-foreground w-20">hari</div>
               </div>
             ))}
             <Separator />
@@ -1115,9 +1116,9 @@ function SettingsView() {
             <div className="text-sm text-muted-foreground">SKU harus dihitung setiap hari</div>
             <Separator />
             <div className="space-y-3">
-              <PreviewRow label="FAST" total={preview?.fast || 0} daily={preview?.dFast || 0} />
-              <PreviewRow label="MEDIUM" total={preview?.medium || 0} daily={preview?.dMedium || 0} />
-              <PreviewRow label="SLOW" total={preview?.slow || 0} daily={preview?.dSlow || 0} />
+              <PreviewRow label="FAST" total={preview?.fast || 0} daily={preview?.dFast || 0} days={form.fast_interval_days} />
+              <PreviewRow label="MEDIUM" total={preview?.medium || 0} daily={preview?.dMedium || 0} days={form.medium_interval_days} />
+              <PreviewRow label="SLOW" total={preview?.slow || 0} daily={preview?.dSlow || 0} days={form.slow_interval_days} />
             </div>
           </CardContent>
         </Card>
@@ -1126,11 +1127,13 @@ function SettingsView() {
   );
 }
 
-function PreviewRow({ label, total, daily }) {
+function PreviewRow({ label, total, daily, days }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex items-center justify-between gap-2">
       <CategoryBadge cat={label} />
-      <div className="text-xs text-muted-foreground">{total.toLocaleString()} SKU total</div>
+      <div className="text-xs text-muted-foreground flex-1 text-center">
+        {total.toLocaleString()} SKU · tiap {days} hari
+      </div>
       <div className="text-sm font-semibold tabular-nums">→ {daily} / hari</div>
     </div>
   );
