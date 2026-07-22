@@ -1607,6 +1607,18 @@ function OMSettingsView({ isOwner }) {
               disabled={!isOwner} />
             <div className="text-xs text-muted-foreground mt-1">Transaksi lebih tua dari ini akan dihapus otomatis.</div>
           </div>
+          <div className="pt-2 border-t border-white/10">
+            <Label>Cutoff Pindah ke Tab Selesai (jam WITA)</Label>
+            <div className="flex items-center gap-2 mt-1">
+              <Input type="number" min={0} max={23} step={1} value={settings?.archive_cutoff_hour ?? 6}
+                onChange={(e) => setSettings({ ...settings, archive_cutoff_hour: Math.max(0, Math.min(23, Number(e.target.value) || 0)) })}
+                disabled={!isOwner} className="w-24 text-center tabular-nums" />
+              <span className="text-sm text-muted-foreground">:00 WITA</span>
+            </div>
+            <div className="text-xs text-muted-foreground mt-1">
+              Setiap hari pada jam ini, resi yang <span className="text-white">sudah dikirim</span> pindah otomatis dari tab <span className="text-blue-300">Kirim</span> ke tab <span className="text-emerald-300">Selesai</span>. Data tetap tersimpan lengkap (siapa cetak/packing/kirim + jam).
+            </div>
+          </div>
           {isOwner && (
             <Button onClick={save} disabled={saving} className="gap-2">
               {saving && <Loader2 className="w-4 h-4 animate-spin" />} Simpan
@@ -1614,6 +1626,294 @@ function OMSettingsView({ isOwner }) {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ============================================================
+// VIEW: SELESAI (Archived shipments)
+// Menampilkan resi yang sudah dikirim & lewat cutoff (default 06:00 WITA)
+// Data lengkap: cetak, packing, kirim (nama + jam masing-masing) + foto
+// ============================================================
+function OMCompletedView({ user }) {
+  const isOwner = user?.role === 'owner';
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [counts, setCounts] = useState({ cetak: 0, packing: 0, kirim: 0, selesai: 0 });
+  const [cutoffInfo, setCutoffInfo] = useState(null);
+  const [q, setQ] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [photoModal, setPhotoModal] = useState(null);
+  const [detailModal, setDetailModal] = useState(null);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      params.set('limit', '500');
+      const d = await omApi(`tab/selesai?${params.toString()}`);
+      setItems(d.items || []);
+      setCounts(d.counts || {});
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  async function loadCutoff() {
+    try { setCutoffInfo(await omApi('cutoff-info')); } catch {}
+  }
+  useEffect(() => {
+    load();
+    loadCutoff();
+    // Refresh every 30s so newly-archived resi appear automatically after cutoff moment
+    const t = setInterval(() => { load(); loadCutoff(); }, 30000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function fmtDateTime(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    return d.toLocaleString('id-ID', {
+      timeZone: 'Asia/Makassar',
+      year: '2-digit', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+  }
+  function fmtDate(iso) {
+    if (!iso) return '-';
+    return new Date(iso).toLocaleDateString('id-ID', {
+      timeZone: 'Asia/Makassar', day: '2-digit', month: 'short', year: 'numeric',
+    });
+  }
+
+  const nextCutoffLabel = cutoffInfo?.next_cutoff
+    ? new Date(cutoffInfo.next_cutoff).toLocaleString('id-ID', {
+        timeZone: 'Asia/Makassar', day: '2-digit', month: 'short',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      })
+    : '-';
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight flex items-center gap-2">
+            <CheckCircle2 className="w-6 h-6 text-emerald-400" /> Selesai
+          </h1>
+          <p className="text-muted-foreground text-xs md:text-sm mt-1">
+            Arsip resi yang telah melewati proses <span className="text-white">Cetak → Packing → Kirim</span> dan lewat batas cutoff harian.
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Cutoff Aktif</div>
+          <div className="text-lg font-bold tabular-nums">
+            {String(cutoffInfo?.cutoff_hour ?? 6).padStart(2, '0')}:00 <span className="text-xs text-muted-foreground">WITA</span>
+          </div>
+          <div className="text-[10px] text-muted-foreground">Berikutnya: {nextCutoffLabel}</div>
+        </div>
+      </div>
+
+      {/* Tab counter summary — helps user see full workflow numbers */}
+      <div className="grid grid-cols-4 gap-2">
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2 text-center">
+          <div className="text-[9px] uppercase tracking-widest text-muted-foreground">Cetak</div>
+          <div className="text-lg font-bold tabular-nums">{counts.cetak || 0}</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2 text-center">
+          <div className="text-[9px] uppercase tracking-widest text-muted-foreground">Packing</div>
+          <div className="text-lg font-bold tabular-nums text-blue-300">{counts.packing || 0}</div>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-2 text-center">
+          <div className="text-[9px] uppercase tracking-widest text-muted-foreground">Kirim</div>
+          <div className="text-lg font-bold tabular-nums text-amber-300">{counts.kirim || 0}</div>
+        </div>
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-2 text-center">
+          <div className="text-[9px] uppercase tracking-widest text-emerald-300">Selesai</div>
+          <div className="text-lg font-bold tabular-nums text-emerald-300">{counts.selesai || 0}</div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <Card className="border-white/10 bg-white/[0.02]">
+        <CardContent className="pt-4 pb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+            <div className="sm:col-span-2">
+              <Label className="text-xs">Cari No. Resi</Label>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input value={q} onChange={(e) => setQ(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && load()}
+                  placeholder="Cari..." className="h-9 pl-8" />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Tanggal Kirim Dari</Label>
+              <Input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="h-9" />
+            </div>
+            <div>
+              <Label className="text-xs">Sampai</Label>
+              <Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="h-9" />
+            </div>
+          </div>
+          <div className="flex gap-2 mt-2">
+            <Button onClick={load} size="sm" className="gap-1">
+              <Filter className="w-3 h-3" /> Terapkan Filter
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => { setQ(''); setDateFrom(''); setDateTo(''); setTimeout(load, 50); }}>
+              Reset
+            </Button>
+            <div className="ml-auto text-xs text-muted-foreground flex items-center">
+              Total: <span className="ml-1 font-bold text-white">{items.length}</span>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Table */}
+      <Card className="border-white/10 bg-white/[0.02]">
+        <CardContent className="pt-4 pb-4">
+          {loading ? (
+            <Skeleton className="h-40" />
+          ) : items.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">
+              <CheckCircle2 className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              Belum ada resi yang masuk arsip Selesai.
+              <div className="text-xs mt-1">Resi otomatis pindah ke sini setelah lewat jam cutoff ({String(cutoffInfo?.cutoff_hour ?? 6).padStart(2, '0')}:00 WITA).</div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto -mx-4 sm:mx-0">
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground text-left border-b border-white/10">
+                  <tr>
+                    <th className="py-2 px-3">No. Resi</th>
+                    <th className="py-2 px-3">Ekspedisi</th>
+                    <th className="py-2 px-3">Cetak</th>
+                    <th className="py-2 px-3">Packing</th>
+                    <th className="py-2 px-3">Kirim</th>
+                    <th className="py-2 px-3 text-center">Detail</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/5">
+                  {items.map((x) => (
+                    <tr key={x.id} className="hover:bg-white/[0.02]">
+                      <td className="py-2 px-3 font-mono font-semibold">{x.tracking_number}</td>
+                      <td className="py-2 px-3">
+                        <div className="font-semibold">{x.expedition_name}</div>
+                        {x.expedition_code && <div className="text-[10px] text-muted-foreground">{x.expedition_code}</div>}
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="font-semibold">{x.printed_by_name || '-'}</div>
+                        <div className="text-[10px] text-muted-foreground">{fmtDateTime(x.printed_at)}</div>
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="font-semibold">{x.packed_by_name || '-'}</div>
+                        <div className="text-[10px] text-muted-foreground">{fmtDateTime(x.packed_at)}</div>
+                        {x.sku_count > 0 && (
+                          <div className="text-[10px] text-muted-foreground">{x.sku_count} SKU · {x.item_count} item</div>
+                        )}
+                      </td>
+                      <td className="py-2 px-3">
+                        <div className="font-semibold text-emerald-300">{x.delivered_by_name || '-'}</div>
+                        <div className="text-[10px] text-muted-foreground">{fmtDateTime(x.delivered_at)}</div>
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <Button size="sm" variant="ghost" onClick={() => setDetailModal(x)} className="h-7 gap-1">
+                          <Search className="w-3 h-3" /> Lihat
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Detail modal */}
+      <Dialog open={!!detailModal} onOpenChange={(o) => !o && setDetailModal(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+              Detail Resi {detailModal?.tracking_number}
+            </DialogTitle>
+          </DialogHeader>
+          {detailModal && (
+            <div className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-2 p-3 rounded-lg bg-white/5">
+                <div>
+                  <div className="text-[10px] uppercase text-muted-foreground">Ekspedisi</div>
+                  <div className="font-semibold">{detailModal.expedition_name}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-muted-foreground">Kode</div>
+                  <div className="font-semibold">{detailModal.expedition_code || '-'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-muted-foreground">Jumlah SKU</div>
+                  <div className="font-semibold">{detailModal.sku_count || 0}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase text-muted-foreground">Total Item</div>
+                  <div className="font-semibold">{detailModal.item_count || 0}</div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="p-2 rounded border-l-2 border-blue-500 bg-blue-500/5">
+                  <div className="text-[10px] uppercase text-blue-300 flex items-center gap-1"><Package className="w-3 h-3" /> Cetak</div>
+                  <div className="font-semibold text-sm">{detailModal.printed_by_name || '-'}</div>
+                  <div className="text-[11px] text-muted-foreground">{fmtDateTime(detailModal.printed_at)}</div>
+                </div>
+                <div className="p-2 rounded border-l-2 border-indigo-500 bg-indigo-500/5">
+                  <div className="text-[10px] uppercase text-indigo-300 flex items-center gap-1"><PackageCheck className="w-3 h-3" /> Packing</div>
+                  <div className="font-semibold text-sm">{detailModal.packed_by_name || '-'}</div>
+                  <div className="text-[11px] text-muted-foreground">{fmtDateTime(detailModal.packed_at)}</div>
+                </div>
+                <div className="p-2 rounded border-l-2 border-emerald-500 bg-emerald-500/5">
+                  <div className="text-[10px] uppercase text-emerald-300 flex items-center gap-1"><Truck className="w-3 h-3" /> Kirim (Serah Terima)</div>
+                  <div className="font-semibold text-sm">{detailModal.delivered_by_name || '-'}</div>
+                  <div className="text-[11px] text-muted-foreground">{fmtDateTime(detailModal.delivered_at)}</div>
+                </div>
+                {detailModal.archived_at && (
+                  <div className="p-2 rounded border-l-2 border-white/20 bg-white/[0.02]">
+                    <div className="text-[10px] uppercase text-muted-foreground flex items-center gap-1"><Clock className="w-3 h-3" /> Diarsipkan</div>
+                    <div className="text-[11px] text-muted-foreground">{fmtDateTime(detailModal.archived_at)}</div>
+                  </div>
+                )}
+              </div>
+              {detailModal.photo_path !== undefined && !detailModal.photo_deleted && (
+                <Button variant="outline" onClick={() => setPhotoModal(detailModal)} className="w-full gap-2">
+                  <ImageOff className="w-4 h-4" /> Lihat Foto Packing
+                </Button>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Photo modal */}
+      <Dialog open={!!photoModal} onOpenChange={(o) => !o && setPhotoModal(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-mono">{photoModal?.tracking_number}</DialogTitle>
+          </DialogHeader>
+          {photoModal && (
+            <img
+              src={`/api/om/photos/${photoModal.id}`}
+              alt="packing"
+              className="w-full max-h-[60vh] object-contain rounded-lg"
+              onError={(e) => { e.target.style.display = 'none'; toast.error('Foto sudah kadaluarsa atau tidak ditemukan'); }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1628,6 +1928,7 @@ export default function OrderManagementModule({ view, user }) {
     case 'om:scan_print': return <OMScanPrintView user={user} />;
     case 'om:scan_pack': return <OMScanPackView user={user} />;
     case 'om:scan_deliver': return <OMScanDeliveryView user={user} />;
+    case 'om:completed': return <OMCompletedView user={user} />;
     case 'om:reports': return <OMReportsView user={user} />;
     case 'om:expeditions': return <OMExpeditionsView isOwner={isOwner} />;
     case 'om:settings': return <OMSettingsView isOwner={isOwner} />;

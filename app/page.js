@@ -230,6 +230,7 @@ function buildNav(user) {
             { key: 'om:scan_print', label: 'Scan Cetak Resi' },
             { key: 'om:scan_pack', label: 'Scan Mulai Packing' },
             { key: 'om:scan_deliver', label: 'Scan Serah Terima Kurir' },
+            { key: 'om:completed', label: 'Selesai' },
             { key: 'om:reports', label: 'Laporan' },
             { key: 'om:expeditions', label: 'Master Ekspedisi' },
             { key: 'om:settings', label: 'Pengaturan', ownerOnly: true },
@@ -487,7 +488,8 @@ function bottomNavForModule(moduleKey, user) {
       { key: 'om:dashboard', label: 'Home', icon: LayoutDashboard },
       { key: 'om:scan_print', label: 'Cetak', icon: FileSpreadsheet },
       { key: 'om:scan_pack', label: 'Packing', icon: ScanBarcodeIcon },
-      { key: 'om:scan_deliver', label: 'Kurir', icon: Truck },
+      { key: 'om:scan_deliver', label: 'Kirim', icon: Truck },
+      { key: 'om:completed', label: 'Selesai', icon: CheckCircle2 },
     ];
     if (isOwner) items.push({ key: 'om:reports', label: 'Laporan', icon: History });
     return items;
@@ -510,6 +512,7 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
     'om:scan_print': 'Scan Cetak Resi',
     'om:scan_pack': 'Scan Mulai Packing',
     'om:scan_deliver': 'Scan Serah Terima',
+    'om:completed': 'Selesai',
     'om:reports': 'Laporan',
     'om:expeditions': 'Master Ekspedisi',
     'om:settings': 'Pengaturan OM',
@@ -675,6 +678,7 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'om:dashboard': 'OM · Dashboard',
     'om:scan_pack': 'OM · Scan Packing',
     'om:scan_deliver': 'OM · Serah Terima',
+    'om:completed': 'OM · Selesai',
     'om:reports': 'OM · Laporan',
     'om:expeditions': 'OM · Master Ekspedisi',
     'om:settings': 'OM · Pengaturan',

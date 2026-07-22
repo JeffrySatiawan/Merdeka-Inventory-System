@@ -365,6 +365,75 @@ frontend:
       - working: "NA"
         agent: "main"
         comment: |
+          Refactored ScannerShell to camera-only for tracking number input on 3 pages: Scan Cetak Resi, Scan Mulai Packing, Scan Serah Terima Kurir. Removed text input entirely. Camera auto-starts + retry button on error. Auto-pauses when disabled=true.
+
+  - task: "Tab workflow (Cetak/Packing/Kirim/Selesai) with cutoff-hour archival"
+    implemented: true
+    working: "NA"
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Added tab-based workflow archival system:
+          BACKEND:
+          - New field `archive_cutoff_hour` in om_settings (default 6, range 0-23)
+          - Helper `getLastCutoffMoment(hour)` computes most-recent WITA cutoff moment
+          - Helper `ensureArchivedFlags(db)` sets archived_at on delivered shipments whose delivered_at < last cutoff
+          - Called at start of every OM request (idempotent)
+          - New endpoint GET /api/om/tab/:tab where tab ∈ {cetak,packing,kirim,selesai}
+            - cetak: status='printed'
+            - packing: status='packed'
+            - kirim: status='delivered' AND archived_at is null (current shift)
+            - selesai: status='delivered' AND archived_at is not null (past cutoff, archived)
+            - Returns items + counts for all 4 tabs
+            - Supports q, expedition_id, date_from, date_to filters
+          - New endpoint GET /api/om/cutoff-info returns cutoff_hour + last_cutoff + next_cutoff (ISO)
+          - PUT /api/om/settings now accepts archive_cutoff_hour (0-23)
+          - scan/deliver 409 response now includes archived_at field so UI can differentiate
+          - Data flow: resi never resets. Resi cetak-but-not-packed stays in Cetak tab. Packed-but-not-delivered stays in Packing. Delivered stays in Kirim until next cutoff, then auto-flags to Selesai.
+          Verified via manual curl+DB manipulation: 
+            - Print/Pack/Deliver produces correct tab counts
+            - Backdating delivered_at + trigger dashboard call → archived_at set → item moves to Selesai
+            - Tab counts update accordingly
+  - task: "Selesai frontend view + Bottom-nav update + Cutoff setting"
+    implemented: true
+    working: "NA"
+    file: "/app/components/modules/order-management/OrderManagementModule.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Frontend changes:
+          - Bottom nav renamed: Kurir → Kirim; added Selesai tab; order: Home · Cetak · Packing · Kirim · Selesai · Laporan(owner)
+          - Added sidebar item om:completed under Order Management
+          - New view OMCompletedView with:
+            * Header showing cutoff hour + next cutoff timestamp
+            * 4-tab counter summary (Cetak/Packing/Kirim/Selesai)
+            * Filter row: search + date_from/date_to
+            * Table: No.Resi, Ekspedisi, Cetak (nama+jam), Packing (nama+jam+SKU/item), Kirim (nama+jam), Lihat detail button
+            * Detail modal: full timeline with color-coded phase cards + optional Lihat Foto Packing button
+            * Auto-refresh every 30s
+          - OMSettingsView: added "Cutoff Pindah ke Tab Selesai (jam WITA)" input (0-23), explanation text
+          Verified: Selesai page displays with test data (DEMO-S), tab counters correct, detail modal opens, Pengaturan shows cutoff field.
+
+
+    implemented: true
+    working: "NA"
+    file: "/app/components/modules/order-management/OrderManagementModule.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
           Refactored ScannerShell to camera-only for tracking number input on 3 pages:
           Scan Cetak Resi, Scan Mulai Packing, Scan Serah Terima Kurir.
           Changes:
