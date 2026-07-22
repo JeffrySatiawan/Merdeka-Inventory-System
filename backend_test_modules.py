@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 
 # Base URL from review request
-BASE_URL = "https://d656f36a-d0b0-41a7-b7ca-1bb1942e65b0.preview.emergentagent.com"
+BASE_URL = "https://progress-lanjut.preview.emergentagent.com"
 API_BASE = f"{BASE_URL}/api"
 
 # Test credentials (seeded)
