@@ -148,74 +148,71 @@ function LiveScanQueue({ items }) {
 
 /**
  * ScannerShell — reusable scanner-mode layout.
+ * CAMERA-ONLY INPUT for tracking numbers (no manual typing, no keyboard popup).
  * Props:
  *   pageName, moduleName, user, stats (array), children (form area), queue,
- *   scanValue, onScanChange, onScanEnter, cameraSupported (default true),
- *   scanPlaceholder, disabled
+ *   onScanDecoded (fn), disabled (bool — auto-pauses camera when true).
  */
 function ScannerShell({
   moduleName = 'Order Management',
   pageName,
   user,
   stats = [],
-  scanValue,
-  onScanChange,
-  onScanEnter,
-  scanPlaceholder = 'Menunggu scan...',
   disabled = false,
   queue = [],
   children,
   onScanDecoded, // called when camera decodes a barcode
 }) {
-  const scanRef = useRef(null);
   const clock = useRealtimeClock();
-  const [cameraOn, setCameraOn] = useState(false);
   const [cameraErr, setCameraErr] = useState(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
   const stopCameraRef = useRef(null);
   const lastDecodeRef = useRef({ code: '', ts: 0 });
-
-  // Autofocus scan input while camera not active
+  // Keep latest onScanDecoded without restarting camera on every render
+  const decodedCbRef = useRef(onScanDecoded);
   useEffect(() => {
-    if (cameraOn || disabled) return;
-    const id = setInterval(() => {
-      if (document.activeElement !== scanRef.current) scanRef.current?.focus();
-    }, 1500);
-    scanRef.current?.focus();
-    return () => clearInterval(id);
-  }, [cameraOn, disabled]);
+    decodedCbRef.current = onScanDecoded;
+  }, [onScanDecoded]);
 
-  // Camera start/stop
+  // Camera auto-start / auto-stop (paused when disabled=true)
   useEffect(() => {
-    if (!cameraOn) return;
+    if (disabled) return; // camera paused while wizard is processing an item
     let mounted = true;
     setCameraErr(null);
+    setCameraReady(false);
     startCameraScanner(
       'om-camera',
       (decoded) => {
         if (!mounted) return;
-        // Debounce identical decode within 1.2s to avoid double reads
         const now = Date.now();
         if (lastDecodeRef.current.code === decoded && now - lastDecodeRef.current.ts < 1200) return;
         lastDecodeRef.current = { code: decoded, ts: now };
-        onScanDecoded && onScanDecoded(decoded);
+        if (decodedCbRef.current) decodedCbRef.current(decoded);
       },
-      (msg) => {}
+      () => {}
     )
       .then((stopFn) => {
+        if (!mounted) {
+          try { stopFn && stopFn(); } catch {}
+          return;
+        }
         stopCameraRef.current = stopFn;
+        setCameraReady(true);
       })
       .catch((e) => {
-        setCameraErr(String(e?.message || e));
-        setCameraOn(false);
+        if (!mounted) return;
+        setCameraErr(String(e?.message || e || 'Tidak dapat mengakses kamera'));
       });
     return () => {
       mounted = false;
+      setCameraReady(false);
       if (stopCameraRef.current) {
         stopCameraRef.current().catch(() => {});
         stopCameraRef.current = null;
       }
     };
-  }, [cameraOn, onScanDecoded]);
+  }, [disabled, retryTick]);
 
   return (
     <div className="space-y-3 max-w-2xl mx-auto">
@@ -252,59 +249,54 @@ function ScannerShell({
         </div>
       )}
 
-      {/* Scan area */}
+      {/* Camera-only scan area — no text input, no keyboard popup */}
       <div className="rounded-xl border-2 border-blue-500/30 bg-blue-500/5 p-3 space-y-2">
-        {!cameraOn ? (
-          <>
-            <Input
-              ref={scanRef}
-              value={scanValue}
-              onChange={(e) => onScanChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  onScanEnter && onScanEnter();
-                }
-              }}
-              placeholder={scanPlaceholder}
-              className="text-center text-lg font-mono tracking-wider h-14 border-blue-500/40 bg-black/40"
-              autoFocus
-              inputMode="text"
-              autoComplete="off"
-              disabled={disabled}
-            />
-            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-              <span>Auto-focus aktif · scanner USB/BT siap</span>
+        <div className={`relative w-full aspect-[16/10] rounded-lg overflow-hidden bg-black border border-white/10 ${disabled ? 'opacity-40' : ''}`}>
+          {/* Camera-managed container — MUST have no React children so html5-qrcode owns DOM */}
+          <div id="om-camera" className="absolute inset-0" />
+          {/* Overlays are siblings, positioned absolutely — never mixed with camera DOM */}
+          {!cameraErr && !cameraReady && !disabled && (
+            <div className="absolute inset-0 flex items-center justify-center text-blue-200/80 text-xs gap-2 pointer-events-none z-10">
+              <Loader2 className="w-4 h-4 animate-spin" /> Mengaktifkan kamera...
+            </div>
+          )}
+          {disabled && (
+            <div className="absolute inset-0 flex items-center justify-center text-amber-200/90 text-[11px] font-semibold uppercase tracking-widest pointer-events-none bg-black/60 z-10">
+              Kamera dijeda
+            </div>
+          )}
+          {cameraErr && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3 text-center bg-black/80 z-10">
+              <AlertTriangle className="w-6 h-6 text-rose-400" />
+              <div className="text-[11px] text-rose-300 max-w-xs">{cameraErr}</div>
+              <div className="text-[10px] text-muted-foreground">Izinkan akses kamera di browser / device.</div>
               <button
                 type="button"
-                onClick={() => setCameraOn(true)}
-                className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 flex items-center gap-1"
+                onClick={() => setRetryTick((v) => v + 1)}
+                className="mt-1 px-3 py-1.5 rounded-md bg-blue-500/20 hover:bg-blue-500/30 text-blue-200 text-xs flex items-center gap-1"
               >
-                <Camera className="w-3 h-3" /> Kamera
+                <RefreshCw className="w-3 h-3" /> Coba Lagi
               </button>
             </div>
-          </>
-        ) : (
-          <>
-            <div
-              id="om-camera"
-              className="w-full aspect-[16/10] rounded-lg overflow-hidden bg-black border border-white/10"
-            />
-            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-              <span>Arahkan barcode ke kamera</span>
-              <button
-                type="button"
-                onClick={() => setCameraOn(false)}
-                className="px-2.5 py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 flex items-center gap-1"
-              >
-                <X className="w-3 h-3" /> Matikan Kamera
-              </button>
-            </div>
-            {cameraErr && (
-              <div className="text-[10px] text-rose-400 mt-1">Kamera error: {cameraErr}</div>
-            )}
-          </>
-        )}
+          )}
+        </div>
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <Camera className="w-3 h-3" />
+            {disabled
+              ? 'Menunggu proses resi sebelumnya...'
+              : cameraReady
+              ? 'Arahkan barcode / QR resi ke kamera'
+              : cameraErr
+              ? 'Kamera tidak aktif'
+              : 'Menyiapkan kamera...'}
+          </span>
+          {cameraReady && !disabled && (
+            <span className="flex items-center gap-1 text-emerald-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> LIVE
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Optional inline form (children) */}
@@ -574,7 +566,6 @@ function fmtDuplicateMsg(prefix, dup) {
 function OMScanPrintView({ user }) {
   const [expeditions, setExpeditions] = useState([]);
   const [expeditionId, setExpeditionId] = useState('');
-  const [tracking, setTracking] = useState('');
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
@@ -607,7 +598,6 @@ function OMScanPrintView({ user }) {
       return;
     }
     processingRef.current = true;
-    setTracking('');
     try {
       const resp = await omApi('scan/print', {
         method: 'POST',
@@ -638,8 +628,6 @@ function OMScanPrintView({ user }) {
     }
   }
 
-  const expName = expeditions.find((e) => e.id === expeditionId)?.name || '';
-
   return (
     <ScannerShell
       moduleName="Order Management"
@@ -651,11 +639,7 @@ function OMScanPrintView({ user }) {
         { label: 'Kirim', value: stats.delivered || 0, tone: 'emerald' },
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
-      scanValue={tracking}
-      onScanChange={setTracking}
-      onScanEnter={() => process(tracking)}
       onScanDecoded={(v) => process(v)}
-      scanPlaceholder={expName ? `Scan resi ${expName}...` : 'Pilih ekspedisi dulu'}
       disabled={!expeditionId}
       queue={queue}
     >
@@ -686,7 +670,6 @@ function OMScanPrintView({ user }) {
 // SCAN → SKU → ITEM → FOTO → SIMPAN (sequential, auto-focus)
 // ============================================================
 function OMScanPackView({ user }) {
-  const [tracking, setTracking] = useState('');
   const [pending, setPending] = useState(null); // { shipment }
   const [step, setStep] = useState('sku'); // sku | item | photo | ready
   const [form, setForm] = useState({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
@@ -734,7 +717,6 @@ function OMScanPackView({ user }) {
       return;
     }
     processingRef.current = true;
-    setTracking('');
     try {
       const d = await omApi(`shipments?q=${encodeURIComponent(v)}&limit=1`);
       const s = (d.items || []).find((x) => x.tracking_number === v);
@@ -843,11 +825,7 @@ function OMScanPackView({ user }) {
         { label: 'Kirim', value: stats.delivered || 0, tone: 'emerald' },
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
-      scanValue={tracking}
-      onScanChange={setTracking}
-      onScanEnter={() => lookup(tracking)}
       onScanDecoded={(v) => lookup(v)}
-      scanPlaceholder="Scan resi yang sudah dicetak..."
       disabled={!!pending}
       queue={queue}
     >
@@ -1054,7 +1032,6 @@ function OMScanPackView({ user }) {
 // VIEW: Scan Serah Terima Kurir (Phase 3)
 // ============================================================
 function OMScanDeliveryView({ user }) {
-  const [tracking, setTracking] = useState('');
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
@@ -1076,7 +1053,6 @@ function OMScanDeliveryView({ user }) {
     const v = String(value || '').trim();
     if (!v) return;
     processingRef.current = true;
-    setTracking('');
     try {
       const resp = await omApi('scan/deliver', {
         method: 'POST',
@@ -1117,11 +1093,7 @@ function OMScanDeliveryView({ user }) {
         { label: 'Kirim', value: stats.delivered || 0, tone: 'emerald' },
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
-      scanValue={tracking}
-      onScanChange={setTracking}
-      onScanEnter={() => process(tracking)}
       onScanDecoded={(v) => process(v)}
-      scanPlaceholder="Scan resi yang sudah dipacking..."
       queue={queue}
     />
   );

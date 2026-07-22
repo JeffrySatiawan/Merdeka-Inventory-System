@@ -354,6 +354,29 @@ frontend:
           Test file: /app/backend_test_modules.py
           All module functionality working correctly. Zero breaking changes to existing Cycle Count system.
 
+  - task: "Camera-only scan for tracking number (Cetak / Packing / Kurir)"
+    implemented: true
+    working: "NA"
+    file: "/app/components/modules/order-management/OrderManagementModule.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Refactored ScannerShell to camera-only for tracking number input on 3 pages:
+          Scan Cetak Resi, Scan Mulai Packing, Scan Serah Terima Kurir.
+          Changes:
+          - Removed the tracking-number <Input> element entirely (no more manual typing / no mobile keyboard popup)
+          - Camera auto-starts on mount, with retry button on error
+          - Auto-pauses when disabled=true (e.g., packing wizard has active resi)
+          - Overlays (loading / paused / error) moved OUT of the html5-qrcode-managed div to avoid React removeChild race
+          - scanner.js hardened: pre-clears container DOM, tries multiple facingMode fallbacks (exact env -> env -> user), robust stop()
+          - Numeric SKU/item inputs in packing wizard retained (not tracking numbers)
+          - Removed unused state: tracking/setTracking + props scanValue/onScanChange/onScanEnter/scanPlaceholder from 3 views
+          Verified via screenshot test: no <input> for tracking on any of the 3 pages, camera LIVE shown, no runtime errors.
+
 frontend:
   - task: "Modular sidebar shell (General/Modules/Master Data/Reports/Admin)"
     implemented: true

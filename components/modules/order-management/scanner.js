@@ -76,43 +76,92 @@ export function feedback(type) {
 
 /**
  * Load html5-qrcode lazily and start scanning.
- * Returns a stop() function.
+ * Returns a stop() function. Safe against React unmount races and camera-init failures.
  */
 export async function startCameraScanner(elementId, onDecode, onError) {
+  if (typeof window === 'undefined') {
+    throw new Error('Camera scanner requires browser environment');
+  }
+  const container = document.getElementById(elementId);
+  if (!container) {
+    throw new Error('Camera container not found');
+  }
+  // Clean any leftover nodes from previous session to give html5-qrcode a fresh slate
+  try {
+    while (container.firstChild) container.removeChild(container.firstChild);
+  } catch {}
+
   const mod = await import('html5-qrcode');
   const { Html5Qrcode } = mod;
-  const instance = new Html5Qrcode(elementId, /* verbose */ false);
+  let instance;
+  try {
+    instance = new Html5Qrcode(elementId, /* verbose */ false);
+  } catch (e) {
+    throw new Error('Gagal inisialisasi kamera: ' + (e?.message || e));
+  }
+
   const config = {
     fps: 12,
     qrbox: { width: 260, height: 130 },
     aspectRatio: 1.6,
-    // rememberLastUsedCamera: true, // not available in all versions
     experimentalFeatures: { useBarCodeDetectorIfSupported: true },
   };
-  // Prefer rear camera
-  await instance.start(
+
+  const safeDecode = (d) => {
+    try { onDecode && onDecode(d); } catch {}
+  };
+
+  // Try rear-camera first, then generic environment, then any camera
+  const attempts = [
     { facingMode: { exact: 'environment' } },
-    config,
-    (decoded) => {
-      try { onDecode && onDecode(decoded); } catch {}
-    },
-    (msg) => {
-      // per-frame decode fails; silence unless caller wants
-      if (onError && msg && !/NotFoundException|No MultiFormat Readers/.test(String(msg))) {
-        onError(msg);
-      }
+    { facingMode: 'environment' },
+    { facingMode: 'user' },
+  ];
+  let started = false;
+  let lastErr = null;
+  for (const cam of attempts) {
+    try {
+      await instance.start(
+        cam,
+        config,
+        safeDecode,
+        (msg) => {
+          if (onError && msg && !/NotFoundException|No MultiFormat Readers/.test(String(msg))) {
+            try { onError(msg); } catch {}
+          }
+        }
+      );
+      started = true;
+      break;
+    } catch (e) {
+      lastErr = e;
+      // Ensure any partial DOM is cleared before retry
+      try {
+        while (container.firstChild) container.removeChild(container.firstChild);
+      } catch {}
     }
-  ).catch(async (e) => {
-    // Fallback if `exact: environment` unsupported
-    return instance.start(
-      { facingMode: 'environment' },
-      config,
-      (d) => { try { onDecode && onDecode(d); } catch {} },
-      () => {}
+  }
+  if (!started) {
+    // Give up — return a no-op stop and throw
+    throw new Error(
+      'Tidak dapat mengakses kamera. Pastikan izin kamera aktif & perangkat memiliki kamera. (' +
+        (lastErr?.message || lastErr || 'unknown') +
+        ')'
     );
-  });
+  }
+
+  // Return a robust stop function that never throws
   return async () => {
     try { await instance.stop(); } catch {}
-    try { await instance.clear(); } catch {}
+    try { instance.clear(); } catch {}
+    // Final cleanup — remove any leftover DOM the library added
+    try {
+      const c = document.getElementById(elementId);
+      if (c) {
+        while (c.firstChild) {
+          try { c.removeChild(c.firstChild); } catch { break; }
+        }
+      }
+    } catch {}
   };
 }
