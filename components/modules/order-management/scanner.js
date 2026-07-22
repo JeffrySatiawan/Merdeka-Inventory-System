@@ -101,10 +101,16 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   }
 
   const config = {
-    fps: 12,
-    qrbox: { width: 260, height: 130 },
+    fps: 15,
+    // Omit qrbox → scan area = full video (better for wider barcodes like resi)
     aspectRatio: 1.6,
     experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+    // Prefer larger resolution for readability
+    videoConstraints: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
   };
 
   const safeDecode = (d) => {

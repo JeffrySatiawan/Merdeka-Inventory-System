@@ -358,7 +358,7 @@ frontend:
     implemented: true
     working: "NA"
     file: "/app/components/modules/order-management/OrderManagementModule.js"
-    stuck_count: 0
+    stuck_count: 1
     priority: "high"
     needs_retesting: true
     status_history:
@@ -366,6 +366,20 @@ frontend:
         agent: "main"
         comment: |
           Refactored ScannerShell to camera-only for tracking number input on 3 pages: Scan Cetak Resi, Scan Mulai Packing, Scan Serah Terima Kurir. Removed text input entirely. Camera auto-starts + retry button on error. Auto-pauses when disabled=true.
+      - working: false
+        agent: "user"
+        comment: "camera tidak terbuka hanya gelap (camera doesn't open, only shows dark/black)"
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Fix attempt for dark-camera issue:
+          1. Removed `absolute inset-0` from #om-camera div — now uses natural block layout with aspectRatio 16/10 + minHeight 220px so html5-qrcode measures real dimensions
+          2. Added globals.css CSS rules to force injected <video>, canvas, and internal divs to width:100% height:100% object-fit:cover — prevents small centered video with black bars
+          3. useEffect now waits (via requestAnimationFrame double-frame) for container to have actual dimensions (width>=40, height>=40) before calling startCameraScanner
+          4. Added getUserMedia availability check with clear Indonesian error message
+          5. Improved scanner.js config: removed too-small qrbox (was 260x130) → whole video is scan area (better for wide resi barcodes); added videoConstraints with facingMode ideal environment + 1280x720 ideal resolution; upped fps to 15
+          6. All errors now logged to console with '[OM Camera]' prefix for remote-debug via DevTools
+          Files changed: /app/app/globals.css, /app/components/modules/order-management/OrderManagementModule.js, /app/components/modules/order-management/scanner.js
 
   - task: "Tab workflow (Cetak/Packing/Kirim/Selesai) with cutoff-hour archival"
     implemented: true

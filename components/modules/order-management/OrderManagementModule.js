@@ -181,29 +181,60 @@ function ScannerShell({
     let mounted = true;
     setCameraErr(null);
     setCameraReady(false);
-    startCameraScanner(
-      'om-camera',
-      (decoded) => {
-        if (!mounted) return;
-        const now = Date.now();
-        if (lastDecodeRef.current.code === decoded && now - lastDecodeRef.current.ts < 1200) return;
-        lastDecodeRef.current = { code: decoded, ts: now };
-        if (decodedCbRef.current) decodedCbRef.current(decoded);
-      },
-      () => {}
-    )
-      .then((stopFn) => {
-        if (!mounted) {
-          try { stopFn && stopFn(); } catch {}
-          return;
-        }
-        stopCameraRef.current = stopFn;
-        setCameraReady(true);
-      })
-      .catch((e) => {
-        if (!mounted) return;
-        setCameraErr(String(e?.message || e || 'Tidak dapat mengakses kamera'));
-      });
+
+    // Wait for browser layout to give the container real dimensions
+    // (avoids html5-qrcode initializing with 0x0 → black video)
+    const startWhenReady = () => {
+      if (!mounted) return;
+      const el = document.getElementById('om-camera');
+      if (!el) {
+        // element not mounted yet; try again on next frame
+        requestAnimationFrame(startWhenReady);
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 40) {
+        // Layout not ready — retry a few times
+        requestAnimationFrame(startWhenReady);
+        return;
+      }
+
+      // Environment sanity check
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setCameraErr('Browser tidak mendukung akses kamera (getUserMedia). Gunakan Chrome / Safari terbaru dan buka lewat HTTPS.');
+        return;
+      }
+
+      startCameraScanner(
+        'om-camera',
+        (decoded) => {
+          if (!mounted) return;
+          const now = Date.now();
+          if (lastDecodeRef.current.code === decoded && now - lastDecodeRef.current.ts < 1200) return;
+          lastDecodeRef.current = { code: decoded, ts: now };
+          if (decodedCbRef.current) decodedCbRef.current(decoded);
+        },
+        () => {}
+      )
+        .then((stopFn) => {
+          if (!mounted) {
+            try { stopFn && stopFn(); } catch {}
+            return;
+          }
+          stopCameraRef.current = stopFn;
+          setCameraReady(true);
+        })
+        .catch((e) => {
+          if (!mounted) return;
+          const msg = String(e?.message || e || 'Tidak dapat mengakses kamera');
+          setCameraErr(msg);
+          // Console for debugging on device (open DevTools remote to inspect)
+          try { console.error('[OM Camera] Init failed:', e); } catch {}
+        });
+    };
+    // Use rAF-based wait so React finishes rendering the container first
+    requestAnimationFrame(() => requestAnimationFrame(startWhenReady));
+
     return () => {
       mounted = false;
       setCameraReady(false);
@@ -251,12 +282,16 @@ function ScannerShell({
 
       {/* Camera-only scan area — no text input, no keyboard popup */}
       <div className="rounded-xl border-2 border-blue-500/30 bg-blue-500/5 p-3 space-y-2">
-        <div className={`relative w-full aspect-[16/10] rounded-lg overflow-hidden bg-black border border-white/10 ${disabled ? 'opacity-40' : ''}`}>
-          {/* Camera-managed container — MUST have no React children so html5-qrcode owns DOM */}
-          <div id="om-camera" className="absolute inset-0" />
+        <div
+          className={`relative w-full rounded-lg overflow-hidden bg-black border border-white/10 ${disabled ? 'opacity-40' : ''}`}
+          style={{ aspectRatio: '16 / 10', minHeight: 220 }}
+        >
+          {/* Camera-managed container — MUST have no React children so html5-qrcode owns DOM.
+              Fills its parent via CSS (see globals.css #om-camera). */}
+          <div id="om-camera" />
           {/* Overlays are siblings, positioned absolutely — never mixed with camera DOM */}
           {!cameraErr && !cameraReady && !disabled && (
-            <div className="absolute inset-0 flex items-center justify-center text-blue-200/80 text-xs gap-2 pointer-events-none z-10">
+            <div className="absolute inset-0 flex items-center justify-center text-blue-200/80 text-xs gap-2 pointer-events-none z-10 bg-black/40">
               <Loader2 className="w-4 h-4 animate-spin" /> Mengaktifkan kamera...
             </div>
           )}
@@ -266,9 +301,9 @@ function ScannerShell({
             </div>
           )}
           {cameraErr && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3 text-center bg-black/80 z-10">
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3 text-center bg-black/85 z-10">
               <AlertTriangle className="w-6 h-6 text-rose-400" />
-              <div className="text-[11px] text-rose-300 max-w-xs">{cameraErr}</div>
+              <div className="text-[11px] text-rose-300 max-w-xs break-words">{cameraErr}</div>
               <div className="text-[10px] text-muted-foreground">Izinkan akses kamera di browser / device.</div>
               <button
                 type="button"

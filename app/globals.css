@@ -190,3 +190,28 @@ code {
     @apply bg-background text-foreground;
     }
 }
+
+/* ============================================================
+   Order Management Camera Scanner (html5-qrcode)
+   Force the injected <video> element to fill its container.
+   Without this, html5-qrcode may render a small centered video
+   surrounded by black bars — looking like "camera is dark".
+   ============================================================ */
+#om-camera {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+}
+#om-camera video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  display: block !important;
+  background: #000;
+}
+#om-camera > div,
+#om-camera canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
