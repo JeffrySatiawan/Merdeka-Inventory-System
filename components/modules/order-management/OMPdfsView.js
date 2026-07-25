@@ -96,14 +96,61 @@ function loadPdfJs() {
   return _pdfjsPromise;
 }
 
-// Fetch pdf as authenticated blob → return ArrayBuffer
-async function fetchPdfBuffer(pdfId) {
-  const token = localStorage.getItem('cc_token');
-  const resp = await fetch(`/api/om/pdfs/${pdfId}/file`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return resp.arrayBuffer();
+// ---------- Module-level caches (survive modal remount) ----------
+const _bufferCache = new Map();       // pdfId -> ArrayBuffer promise
+const _pdfDocCache = new Map();       // pdfId -> PDFDocumentProxy promise
+const _blobUrlCache = new Map();      // pdfId -> object URL string
+
+// Fetch pdf as authenticated blob → return ArrayBuffer (cached per id)
+function fetchPdfBuffer(pdfId) {
+  if (_bufferCache.has(pdfId)) return _bufferCache.get(pdfId);
+  const p = (async () => {
+    const token = localStorage.getItem('cc_token');
+    const resp = await fetch(`/api/om/pdfs/${pdfId}/file`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.arrayBuffer();
+  })();
+  _bufferCache.set(pdfId, p);
+  // If it fails, drop cache so next call retries
+  p.catch(() => _bufferCache.delete(pdfId));
+  return p;
+}
+
+// Get (or create) a pdfDoc for a given id — cached
+function getPdfDoc(pdfId) {
+  if (_pdfDocCache.has(pdfId)) return _pdfDocCache.get(pdfId);
+  const p = (async () => {
+    const pdfjs = await loadPdfJs();
+    const buf = await fetchPdfBuffer(pdfId);
+    // Pass a fresh Uint8Array so pdf.js can safely retain it
+    return pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+  })();
+  _pdfDocCache.set(pdfId, p);
+  p.catch(() => _pdfDocCache.delete(pdfId));
+  return p;
+}
+
+// Get (or create) an object URL for the PDF — for print + "open in new tab"
+async function getPdfBlobUrl(pdfId) {
+  if (_blobUrlCache.has(pdfId)) return _blobUrlCache.get(pdfId);
+  const buf = await fetchPdfBuffer(pdfId);
+  const blob = new Blob([new Uint8Array(buf)], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  _blobUrlCache.set(pdfId, url);
+  return url;
+}
+
+// Invalidate all caches for a pdfId (call when file is deleted or replaced)
+function invalidatePdfCache(pdfId) {
+  _bufferCache.delete(pdfId);
+  _pdfDocCache.delete(pdfId);
+  const url = _blobUrlCache.get(pdfId);
+  if (url) {
+    try { URL.revokeObjectURL(url); } catch (_) { /* noop */ }
+    _blobUrlCache.delete(pdfId);
+  }
 }
 
 // Scan QR codes from a PDF (given pre-loaded pdf document instance)
@@ -141,11 +188,9 @@ async function scanQrFromPdfDoc(pdfDoc) {
 }
 
 // Convenience: scan PDF by id (fetches, parses, scans, posts result)
-// Returns the updated pdf item from server
+// Returns the updated pdf item from server. Uses cached pdfDoc.
 async function autoScanPdfById(pdfId) {
-  const pdfjs = await loadPdfJs();
-  const buf = await fetchPdfBuffer(pdfId);
-  const pdfDoc = await pdfjs.getDocument({ data: buf }).promise;
+  const pdfDoc = await getPdfDoc(pdfId);
   const { trackingNumbers, pagesCount } = await scanQrFromPdfDoc(pdfDoc);
   const updated = await omApi(`pdfs/${pdfId}/scan-result`, {
     method: 'POST',
@@ -160,10 +205,13 @@ export default function OMPdfsView({ user }) {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [previewId, setPreviewId] = useState(null);
+  const [previewItem, setPreviewItem] = useState(null);
   const [scanningIds, setScanningIds] = useState(() => new Set());
   const fileInputRef = useRef(null);
   const scanQueueRef = useRef(new Set()); // ids currently in-flight to avoid double-scan
+
+  // Preload pdf.js library at list mount so that opening preview is fast
+  useEffect(() => { loadPdfJs().catch(() => {}); }, []);
 
   const setItemScanning = useCallback((id, on) => {
     setScanningIds((prev) => {
@@ -262,6 +310,7 @@ export default function OMPdfsView({ user }) {
     if (!confirm(`Hapus "${name}"?`)) return;
     try {
       await omApi(`pdfs/${id}`, { method: 'DELETE' });
+      invalidatePdfCache(id);
       toast.success('PDF dihapus');
       load();
     } catch (e) {
@@ -401,7 +450,7 @@ export default function OMPdfsView({ user }) {
                   item={it}
                   isOwner={isOwner}
                   isScanning={scanningIds.has(it.id)}
-                  onOpen={() => setPreviewId(it.id)}
+                  onOpen={() => setPreviewItem(it)}
                   onDelete={() => del(it.id, it.filename)}
                   onToggleKetoko={(next) => toggleKetoko(it, next)}
                   onRescan={() => runAutoScan(it.id)}
@@ -413,10 +462,11 @@ export default function OMPdfsView({ user }) {
       </Card>
 
       {/* Preview modal */}
-      {previewId && (
+      {previewItem && (
         <PdfPreviewModal
-          pdfId={previewId}
-          onClose={() => setPreviewId(null)}
+          pdfId={previewItem.id}
+          initialMeta={previewItem}
+          onClose={() => setPreviewItem(null)}
           onChanged={load}
         />
       )}
@@ -582,57 +632,40 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
 }
 
 // ---------- Preview Modal (renders PDF pages to canvas via pdf.js + Print) ----------
-function PdfPreviewModal({ pdfId, onClose, onChanged }) {
-  const [meta, setMeta] = useState(null);
+function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
+  const [meta, setMeta] = useState(initialMeta || null);
   const [pdfDoc, setPdfDoc] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [numPages, setNumPages] = useState(initialMeta?.pages_count || 0);
+  const [renderedPages, setRenderedPages] = useState(0);
   const [error, setError] = useState(null);
-  const [pdfBlobUrl, setPdfBlobUrl] = useState(null); // for print fallback
+  const [pdfBlobUrl, setPdfBlobUrl] = useState(null); // for print / open-in-new-tab
   const canvasesRef = useRef([]);
 
-  // Fetch meta + open pdf via pdf.js
+  // Open pdf doc (uses module-level cache — instant if already scanned)
   useEffect(() => {
     let cancelled = false;
-    let objectUrl = null;
+    setError(null);
+    setPdfDoc(null);
+    setRenderedPages(0);
+
+    // Kick off blob URL creation in parallel (used only for print / fallback)
+    getPdfBlobUrl(pdfId).then((u) => { if (!cancelled) setPdfBlobUrl(u); }).catch(() => {});
+
     (async () => {
-      setLoading(true);
-      setError(null);
       try {
-        // meta lookup
-        const d = await omApi('pdfs');
-        if (cancelled) return;
-        const found = (d.items || []).find((x) => x.id === pdfId);
-        setMeta(found || null);
-
-        // fetch buffer + open
-        const token = localStorage.getItem('cc_token');
-        const resp = await fetch(`/api/om/pdfs/${pdfId}/file`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const buf = await resp.arrayBuffer();
-        // Also create a blob URL for the print fallback (open in new tab)
-        const blob = new Blob([buf.slice(0)], { type: 'application/pdf' });
-        objectUrl = URL.createObjectURL(blob);
-        if (!cancelled) setPdfBlobUrl(objectUrl);
-
-        const pdfjs = await loadPdfJs();
-        const doc = await pdfjs.getDocument({ data: buf }).promise;
+        const doc = await getPdfDoc(pdfId);
         if (cancelled) return;
         setPdfDoc(doc);
+        setNumPages(doc.numPages);
       } catch (e) {
         if (!cancelled) setError(e?.message || String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
+
+    return () => { cancelled = true; };
   }, [pdfId]);
 
-  // Render each page to its canvas
+  // Render pages progressively — first page first so user sees content ASAP
   useEffect(() => {
     if (!pdfDoc) return;
     let cancelled = false;
@@ -640,25 +673,32 @@ function PdfPreviewModal({ pdfId, onClose, onChanged }) {
       for (let p = 1; p <= pdfDoc.numPages; p += 1) {
         if (cancelled) return;
         const canvas = canvasesRef.current[p - 1];
-        if (!canvas) continue;
+        if (!canvas) {
+          // Wait one animation frame for canvas to mount
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        const c = canvasesRef.current[p - 1];
+        if (!c) continue;
         try {
           // eslint-disable-next-line no-await-in-loop
           const page = await pdfDoc.getPage(p);
-          const parent = canvas.parentElement;
+          const parent = c.parentElement;
           const parentW = parent?.clientWidth || 700;
-          const targetWidth = Math.min(1000, parentW - 8);
+          const targetWidth = Math.min(1000, Math.max(320, parentW - 8));
           const initialVp = page.getViewport({ scale: 1 });
           const scale = targetWidth / initialVp.width;
           const vp = page.getViewport({ scale });
           const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          canvas.width = Math.floor(vp.width * dpr);
-          canvas.height = Math.floor(vp.height * dpr);
-          canvas.style.width = `${Math.floor(vp.width)}px`;
-          canvas.style.height = `${Math.floor(vp.height)}px`;
-          const ctx = canvas.getContext('2d');
+          c.width = Math.floor(vp.width * dpr);
+          c.height = Math.floor(vp.height * dpr);
+          c.style.width = `${Math.floor(vp.width)}px`;
+          c.style.height = `${Math.floor(vp.height)}px`;
+          const ctx = c.getContext('2d');
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
           // eslint-disable-next-line no-await-in-loop
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          if (!cancelled) setRenderedPages((n) => Math.max(n, p));
         } catch {
           /* per-page render error, keep going */
         }
@@ -669,23 +709,19 @@ function PdfPreviewModal({ pdfId, onClose, onChanged }) {
 
   const handlePrint = async () => {
     if (!pdfBlobUrl) {
-      toast.error('PDF belum siap');
+      toast.info('Menyiapkan PDF...');
       return;
     }
-    // Open PDF in new tab — browser will render it and user can print from there
-    // Use noopener to be safe. This avoids iframe printing quirks.
     const w = window.open(pdfBlobUrl, '_blank');
     if (!w) {
       toast.error('Popup diblokir. Izinkan popup untuk print.');
       return;
     }
     try {
-      // Try to trigger print after PDF loads. Chrome may block until user gestures.
       w.addEventListener('load', () => {
         try { w.print(); } catch (_) { /* print blocked */ }
       });
     } catch (_) { /* window not accessible */ }
-    // Mark printed asynchronously
     omApi(`pdfs/${pdfId}/mark-printed`, { method: 'POST' })
       .then((r) => {
         setMeta(r.item);
@@ -695,6 +731,9 @@ function PdfPreviewModal({ pdfId, onClose, onChanged }) {
   };
 
   const detectedList = meta?.detected_tracking_numbers || [];
+  // Skeleton page count: prefer meta.pages_count so canvases are placeholders even before pdf.js opens
+  const skeletonCount = numPages || meta?.pages_count || 1;
+  const pagesReady = pdfDoc != null;
 
   return (
     <Dialog open={true} onOpenChange={(o) => !o && onClose()}>
@@ -713,6 +752,11 @@ function PdfPreviewModal({ pdfId, onClose, onChanged }) {
                     <span className="flex items-center gap-1">
                       · <QrCode className="w-3 h-3" /> {detectedList.length} resi
                     </span>
+                    {pagesReady && renderedPages < numPages && (
+                      <span className="text-amber-300/80 flex items-center gap-1">
+                        · <Loader2 className="w-3 h-3 animate-spin" /> merender {renderedPages}/{numPages}
+                      </span>
+                    )}
                     {meta.printed_at && (
                       <Badge variant="outline" className="border-blue-500/40 text-blue-300 text-[9px] gap-1">
                         <CheckCircle2 className="w-2.5 h-2.5" /> PRINTED · {fmtDate(meta.printed_at)}
@@ -733,25 +777,28 @@ function PdfPreviewModal({ pdfId, onClose, onChanged }) {
         <div className="flex-1 grid md:grid-cols-[1fr_280px] min-h-0">
           {/* PDF viewer — pdf.js canvas render, no iframe */}
           <div className="bg-neutral-900 relative min-h-[400px] md:min-h-0 overflow-y-auto p-3">
-            {loading ? (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                  <div className="text-xs">Memuat PDF...</div>
-                </div>
-              </div>
-            ) : error ? (
+            {error ? (
               <div className="absolute inset-0 flex items-center justify-center text-rose-400 text-sm p-6 text-center">
                 Gagal memuat PDF: {error}
               </div>
-            ) : pdfDoc ? (
+            ) : (
               <div className="flex flex-col items-center gap-3">
-                {Array.from({ length: pdfDoc.numPages }).map((_, i) => (
-                  <canvas
-                    key={i}
-                    ref={(el) => { canvasesRef.current[i] = el; }}
-                    className="bg-white shadow-lg rounded-sm max-w-full"
-                  />
+                {Array.from({ length: skeletonCount }).map((_, i) => (
+                  <div key={i} className="relative w-full flex justify-center">
+                    <canvas
+                      ref={(el) => { canvasesRef.current[i] = el; }}
+                      className="bg-white shadow-lg rounded-sm max-w-full"
+                      style={{ minHeight: pagesReady && i < renderedPages ? undefined : '260px', minWidth: '220px' }}
+                    />
+                    {(!pagesReady || i >= renderedPages) && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          <div className="text-[10px]">Halaman {i + 1}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 ))}
                 {pdfBlobUrl && (
                   <a
@@ -764,7 +811,7 @@ function PdfPreviewModal({ pdfId, onClose, onChanged }) {
                   </a>
                 )}
               </div>
-            ) : null}
+            )}
           </div>
 
           {/* Detected tracking numbers panel */}
