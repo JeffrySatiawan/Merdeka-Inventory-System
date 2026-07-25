@@ -3,7 +3,7 @@
 // OM · PDF Resi — upload PDF label from HP, preview + print, auto-scan QR
 // codes on each page and link to tracking numbers.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   Upload,
@@ -13,11 +13,10 @@ import {
   Loader2,
   QrCode,
   CheckCircle2,
-  X,
   RefreshCw,
   Eye,
-  Clock,
   Store,
+  Copy,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -79,6 +78,82 @@ async function uploadPdf(file, onProgress) {
   });
 }
 
+// ---------- Lazy-loaded PDF.js singleton ----------
+let _pdfjsPromise = null;
+function loadPdfJs() {
+  if (!_pdfjsPromise) {
+    _pdfjsPromise = (async () => {
+      const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+      if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          'pdfjs-dist/build/pdf.worker.mjs',
+          import.meta.url
+        ).toString();
+      }
+      return pdfjs;
+    })();
+  }
+  return _pdfjsPromise;
+}
+
+// Fetch pdf as authenticated blob → return ArrayBuffer
+async function fetchPdfBuffer(pdfId) {
+  const token = localStorage.getItem('cc_token');
+  const resp = await fetch(`/api/om/pdfs/${pdfId}/file`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.arrayBuffer();
+}
+
+// Scan QR codes from a PDF (given pre-loaded pdf document instance)
+// Returns { trackingNumbers: string[], pagesCount: number }
+async function scanQrFromPdfDoc(pdfDoc) {
+  const { BrowserMultiFormatReader } = await import('@zxing/browser');
+  const reader = new BrowserMultiFormatReader();
+
+  const found = new Set();
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const scale = 2.0;
+  for (let p = 1; p <= pdfDoc.numPages; p += 1) {
+    try {
+      const page = await pdfDoc.getPage(p);
+      const vp = page.getViewport({ scale });
+      canvas.width = Math.ceil(vp.width);
+      canvas.height = Math.ceil(vp.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      try {
+        const result = await reader.decodeFromCanvas(canvas);
+        const text = result?.getText?.() || '';
+        if (text && text.trim()) found.add(text.trim());
+      } catch {
+        /* NotFoundException — no QR on this page */
+      }
+    } catch (e) {
+      /* Continue on per-page errors */
+    }
+  }
+  return {
+    trackingNumbers: Array.from(found),
+    pagesCount: pdfDoc.numPages,
+  };
+}
+
+// Convenience: scan PDF by id (fetches, parses, scans, posts result)
+// Returns the updated pdf item from server
+async function autoScanPdfById(pdfId) {
+  const pdfjs = await loadPdfJs();
+  const buf = await fetchPdfBuffer(pdfId);
+  const pdfDoc = await pdfjs.getDocument({ data: buf }).promise;
+  const { trackingNumbers, pagesCount } = await scanQrFromPdfDoc(pdfDoc);
+  const updated = await omApi(`pdfs/${pdfId}/scan-result`, {
+    method: 'POST',
+    body: JSON.stringify({ tracking_numbers: trackingNumbers, pages_count: pagesCount }),
+  });
+  return updated.item;
+}
+
 // ---------- Main List View ----------
 export default function OMPdfsView({ user }) {
   const [items, setItems] = useState([]);
@@ -86,7 +161,39 @@ export default function OMPdfsView({ user }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [previewId, setPreviewId] = useState(null);
+  const [scanningIds, setScanningIds] = useState(() => new Set());
   const fileInputRef = useRef(null);
+  const scanQueueRef = useRef(new Set()); // ids currently in-flight to avoid double-scan
+
+  const setItemScanning = useCallback((id, on) => {
+    setScanningIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const runAutoScan = useCallback(async (id) => {
+    if (scanQueueRef.current.has(id)) return;
+    scanQueueRef.current.add(id);
+    setItemScanning(id, true);
+    try {
+      const updated = await autoScanPdfById(id);
+      setItems((prev) => prev.map((x) => (x.id === id ? updated : x)));
+      const n = updated.detected_tracking_numbers?.length || 0;
+      if (n > 0) {
+        toast.success(`${n} resi terdeteksi dari ${updated.filename}`);
+      } else {
+        toast.info(`Tidak ada QR code terbaca di ${updated.filename}`);
+      }
+    } catch (e) {
+      toast.error(`Gagal scan QR: ${e?.message || e}`);
+    } finally {
+      setItemScanning(id, false);
+      scanQueueRef.current.delete(id);
+    }
+  }, [setItemScanning]);
 
   async function load() {
     setLoading(true);
@@ -99,11 +206,27 @@ export default function OMPdfsView({ user }) {
       setLoading(false);
     }
   }
+
   useEffect(() => { load(); }, []);
+
+  // Auto-scan any PDF that hasn't been scanned yet (once items loaded)
+  useEffect(() => {
+    if (!items.length) return;
+    const pending = items.filter((x) => !x.scanned_at && !scanQueueRef.current.has(x.id));
+    // Scan sequentially to avoid CPU thrash
+    (async () => {
+      for (const it of pending) {
+        // eslint-disable-next-line no-await-in-loop
+        await runAutoScan(it.id);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items.length]);
 
   async function handleFiles(files) {
     if (!files || !files.length) return;
     setUploading(true);
+    const uploadedIds = [];
     let ok = 0;
     let fail = 0;
     for (const file of Array.from(files)) {
@@ -119,7 +242,9 @@ export default function OMPdfsView({ user }) {
       }
       try {
         setUploadProgress(0);
-        await uploadPdf(file, setUploadProgress);
+        // eslint-disable-next-line no-await-in-loop
+        const res = await uploadPdf(file, setUploadProgress);
+        if (res?.item?.id) uploadedIds.push(res.item.id);
         ok += 1;
       } catch (e) {
         toast.error(`${file.name}: ${e.message}`);
@@ -129,7 +254,8 @@ export default function OMPdfsView({ user }) {
     setUploading(false);
     setUploadProgress(0);
     if (ok > 0) toast.success(`${ok} file berhasil diunggah`);
-    load();
+    // Refresh list — auto-scan will kick in via useEffect for any unscanned items
+    await load();
   }
 
   async function del(id, name) {
@@ -170,11 +296,10 @@ export default function OMPdfsView({ user }) {
         method: 'POST',
         body: JSON.stringify({ input: !!next }),
       });
-      // Sync with server state
       setItems((prev) => prev.map((x) => (x.id === item.id ? r.item : x)));
     } catch (e) {
       toast.error(e.message || 'Gagal update POS KETOKO');
-      load(); // revert on error
+      load();
     }
   }
 
@@ -269,15 +394,17 @@ export default function OMPdfsView({ user }) {
               </div>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {items.map((it) => (
                 <PdfRow
                   key={it.id}
                   item={it}
                   isOwner={isOwner}
+                  isScanning={scanningIds.has(it.id)}
                   onOpen={() => setPreviewId(it.id)}
                   onDelete={() => del(it.id, it.filename)}
                   onToggleKetoko={(next) => toggleKetoko(it, next)}
+                  onRescan={() => runAutoScan(it.id)}
                 />
               ))}
             </div>
@@ -291,142 +418,210 @@ export default function OMPdfsView({ user }) {
           pdfId={previewId}
           onClose={() => setPreviewId(null)}
           onChanged={load}
-          user={user}
         />
       )}
     </div>
   );
 }
 
-// ---------- Row ----------
-function PdfRow({ item, isOwner, onOpen, onDelete, onToggleKetoko }) {
+// ---------- Row (with inline detected tracking numbers on the right) ----------
+function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, onRescan }) {
   const detected = item.detected_tracking_numbers || [];
   const hasScan = !!item.scanned_at;
   const printed = !!item.printed_at;
   const ketokoChecked = !!item.ketoko_input_at;
+
+  const copyAll = async () => {
+    if (!detected.length) return;
+    try {
+      await navigator.clipboard.writeText(detected.join('\n'));
+      toast.success('Nomor resi disalin');
+    } catch {
+      toast.error('Gagal menyalin');
+    }
+  };
+
   return (
-    <div className="flex flex-wrap items-center gap-3 p-3 rounded-lg border border-white/5 hover:bg-white/[0.02]">
-      <div className={`w-10 h-10 rounded-md flex items-center justify-center shrink-0 ${printed ? 'bg-blue-500/10' : 'bg-white/[0.03]'}`}>
-        <FileText className={`w-5 h-5 ${printed ? 'text-blue-400' : 'text-muted-foreground'}`} />
-      </div>
-      <div className="flex-1 min-w-[180px]">
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="font-medium text-sm truncate max-w-[280px]" title={item.filename}>
-            {item.filename}
-          </div>
-          {printed && (
-            <Badge variant="outline" className="border-blue-500/40 text-blue-300 text-[9px] gap-1">
-              <CheckCircle2 className="w-2.5 h-2.5" /> PRINTED
-            </Badge>
-          )}
-          {!hasScan && (
-            <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[9px]">
-              BELUM SCAN
-            </Badge>
-          )}
+    <div className="rounded-lg border border-white/5 hover:bg-white/[0.02] transition-colors">
+      {/* Top row: file info + KETOKO + actions */}
+      <div className="flex flex-wrap items-center gap-3 p-3">
+        <div className={`w-10 h-10 rounded-md flex items-center justify-center shrink-0 ${printed ? 'bg-blue-500/10' : 'bg-white/[0.03]'}`}>
+          <FileText className={`w-5 h-5 ${printed ? 'text-blue-400' : 'text-muted-foreground'}`} />
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
-          <span>{fmtBytes(item.size)}</span>
-          {item.pages_count != null && <span>· {item.pages_count} hal.</span>}
-          {hasScan && (
-            <span className="flex items-center gap-1">
-              · <QrCode className="w-3 h-3" /> {detected.length} resi
-            </span>
-          )}
-          <span>· {fmtDate(item.uploaded_at)}</span>
-          <span>· oleh {item.uploaded_by_name}</span>
-        </div>
-      </div>
-
-      {/* KETOKO POS input checkbox */}
-      <label
-        className={`flex items-center gap-2 px-3 py-2 rounded-md border cursor-pointer transition-colors shrink-0 select-none ${
-          ketokoChecked
-            ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-            : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground'
-        }`}
-        title={ketokoChecked ? `Diinput oleh ${item.ketoko_input_by_name} · ${fmtDate(item.ketoko_input_at)}` : 'Klik jika sudah input ke POS KETOKO'}
-      >
-        <input
-          type="checkbox"
-          checked={ketokoChecked}
-          onChange={(e) => onToggleKetoko(e.target.checked)}
-          className="w-4 h-4 accent-amber-500 cursor-pointer"
-        />
-        <Store className="w-3.5 h-3.5" />
-        <div className="text-xs leading-tight">
-          <div className="font-medium">POS KETOKO</div>
-          {ketokoChecked ? (
-            <div className="text-[10px] opacity-80 truncate max-w-[130px]" title={item.ketoko_input_by_name}>
-              {item.ketoko_input_by_name} · {fmtDate(item.ketoko_input_at)}
+        <div className="flex-1 min-w-[180px]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="font-medium text-sm truncate max-w-[280px]" title={item.filename}>
+              {item.filename}
             </div>
-          ) : (
-            <div className="text-[10px] opacity-70">belum diinput</div>
-          )}
+            {printed && (
+              <Badge variant="outline" className="border-blue-500/40 text-blue-300 text-[9px] gap-1">
+                <CheckCircle2 className="w-2.5 h-2.5" /> PRINTED
+              </Badge>
+            )}
+            {isScanning ? (
+              <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[9px] gap-1">
+                <Loader2 className="w-2.5 h-2.5 animate-spin" /> SCANNING...
+              </Badge>
+            ) : hasScan ? (
+              <Badge variant="outline" className="border-emerald-500/40 text-emerald-300 text-[9px] gap-1">
+                <QrCode className="w-2.5 h-2.5" /> {detected.length} RESI
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[9px]">
+                BELUM SCAN
+              </Badge>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
+            <span>{fmtBytes(item.size)}</span>
+            {item.pages_count != null && <span>· {item.pages_count} hal.</span>}
+            <span>· {fmtDate(item.uploaded_at)}</span>
+            <span>· oleh {item.uploaded_by_name}</span>
+          </div>
         </div>
-      </label>
 
-      <div className="flex gap-1 shrink-0">
-        <Button size="sm" variant="outline" onClick={onOpen} className="gap-1">
-          <Eye className="w-3.5 h-3.5" /> Buka
-        </Button>
-        {isOwner && (
+        {/* KETOKO POS input checkbox */}
+        <label
+          className={`flex items-center gap-2 px-3 py-2 rounded-md border cursor-pointer transition-colors shrink-0 select-none ${
+            ketokoChecked
+              ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+              : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground'
+          }`}
+          title={ketokoChecked ? `Diinput oleh ${item.ketoko_input_by_name} · ${fmtDate(item.ketoko_input_at)}` : 'Klik jika sudah input ke POS KETOKO'}
+        >
+          <input
+            type="checkbox"
+            checked={ketokoChecked}
+            onChange={(e) => onToggleKetoko(e.target.checked)}
+            className="w-4 h-4 accent-amber-500 cursor-pointer"
+          />
+          <Store className="w-3.5 h-3.5" />
+          <div className="text-xs leading-tight">
+            <div className="font-medium">POS KETOKO</div>
+            {ketokoChecked ? (
+              <div className="text-[10px] opacity-80 truncate max-w-[130px]" title={item.ketoko_input_by_name}>
+                {item.ketoko_input_by_name} · {fmtDate(item.ketoko_input_at)}
+              </div>
+            ) : (
+              <div className="text-[10px] opacity-70">belum diinput</div>
+            )}
+          </div>
+        </label>
+
+        <div className="flex gap-1 shrink-0">
+          <Button size="sm" variant="outline" onClick={onOpen} className="gap-1">
+            <Eye className="w-3.5 h-3.5" /> Buka
+          </Button>
           <Button
             size="icon"
             variant="ghost"
-            onClick={onDelete}
-            className="text-rose-400 hover:text-rose-300"
-            title="Hapus (owner)"
+            onClick={onRescan}
+            disabled={isScanning}
+            title="Scan ulang QR"
           >
-            <Trash2 className="w-4 h-4" />
+            {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <QrCode className="w-4 h-4" />}
           </Button>
-        )}
+          {isOwner && (
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={onDelete}
+              className="text-rose-400 hover:text-rose-300"
+              title="Hapus (owner)"
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* Inline detected tracking numbers (chips) — shown right after upload / after auto-scan */}
+      {(isScanning || hasScan) && (
+        <div className="px-3 pb-3 pt-0 border-t border-white/5 mt-1">
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground/80 flex items-center gap-1.5">
+              <QrCode className="w-3 h-3 text-emerald-400" />
+              Nomor Resi Terdeteksi
+            </div>
+            {detected.length > 0 && (
+              <button
+                type="button"
+                onClick={copyAll}
+                className="text-[10px] text-muted-foreground hover:text-white inline-flex items-center gap-1"
+              >
+                <Copy className="w-3 h-3" /> Salin semua
+              </button>
+            )}
+          </div>
+          {isScanning && detected.length === 0 ? (
+            <div className="text-xs text-amber-300/80 flex items-center gap-2 py-1">
+              <Loader2 className="w-3 h-3 animate-spin" /> Membaca QR pada tiap halaman...
+            </div>
+          ) : detected.length === 0 ? (
+            <div className="text-xs text-muted-foreground/70 py-1">
+              Tidak ada QR code terbaca. Pastikan PDF berisi label resi dengan barcode/QR.
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {detected.map((tn, i) => (
+                <span
+                  key={tn + i}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-mono"
+                  title={tn}
+                >
+                  <QrCode className="w-3 h-3 opacity-70" />
+                  {tn}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-// ---------- Preview Modal (renders PDF pages + auto-scans QR + Print) ----------
-function PdfPreviewModal({ pdfId, onClose, onChanged, user }) {
+// ---------- Preview Modal (renders PDF pages to canvas via pdf.js + Print) ----------
+function PdfPreviewModal({ pdfId, onClose, onChanged }) {
   const [meta, setMeta] = useState(null);
+  const [pdfDoc, setPdfDoc] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [scanning, setScanning] = useState(false);
-  const [detectedList, setDetectedList] = useState([]);
-  const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
-  const iframeRef = useRef(null);
+  const [error, setError] = useState(null);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState(null); // for print fallback
+  const canvasesRef = useRef([]);
 
-  // Load metadata
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const d = await omApi('pdfs');
-        if (cancelled) return;
-        const found = (d.items || []).find((x) => x.id === pdfId);
-        setMeta(found || null);
-        setDetectedList(found?.detected_tracking_numbers || []);
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [pdfId]);
-
-  // Fetch PDF file (as authenticated blob → so iframe can load without extra auth)
+  // Fetch meta + open pdf via pdf.js
   useEffect(() => {
     let cancelled = false;
     let objectUrl = null;
     (async () => {
+      setLoading(true);
+      setError(null);
       try {
-        setLoading(true);
+        // meta lookup
+        const d = await omApi('pdfs');
+        if (cancelled) return;
+        const found = (d.items || []).find((x) => x.id === pdfId);
+        setMeta(found || null);
+
+        // fetch buffer + open
         const token = localStorage.getItem('cc_token');
         const resp = await fetch(`/api/om/pdfs/${pdfId}/file`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const blob = await resp.blob();
+        const buf = await resp.arrayBuffer();
+        // Also create a blob URL for the print fallback (open in new tab)
+        const blob = new Blob([buf.slice(0)], { type: 'application/pdf' });
         objectUrl = URL.createObjectURL(blob);
         if (!cancelled) setPdfBlobUrl(objectUrl);
+
+        const pdfjs = await loadPdfJs();
+        const doc = await pdfjs.getDocument({ data: buf }).promise;
+        if (cancelled) return;
+        setPdfDoc(doc);
       } catch (e) {
-        if (!cancelled) toast.error('Gagal memuat PDF: ' + (e?.message || e));
+        if (!cancelled) setError(e?.message || String(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -437,116 +632,73 @@ function PdfPreviewModal({ pdfId, onClose, onChanged, user }) {
     };
   }, [pdfId]);
 
-  // Auto-run QR scan once if not scanned yet OR button clicked
-  const runQrScan = async () => {
-    if (scanning || !pdfBlobUrl) return;
-    setScanning(true);
-    try {
-      // Lazy-load pdfjs
-      const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
-      // Configure worker — use bundled worker via ESM
-      if (!pdfjs.GlobalWorkerOptions.workerSrc) {
-        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-          'pdfjs-dist/build/pdf.worker.mjs',
-          import.meta.url
-        ).toString();
-      }
-      const { BrowserMultiFormatReader } = await import('@zxing/browser');
-      const reader = new BrowserMultiFormatReader();
-
-      const resp = await fetch(pdfBlobUrl);
-      const buf = await resp.arrayBuffer();
-      const pdf = await pdfjs.getDocument({ data: buf }).promise;
-
-      const found = new Set();
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const scale = 2.0; // higher scale → better QR read
-      for (let p = 1; p <= pdf.numPages; p += 1) {
+  // Render each page to its canvas
+  useEffect(() => {
+    if (!pdfDoc) return;
+    let cancelled = false;
+    (async () => {
+      for (let p = 1; p <= pdfDoc.numPages; p += 1) {
+        if (cancelled) return;
+        const canvas = canvasesRef.current[p - 1];
+        if (!canvas) continue;
         try {
-          const page = await pdf.getPage(p);
+          // eslint-disable-next-line no-await-in-loop
+          const page = await pdfDoc.getPage(p);
+          const parent = canvas.parentElement;
+          const parentW = parent?.clientWidth || 700;
+          const targetWidth = Math.min(1000, parentW - 8);
+          const initialVp = page.getViewport({ scale: 1 });
+          const scale = targetWidth / initialVp.width;
           const vp = page.getViewport({ scale });
-          canvas.width = Math.ceil(vp.width);
-          canvas.height = Math.ceil(vp.height);
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          canvas.width = Math.floor(vp.width * dpr);
+          canvas.height = Math.floor(vp.height * dpr);
+          canvas.style.width = `${Math.floor(vp.width)}px`;
+          canvas.style.height = `${Math.floor(vp.height)}px`;
+          const ctx = canvas.getContext('2d');
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          // eslint-disable-next-line no-await-in-loop
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
-          // Try decode from canvas
-          try {
-            const result = await reader.decodeFromCanvas(canvas);
-            const text = result?.getText?.() || '';
-            if (text && text.trim()) found.add(text.trim());
-          } catch {
-            /* NotFoundException — no QR on this page */
-          }
-        } catch (e) {
-          // Continue on per-page errors
+        } catch {
+          /* per-page render error, keep going */
         }
       }
-
-      // Persist to backend
-      const trackingNumbers = Array.from(found);
-      const updated = await omApi(`pdfs/${pdfId}/scan-result`, {
-        method: 'POST',
-        body: JSON.stringify({
-          tracking_numbers: trackingNumbers,
-          pages_count: pdf.numPages,
-        }),
-      });
-      setDetectedList(updated.item.detected_tracking_numbers || []);
-      setMeta(updated.item);
-      onChanged?.();
-      if (trackingNumbers.length > 0) {
-        toast.success(`${trackingNumbers.length} resi terdeteksi dari ${pdf.numPages} halaman`);
-      } else {
-        toast.info(`Tidak ada QR code terbaca pada ${pdf.numPages} halaman`);
-      }
-    } catch (e) {
-      toast.error('Gagal scan QR: ' + (e?.message || e));
-    } finally {
-      setScanning(false);
-    }
-  };
-
-  // Auto-scan on first open if not scanned yet
-  useEffect(() => {
-    if (!meta) return;
-    if (!pdfBlobUrl) return;
-    if (meta.scanned_at) return; // already scanned
-    // Fire and forget
-    runQrScan();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta?.id, pdfBlobUrl]);
+    })();
+    return () => { cancelled = true; };
+  }, [pdfDoc]);
 
   const handlePrint = async () => {
-    if (!iframeRef.current) {
-      toast.error('Viewer PDF belum siap');
+    if (!pdfBlobUrl) {
+      toast.error('PDF belum siap');
+      return;
+    }
+    // Open PDF in new tab — browser will render it and user can print from there
+    // Use noopener to be safe. This avoids iframe printing quirks.
+    const w = window.open(pdfBlobUrl, '_blank');
+    if (!w) {
+      toast.error('Popup diblokir. Izinkan popup untuk print.');
       return;
     }
     try {
-      const win = iframeRef.current.contentWindow;
-      if (win) {
-        // Browser will open its own print dialog for the PDF
-        win.focus();
-        win.print();
-      } else {
-        // Fallback: open in new tab and use browser print
-        window.open(pdfBlobUrl, '_blank');
-      }
-      // Mark printed asynchronously (don't wait)
-      omApi(`pdfs/${pdfId}/mark-printed`, { method: 'POST' })
-        .then((r) => {
-          setMeta(r.item);
-          onChanged?.();
-        })
-        .catch(() => {});
-    } catch (e) {
-      // Fallback to opening in new tab
-      window.open(pdfBlobUrl, '_blank');
-    }
+      // Try to trigger print after PDF loads. Chrome may block until user gestures.
+      w.addEventListener('load', () => {
+        try { w.print(); } catch (_) { /* print blocked */ }
+      });
+    } catch (_) { /* window not accessible */ }
+    // Mark printed asynchronously
+    omApi(`pdfs/${pdfId}/mark-printed`, { method: 'POST' })
+      .then((r) => {
+        setMeta(r.item);
+        onChanged?.();
+      })
+      .catch(() => {});
   };
+
+  const detectedList = meta?.detected_tracking_numbers || [];
 
   return (
     <Dialog open={true} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-4xl w-[95vw] p-0 gap-0 max-h-[92vh] flex flex-col">
+      <DialogContent className="max-w-5xl w-[95vw] p-0 gap-0 max-h-[92vh] flex flex-col">
         <DialogHeader className="p-4 pb-3 border-b border-white/10">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
@@ -571,10 +723,6 @@ function PdfPreviewModal({ pdfId, onClose, onChanged, user }) {
               </div>
             </div>
             <div className="flex gap-2 shrink-0">
-              <Button size="sm" variant="outline" onClick={runQrScan} disabled={scanning || !pdfBlobUrl} className="gap-1">
-                {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <QrCode className="w-3.5 h-3.5" />}
-                {scanning ? 'Scanning...' : 'Scan QR'}
-              </Button>
               <Button size="sm" onClick={handlePrint} disabled={!pdfBlobUrl} className="gap-1">
                 <Printer className="w-3.5 h-3.5" /> Print
               </Button>
@@ -582,42 +730,51 @@ function PdfPreviewModal({ pdfId, onClose, onChanged, user }) {
           </div>
         </DialogHeader>
 
-        <div className="flex-1 grid md:grid-cols-[1fr_260px] min-h-0">
-          {/* PDF viewer */}
-          <div className="bg-black relative min-h-[400px] md:min-h-0">
+        <div className="flex-1 grid md:grid-cols-[1fr_280px] min-h-0">
+          {/* PDF viewer — pdf.js canvas render, no iframe */}
+          <div className="bg-neutral-900 relative min-h-[400px] md:min-h-0 overflow-y-auto p-3">
             {loading ? (
               <div className="absolute inset-0 flex items-center justify-center">
-                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                  <div className="text-xs">Memuat PDF...</div>
+                </div>
               </div>
-            ) : pdfBlobUrl ? (
-              <iframe
-                ref={iframeRef}
-                src={pdfBlobUrl}
-                title="PDF Preview"
-                className="w-full h-full min-h-[400px] md:min-h-[600px] border-0"
-              />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-                Gagal memuat PDF
+            ) : error ? (
+              <div className="absolute inset-0 flex items-center justify-center text-rose-400 text-sm p-6 text-center">
+                Gagal memuat PDF: {error}
               </div>
-            )}
+            ) : pdfDoc ? (
+              <div className="flex flex-col items-center gap-3">
+                {Array.from({ length: pdfDoc.numPages }).map((_, i) => (
+                  <canvas
+                    key={i}
+                    ref={(el) => { canvasesRef.current[i] = el; }}
+                    className="bg-white shadow-lg rounded-sm max-w-full"
+                  />
+                ))}
+                {pdfBlobUrl && (
+                  <a
+                    href={pdfBlobUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-muted-foreground hover:text-white underline mt-2"
+                  >
+                    Buka di tab baru
+                  </a>
+                )}
+              </div>
+            ) : null}
           </div>
 
           {/* Detected tracking numbers panel */}
-          <div className="border-t md:border-t-0 md:border-l border-white/10 p-3 space-y-2 overflow-y-auto max-h-[300px] md:max-h-none">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-medium text-muted-foreground">
-                Resi terdeteksi ({detectedList.length})
-              </div>
-              {scanning && (
-                <span className="text-xs text-amber-400 flex items-center gap-1">
-                  <Loader2 className="w-3 h-3 animate-spin" /> scan...
-                </span>
-              )}
+          <div className="border-t md:border-t-0 md:border-l border-white/10 p-3 space-y-2 overflow-y-auto max-h-[320px] md:max-h-none">
+            <div className="text-xs font-medium text-muted-foreground">
+              Resi terdeteksi ({detectedList.length})
             </div>
-            {detectedList.length === 0 && !scanning ? (
+            {detectedList.length === 0 ? (
               <div className="text-xs text-muted-foreground/70 py-6 text-center">
-                Belum ada resi terdeteksi. Tekan tombol <b>Scan QR</b> di atas.
+                Belum ada resi terdeteksi. Auto-scan akan berjalan otomatis di halaman daftar.
               </div>
             ) : (
               <div className="space-y-1">
