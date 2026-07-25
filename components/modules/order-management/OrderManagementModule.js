@@ -308,12 +308,12 @@ function ScannerShell({
       {/* Camera-only scan area — no text input, no keyboard popup */}
       <div className="rounded-xl border-2 border-blue-500/30 bg-blue-500/5 p-3 space-y-2">
         <div
-          className={`relative w-full border border-white/10 ${disabled ? 'opacity-40' : ''}`}
-          style={{ aspectRatio: '16 / 10', minHeight: 220 }}
+          className={`relative w-full border border-white/10 rounded-md overflow-hidden ${disabled ? 'opacity-40' : ''}`}
+          style={{ height: '260px' }}
         >
-          {/* Camera container — video element is directly appended here by scanner.js.
-              No border-radius / overflow:hidden on wrapper to avoid Chrome Android
-              compositing bug where video renders black inside rounded clip. */}
+          {/* Camera container — scanner.js appends <video> + <canvas> here.
+              Using fixed height avoids Chrome Android aspect-ratio + height:100% bug
+              where children collapse to 0-height. */}
           <div id="om-camera" />
           {/* Overlays are siblings, positioned absolutely — never mixed with camera DOM */}
           {!cameraErr && !cameraReady && !disabled && (
