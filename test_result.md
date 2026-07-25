@@ -275,7 +275,7 @@ backend:
           2. `NODE_OPTIONS='--max-old-space-size=512'` in package.json dev script — 512 MB heap is insufficient for Next.js 15 dev + pdfjs-dist. Server hit memory threshold and restarted mid-compile in an infinite loop, so page never rendered.
           
           FIXES APPLIED:
-          - Recreated `/app/.env` with: MONGO_URL=mongodb://localhost:27017, DB_NAME=cycle_count, NEXT_PUBLIC_BASE_URL=https://c4aa9ed2-b7fe-4c94-9761-f01c1a277b3a.preview.emergentagent.com
+          - Recreated `/app/.env` with: MONGO_URL=mongodb://localhost:27017, DB_NAME=cycle_count, NEXT_PUBLIC_BASE_URL=https://priview-staging.preview.emergentagent.com
           - Bumped Node heap to 1536 MB in package.json: `"dev": "NODE_OPTIONS='--max-old-space-size=1536' next dev --hostname 0.0.0.0 --port 3000"`
           - Restarted nextjs. Verified: root=200 in 51ms after first compile, /api/om/pdfs returns correct 401 when no token / 200 {"items":[]} with valid token. Login endpoint works.
       - working: true
@@ -284,7 +284,7 @@ backend:
           ✅ INFRASTRUCTURE FIX VERIFIED - All tests passed, app fully functional.
           
           **TEST ENVIRONMENT:**
-          - URL: https://c4aa9ed2-b7fe-4c94-9761-f01c1a277b3a.preview.emergentagent.com
+          - URL: https://priview-staging.preview.emergentagent.com
           - Credentials: owner / owner123
           - Test method: Playwright browser automation with real user flow
           
@@ -842,7 +842,7 @@ frontend:
           - Recreated `/app/.env` with:
               MONGO_URL=mongodb://localhost:27017
               DB_NAME=cycle_count
-              NEXT_PUBLIC_BASE_URL=https://c4aa9ed2-b7fe-4c94-9761-f01c1a277b3a.preview.emergentagent.com
+              NEXT_PUBLIC_BASE_URL=https://priview-staging.preview.emergentagent.com
           - Bumped Node heap to 1536 MB in package.json:
               `"dev": "NODE_OPTIONS='--max-old-space-size=1536' next dev --hostname 0.0.0.0 --port 3000"`
           - Restarted nextjs. Verified: root=200 in 51ms after first compile, /api/om/pdfs returns
