@@ -3,14 +3,13 @@ import { Providers } from './providers'
 import { Toaster } from 'sonner'
 
 export const metadata = {
-  title: 'Merdeka Inventory System',
-  description: 'Merdeka Inventory System — Cycle Count & Order Management',
-  applicationName: 'MIS',
-  manifest: '/manifest.json',
+  title: 'Merdeka Share',
+  description: 'Merdeka Inventory System — Share PDF · Cycle Count · Order Management',
+  applicationName: 'Merdeka Share',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'MIS',
+    title: 'Merdeka Share',
   },
   formatDetection: {
     telephone: false,

@@ -1,16 +1,9 @@
+// /share is now a sub-route of the single unified PWA (Merdeka Share).
+// No separate manifest — the root layout's dynamic manifest at /manifest.webmanifest applies.
+
 export const metadata = {
   title: 'Merdeka Share',
   description: 'Share PDF resi ke Merdeka Inventory System',
-  applicationName: 'Merdeka Share',
-  manifest: '/share-manifest.webmanifest',
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: 'black-translucent',
-    title: 'Merdeka Share',
-  },
-  other: {
-    'mobile-web-app-capable': 'yes',
-  },
 };
 
 export const viewport = {

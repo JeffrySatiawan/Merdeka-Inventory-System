@@ -537,15 +537,28 @@ export default function ShareApp() {
         {/* Instructions */}
         <Card className="border-emerald-500/20 bg-emerald-500/5">
           <CardContent className="pt-4 pb-4">
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0">
-                <Share2 className="w-4 h-4 text-emerald-400" />
+            <div className="space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0 text-emerald-400 font-bold text-sm">
+                  1
+                </div>
+                <div className="text-xs text-muted-foreground pt-1.5">
+                  <span className="text-white font-semibold">Install app dulu</span> — tap tombol{' '}
+                  <span className="text-emerald-400 font-semibold">Install</span> di banner atas,
+                  atau menu Chrome ⋮ → <span className="text-white">Install app</span>.
+                  Tanpa install, tidak akan muncul di share sheet!
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground">
-                <span className="text-white font-semibold">Cara pakai:</span> Buka PDF di aplikasi lain
-                (WhatsApp, Shopee, Files, dll) → tekan tombol{' '}
-                <span className="text-white font-semibold">Bagikan</span> → pilih{' '}
-                <span className="text-emerald-400 font-semibold">Merdeka Share</span>. File akan otomatis diupload ke OMS.
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center shrink-0 text-emerald-400 font-bold text-sm">
+                  2
+                </div>
+                <div className="text-xs text-muted-foreground pt-1.5">
+                  Buka PDF di WhatsApp/Shopee/Files → tap{' '}
+                  <span className="text-white font-semibold">Bagikan</span> → pilih{' '}
+                  <span className="text-emerald-400 font-semibold">Merdeka Share</span>. File otomatis diupload dengan nama{' '}
+                  <span className="text-white font-mono">DDMMYY-N.pdf</span>.
+                </div>
               </div>
             </div>
           </CardContent>
