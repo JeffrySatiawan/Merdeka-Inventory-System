@@ -272,6 +272,15 @@ frontend:
     implemented: true
     working: "NA"
     file: "/app/app/page.js"
+      - working: "NA"
+        agent: "main"
+        comment: |
+          ADDED — Ceklist POS KETOKO + owner-only delete restriction:
+          - POST /api/om/pdfs/[id]/ketoko — body {input:true|false}. When true, saves ketoko_input_at (now) + ketoko_input_by_id + ketoko_input_by_name from current user. When false, clears the 3 fields.
+          - DELETE /api/om/pdfs/[id] — now restricted to user.role === 'owner' → returns 403 for staff.
+          - Upload doc init now includes ketoko_input_at/by_id/by_name as null.
+          Smoke-tested via curl: owner check → all 3 fields populated with owner's id+name+timestamp; owner uncheck → all 3 cleared; verified staff cannot delete (403).
+
     stuck_count: 0
     priority: "high"
     needs_retesting: false
@@ -756,6 +765,16 @@ frontend:
           - Upload via file picker only (works from HP: opens native file picker → pick PDF from downloads/gallery)
           - Share intent from WhatsApp/marketplace NOT YET implemented (Phase 2 planned: PWA manifest + Service Worker share_target)
           - QR scan is client-side only (server doesn't parse PDF); works well in Chrome/Safari with pdfjs+zxing.
+      - working: "NA"
+        agent: "main"
+        comment: |
+          ADDED — Ceklist POS KETOKO + owner-only delete UI:
+          - New 4th summary card: 🏪 "Input KETOKO N/Total" (amber theme). Grid changed from 3-col to 2-col (mobile) / 4-col (desktop).
+          - PdfRow now shows an inline checkbox card between file info and action buttons: label "POS KETOKO" + subtitle showing user name & timestamp when checked, or "belum diinput" when unchecked. Toggle uses optimistic UI update + POST /api/om/pdfs/[id]/ketoko, reverts on error.
+          - Delete button now conditionally rendered only when isOwner === true (staff sees no trash icon).
+          - Imported Store icon from lucide-react.
+          Verified via Playwright: checkbox visible in row, summary card shows counts correctly, click checkbox toggles state (screenshot before check → after uncheck confirmed opposite states), owner sees delete button. Summary card "Input KETOKO 1/1" vs "0/1" correctly updates.
+
 
 
 metadata:
