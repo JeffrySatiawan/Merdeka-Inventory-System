@@ -1,6 +1,13 @@
 // Scanner Mode — audio feedback, vibration, and camera scanning utilities.
-// Uses native getUserMedia + @zxing/browser for maximum mobile compatibility.
-// Client-only (uses browser APIs).
+// Uses native getUserMedia + a CANVAS MIRROR approach:
+//   - <video> element receives MediaStream but stays hidden.
+//   - <canvas> in the DOM is repainted from the video each frame via rAF.
+// This bypasses Chrome Android bugs where <video> with a MediaStream renders
+// black inside CSS-clipped/composited containers. Canvas rendering is
+// deterministic — if we call drawImage, the frame appears.
+//
+// Decoding: @zxing/browser BrowserMultiFormatReader operates on the video
+// element (which still receives frames even when hidden).
 
 let audioCtx = null;
 function getCtx() {
@@ -16,12 +23,6 @@ function getCtx() {
   return audioCtx;
 }
 
-/**
- * Play a beep according to type:
- *   'ok'   -> short high beep
- *   'warn' -> medium mid beep
- *   'err'  -> long low beep (double)
- */
 export function beep(type = 'ok') {
   const ctx = getCtx();
   if (!ctx) return;
@@ -58,9 +59,6 @@ export function beep(type = 'ok') {
   });
 }
 
-/**
- * Trigger vibration if supported.
- */
 export function vibrate(type = 'ok') {
   if (typeof navigator === 'undefined' || !navigator.vibrate) return;
   const patterns = { ok: [40], warn: [80], err: [120, 60, 120] };
@@ -75,14 +73,9 @@ export function feedback(type) {
 }
 
 /**
- * Start camera scanner using native getUserMedia + @zxing/browser.
- * We fully own the <video> element so we can set the iOS-required attributes
- * (playsInline, autoplay, muted) which html5-qrcode failed to set.
- *
- * @param {string} elementId - DOM id of container div
- * @param {(text:string)=>void} onDecode - called with barcode text
- * @param {(msg:string)=>void} onError - called with non-fatal error messages
- * @returns {Promise<() => Promise<void>>} stop function
+ * Start camera scanner with canvas mirror.
+ * Container will show a <canvas> that mirrors the camera feed.
+ * A hidden <video> receives the stream; zxing decodes off it.
  */
 export async function startCameraScanner(elementId, onDecode, onError) {
   if (typeof window === 'undefined') {
@@ -98,31 +91,52 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     throw new Error('Camera container tidak ditemukan');
   }
 
-  // Clean any leftover DOM from previous session
+  // Clean any leftover DOM
   try {
     while (container.firstChild) container.removeChild(container.firstChild);
   } catch {}
 
-  // Build video element with ALL mobile-required attributes.
-  // These MUST be set as attributes (not just properties) for iOS Safari
-  // to render the stream inline instead of showing a black screen.
+  // 1) Hidden <video> — receives MediaStream, drives zxing decoder.
+  //    We keep it off-screen (not display:none, because some browsers
+  //    disable rendering pipeline when display:none).
   const video = document.createElement('video');
+  video.id = 'om-scanner-video-hidden';
   video.setAttribute('autoplay', '');
   video.setAttribute('muted', '');
   video.setAttribute('playsinline', '');
-  video.setAttribute('webkit-playsinline', ''); // legacy iOS
+  video.setAttribute('webkit-playsinline', '');
   video.muted = true;
   video.autoplay = true;
   video.playsInline = true;
-  video.style.width = '100%';
-  video.style.height = '100%';
-  video.style.objectFit = 'cover';
-  video.style.display = 'block';
-  video.style.background = '#000';
-  container.appendChild(video);
+  video.style.cssText = [
+    'position:absolute',
+    'left:-9999px',
+    'top:-9999px',
+    'width:1px',
+    'height:1px',
+    'opacity:0',
+    'pointer-events:none',
+  ].join(';');
+  // Append video to <body> (not to container), so container CSS never affects it
+  document.body.appendChild(video);
 
-  // Try rear camera first, then any camera. Constraints matter on mobile —
-  // 'exact' will hard-fail on desktops with only user-facing camera; ideal is safer.
+  // 2) Visible <canvas> — the ONLY thing user sees inside container.
+  //    We repaint it from the video each frame. Full control over rendering,
+  //    no compositor issues.
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = [
+    'position:absolute',
+    'inset:0',
+    'width:100%',
+    'height:100%',
+    'display:block',
+    'background:#000',
+    'z-index:1',
+  ].join(';');
+  container.appendChild(canvas);
+  const ctx2d = canvas.getContext('2d', { alpha: false, desynchronized: true });
+
+  // 3) getUserMedia with fallback chain
   const constraintAttempts = [
     { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
     { video: { facingMode: 'environment' }, audio: false },
@@ -140,7 +154,8 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     }
   }
   if (!stream) {
-    try { container.removeChild(video); } catch {}
+    try { container.removeChild(canvas); } catch {}
+    try { document.body.removeChild(video); } catch {}
     throw new Error(
       'Tidak dapat mengakses kamera. Pastikan izin kamera diaktifkan di browser. (' +
         (lastErr?.name || 'unknown') + ': ' + (lastErr?.message || lastErr || '') + ')'
@@ -148,22 +163,70 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   }
 
   video.srcObject = stream;
-  // Play must be called after srcObject set. On some Androids play() rejects
-  // if not muted+playsinline, so we set both above.
+  // play() is required on many mobile browsers even with autoplay attribute
   try {
     await video.play();
   } catch (e) {
-    // If play fails, try one more time after tiny delay
     await new Promise((r) => setTimeout(r, 100));
     try { await video.play(); } catch (e2) {
-      // Not fatal — some browsers autoplay via attribute; log for debug
       try { console.warn('[OM Camera] video.play() failed:', e2?.message); } catch {}
     }
   }
 
-  // Lazy-load ZXing decoder
-  let codeReader = null;
+  // Wait until metadata loaded so we know real video dimensions
+  if (video.readyState < 1) {
+    await new Promise((resolve) => {
+      const onMeta = () => { video.removeEventListener('loadedmetadata', onMeta); resolve(); };
+      video.addEventListener('loadedmetadata', onMeta);
+      setTimeout(resolve, 3000); // safety timeout
+    });
+  }
+
+  // 4) Canvas mirror loop — repaint canvas from video each frame.
+  //    Uses rAF for smooth ~60fps rendering.
   let stopped = false;
+  const paint = () => {
+    if (stopped) return;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (vw > 0 && vh > 0 && !video.paused) {
+      // Adjust canvas backing store to match visible size (device pixels)
+      // for crisp rendering. Only resize when needed.
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const targetW = Math.max(1, Math.round(rect.width * dpr));
+      const targetH = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== targetW) canvas.width = targetW;
+      if (canvas.height !== targetH) canvas.height = targetH;
+
+      // Draw with 'cover' semantics — scale video to fill canvas, crop excess
+      const cw = canvas.width;
+      const ch = canvas.height;
+      const vRatio = vw / vh;
+      const cRatio = cw / ch;
+      let sx, sy, sw, sh;
+      if (vRatio > cRatio) {
+        // video wider than canvas (relative) → crop horizontally
+        sh = vh;
+        sw = Math.round(vh * cRatio);
+        sx = Math.round((vw - sw) / 2);
+        sy = 0;
+      } else {
+        sw = vw;
+        sh = Math.round(vw / cRatio);
+        sx = 0;
+        sy = Math.round((vh - sh) / 2);
+      }
+      try {
+        ctx2d.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
+      } catch {}
+    }
+    if (!stopped) requestAnimationFrame(paint);
+  };
+  requestAnimationFrame(paint);
+
+  // 5) Attach zxing decoder to the hidden video element
+  let codeReader = null;
   let controls = null;
   try {
     const { BrowserMultiFormatReader } = await import('@zxing/browser');
@@ -177,19 +240,20 @@ export async function startCameraScanner(elementId, onDecode, onError) {
         try { onDecode && onDecode(result.getText()); } catch {}
       } else if (err && onError) {
         const name = err?.name || '';
-        // NotFoundException fires constantly when no barcode in frame; ignore
         if (name && name !== 'NotFoundException' && name !== 'ChecksumException' && name !== 'FormatException') {
           try { onError(name + ': ' + (err?.message || '')); } catch {}
         }
       }
     });
   } catch (e) {
-    // Decoder failed to init — stop stream and throw
+    stopped = true;
     try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-    try { container.removeChild(video); } catch {}
+    try { container.removeChild(canvas); } catch {}
+    try { document.body.removeChild(video); } catch {}
     throw new Error('Gagal inisialisasi decoder: ' + (e?.message || e));
   }
 
+  // 6) Expose a stop() function that tears down EVERYTHING cleanly
   return async function stop() {
     stopped = true;
     try { controls && controls.stop && controls.stop(); } catch {}
@@ -201,6 +265,7 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     } catch {}
     try { video.pause(); } catch {}
     try { video.srcObject = null; } catch {}
+    try { document.body.removeChild(video); } catch {}
     try {
       const c = document.getElementById(elementId);
       if (c) {

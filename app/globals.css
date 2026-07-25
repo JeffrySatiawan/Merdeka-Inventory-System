@@ -204,6 +204,7 @@ code {
   display: block;
   min-height: 220px;
 }
+#om-camera canvas,
 #om-camera video {
   position: absolute;
   inset: 0;

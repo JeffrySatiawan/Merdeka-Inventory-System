@@ -251,8 +251,11 @@ function ScannerShell({
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
-      const el = document.getElementById('om-camera');
-      const v = el && el.querySelector('video');
+      // Video is now attached to document.body (canvas mirror pattern);
+      // fall back to the container in case an older impl put it there.
+      const v =
+        document.getElementById('om-scanner-video-hidden') ||
+        (document.getElementById('om-camera') || {}).querySelector?.('video');
       if (v) {
         setVideoInfo({
           w: v.videoWidth || 0,
