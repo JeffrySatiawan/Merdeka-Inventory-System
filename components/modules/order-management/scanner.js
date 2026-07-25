@@ -1,5 +1,6 @@
 // Scanner Mode — audio feedback, vibration, and camera scanning utilities.
-// Isolated from Cycle Count. Client-only (uses browser APIs).
+// Uses native getUserMedia + @zxing/browser for maximum mobile compatibility.
+// Client-only (uses browser APIs).
 
 let audioCtx = null;
 function getCtx() {
@@ -24,7 +25,6 @@ function getCtx() {
 export function beep(type = 'ok') {
   const ctx = getCtx();
   if (!ctx) return;
-  // iOS unlock: audio can only start after user gesture
   if (ctx.state === 'suspended') {
     ctx.resume().catch(() => {});
   }
@@ -75,92 +75,132 @@ export function feedback(type) {
 }
 
 /**
- * Load html5-qrcode lazily and start scanning.
- * Returns a stop() function. Safe against React unmount races and camera-init failures.
+ * Start camera scanner using native getUserMedia + @zxing/browser.
+ * We fully own the <video> element so we can set the iOS-required attributes
+ * (playsInline, autoplay, muted) which html5-qrcode failed to set.
+ *
+ * @param {string} elementId - DOM id of container div
+ * @param {(text:string)=>void} onDecode - called with barcode text
+ * @param {(msg:string)=>void} onError - called with non-fatal error messages
+ * @returns {Promise<() => Promise<void>>} stop function
  */
 export async function startCameraScanner(elementId, onDecode, onError) {
   if (typeof window === 'undefined') {
     throw new Error('Camera scanner requires browser environment');
   }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error(
+      'Browser tidak mendukung akses kamera (getUserMedia). Gunakan Chrome/Safari terbaru & akses lewat HTTPS.'
+    );
+  }
   const container = document.getElementById(elementId);
   if (!container) {
-    throw new Error('Camera container not found');
+    throw new Error('Camera container tidak ditemukan');
   }
-  // Clean any leftover nodes from previous session to give html5-qrcode a fresh slate
+
+  // Clean any leftover DOM from previous session
   try {
     while (container.firstChild) container.removeChild(container.firstChild);
   } catch {}
 
-  const mod = await import('html5-qrcode');
-  const { Html5Qrcode } = mod;
-  let instance;
-  try {
-    instance = new Html5Qrcode(elementId, /* verbose */ false);
-  } catch (e) {
-    throw new Error('Gagal inisialisasi kamera: ' + (e?.message || e));
-  }
+  // Build video element with ALL mobile-required attributes.
+  // These MUST be set as attributes (not just properties) for iOS Safari
+  // to render the stream inline instead of showing a black screen.
+  const video = document.createElement('video');
+  video.setAttribute('autoplay', '');
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('webkit-playsinline', ''); // legacy iOS
+  video.muted = true;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.style.width = '100%';
+  video.style.height = '100%';
+  video.style.objectFit = 'cover';
+  video.style.display = 'block';
+  video.style.background = '#000';
+  container.appendChild(video);
 
-  const config = {
-    fps: 15,
-    // Omit qrbox → scan area = full video (better for wider barcodes like resi)
-    aspectRatio: 1.6,
-    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-    // Prefer larger resolution for readability
-    videoConstraints: {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    },
-  };
-
-  const safeDecode = (d) => {
-    try { onDecode && onDecode(d); } catch {}
-  };
-
-  // Try rear-camera first, then generic environment, then any camera
-  const attempts = [
-    { facingMode: { exact: 'environment' } },
-    { facingMode: 'environment' },
-    { facingMode: 'user' },
+  // Try rear camera first, then any camera. Constraints matter on mobile —
+  // 'exact' will hard-fail on desktops with only user-facing camera; ideal is safer.
+  const constraintAttempts = [
+    { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+    { video: { facingMode: 'environment' }, audio: false },
+    { video: true, audio: false },
   ];
-  let started = false;
+
+  let stream = null;
   let lastErr = null;
-  for (const cam of attempts) {
+  for (const constraints of constraintAttempts) {
     try {
-      await instance.start(
-        cam,
-        config,
-        safeDecode,
-        (msg) => {
-          if (onError && msg && !/NotFoundException|No MultiFormat Readers/.test(String(msg))) {
-            try { onError(msg); } catch {}
-          }
-        }
-      );
-      started = true;
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
       break;
     } catch (e) {
       lastErr = e;
-      // Ensure any partial DOM is cleared before retry
-      try {
-        while (container.firstChild) container.removeChild(container.firstChild);
-      } catch {}
     }
   }
-  if (!started) {
-    // Give up — return a no-op stop and throw
+  if (!stream) {
+    try { container.removeChild(video); } catch {}
     throw new Error(
-      'Tidak dapat mengakses kamera. Pastikan izin kamera aktif & perangkat memiliki kamera. (' +
-        (lastErr?.message || lastErr || 'unknown') +
-        ')'
+      'Tidak dapat mengakses kamera. Pastikan izin kamera diaktifkan di browser. (' +
+        (lastErr?.name || 'unknown') + ': ' + (lastErr?.message || lastErr || '') + ')'
     );
   }
 
-  // Return a robust stop function that never throws
-  return async () => {
-    try { await instance.stop(); } catch {}
-    try { instance.clear(); } catch {}
-    // Final cleanup — remove any leftover DOM the library added
+  video.srcObject = stream;
+  // Play must be called after srcObject set. On some Androids play() rejects
+  // if not muted+playsinline, so we set both above.
+  try {
+    await video.play();
+  } catch (e) {
+    // If play fails, try one more time after tiny delay
+    await new Promise((r) => setTimeout(r, 100));
+    try { await video.play(); } catch (e2) {
+      // Not fatal — some browsers autoplay via attribute; log for debug
+      try { console.warn('[OM Camera] video.play() failed:', e2?.message); } catch {}
+    }
+  }
+
+  // Lazy-load ZXing decoder
+  let codeReader = null;
+  let stopped = false;
+  let controls = null;
+  try {
+    const { BrowserMultiFormatReader } = await import('@zxing/browser');
+    codeReader = new BrowserMultiFormatReader(undefined, {
+      delayBetweenScanAttempts: 120,
+      delayBetweenScanSuccess: 1200,
+    });
+    controls = await codeReader.decodeFromVideoElement(video, (result, err) => {
+      if (stopped) return;
+      if (result) {
+        try { onDecode && onDecode(result.getText()); } catch {}
+      } else if (err && onError) {
+        const name = err?.name || '';
+        // NotFoundException fires constantly when no barcode in frame; ignore
+        if (name && name !== 'NotFoundException' && name !== 'ChecksumException' && name !== 'FormatException') {
+          try { onError(name + ': ' + (err?.message || '')); } catch {}
+        }
+      }
+    });
+  } catch (e) {
+    // Decoder failed to init — stop stream and throw
+    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { container.removeChild(video); } catch {}
+    throw new Error('Gagal inisialisasi decoder: ' + (e?.message || e));
+  }
+
+  return async function stop() {
+    stopped = true;
+    try { controls && controls.stop && controls.stop(); } catch {}
+    try { codeReader && codeReader.reset && codeReader.reset(); } catch {}
+    try {
+      stream.getTracks().forEach((t) => {
+        try { t.stop(); } catch {}
+      });
+    } catch {}
+    try { video.pause(); } catch {}
+    try { video.srcObject = null; } catch {}
     try {
       const c = document.getElementById(elementId);
       if (c) {

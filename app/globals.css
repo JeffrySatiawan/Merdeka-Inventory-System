@@ -198,10 +198,13 @@ code {
    surrounded by black bars — looking like "camera is dark".
    ============================================================ */
 #om-camera {
+  position: relative;
   width: 100%;
   height: 100%;
   display: block;
   background: #000;
+  overflow: hidden;
+  min-height: 220px;
 }
 #om-camera video {
   width: 100% !important;
@@ -209,9 +212,4 @@ code {
   object-fit: cover !important;
   display: block !important;
   background: #000;
-}
-#om-camera > div,
-#om-camera canvas {
-  width: 100% !important;
-  height: 100% !important;
 }

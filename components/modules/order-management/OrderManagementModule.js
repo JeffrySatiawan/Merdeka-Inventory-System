@@ -166,6 +166,7 @@ function ScannerShell({
   const clock = useRealtimeClock();
   const [cameraErr, setCameraErr] = useState(null);
   const [cameraReady, setCameraReady] = useState(false);
+  const [videoInfo, setVideoInfo] = useState(null); // { w, h, playing }
   const [retryTick, setRetryTick] = useState(0);
   const stopCameraRef = useRef(null);
   const lastDecodeRef = useRef({ code: '', ts: 0 });
@@ -182,20 +183,17 @@ function ScannerShell({
     setCameraErr(null);
     setCameraReady(false);
 
-    // Wait for browser layout to give the container real dimensions
-    // (avoids html5-qrcode initializing with 0x0 → black video)
-    const startWhenReady = () => {
+    // Give the DOM 2 frames to render #om-camera, then start.
+    // We no longer require a specific size — since we own the <video> element
+    // (see scanner.js), the container will grow with its child regardless of
+    // initial measurement quirks. This avoids infinite retry loops.
+    const startWhenReady = (attempt = 0) => {
       if (!mounted) return;
       const el = document.getElementById('om-camera');
       if (!el) {
-        // element not mounted yet; try again on next frame
-        requestAnimationFrame(startWhenReady);
-        return;
-      }
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 40 || rect.height < 40) {
-        // Layout not ready — retry a few times
-        requestAnimationFrame(startWhenReady);
+        // element not mounted yet; try again on next frame (max ~120 frames)
+        if (attempt < 120) requestAnimationFrame(() => startWhenReady(attempt + 1));
+        else setCameraErr('Kamera container tidak muncul. Coba refresh halaman.');
         return;
       }
 
@@ -214,7 +212,7 @@ function ScannerShell({
           lastDecodeRef.current = { code: decoded, ts: now };
           if (decodedCbRef.current) decodedCbRef.current(decoded);
         },
-        () => {}
+        (msg) => { try { console.warn('[OM Camera]', msg); } catch {} }
       )
         .then((stopFn) => {
           if (!mounted) {
@@ -228,22 +226,46 @@ function ScannerShell({
           if (!mounted) return;
           const msg = String(e?.message || e || 'Tidak dapat mengakses kamera');
           setCameraErr(msg);
-          // Console for debugging on device (open DevTools remote to inspect)
           try { console.error('[OM Camera] Init failed:', e); } catch {}
         });
     };
     // Use rAF-based wait so React finishes rendering the container first
-    requestAnimationFrame(() => requestAnimationFrame(startWhenReady));
+    requestAnimationFrame(() => requestAnimationFrame(() => startWhenReady(0)));
 
     return () => {
       mounted = false;
       setCameraReady(false);
+      setVideoInfo(null);
       if (stopCameraRef.current) {
         stopCameraRef.current().catch(() => {});
         stopCameraRef.current = null;
       }
     };
   }, [disabled, retryTick]);
+
+  // Periodically read actual video dimensions so we can display them.
+  // If cameraReady=true but video dimensions stay 0x0 → strong signal that
+  // stream never rendered (e.g., missing playsInline on unpatched libs).
+  useEffect(() => {
+    if (!cameraReady || disabled) return;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const el = document.getElementById('om-camera');
+      const v = el && el.querySelector('video');
+      if (v) {
+        setVideoInfo({
+          w: v.videoWidth || 0,
+          h: v.videoHeight || 0,
+          playing: !v.paused && !v.ended && v.readyState >= 2,
+          readyState: v.readyState,
+        });
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [cameraReady, disabled, retryTick]);
 
   return (
     <div className="space-y-3 max-w-2xl mx-auto">
@@ -327,8 +349,18 @@ function ScannerShell({
               : 'Menyiapkan kamera...'}
           </span>
           {cameraReady && !disabled && (
-            <span className="flex items-center gap-1 text-emerald-300">
+            <span className="flex items-center gap-1 text-emerald-300 font-mono">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> LIVE
+              {videoInfo && videoInfo.w > 0 && (
+                <span className="text-emerald-400/70 ml-1">
+                  {videoInfo.w}×{videoInfo.h}
+                </span>
+              )}
+              {videoInfo && videoInfo.w === 0 && (
+                <span className="text-amber-400 ml-1" title="Stream aktif tapi belum ada frame">
+                  ⚠ 0×0
+                </span>
+              )}
             </span>
           )}
         </div>

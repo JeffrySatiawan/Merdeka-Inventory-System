@@ -358,7 +358,7 @@ frontend:
     implemented: true
     working: "NA"
     file: "/app/components/modules/order-management/OrderManagementModule.js"
-    stuck_count: 1
+    stuck_count: 2
     priority: "high"
     needs_retesting: true
     status_history:
@@ -372,14 +372,32 @@ frontend:
       - working: "NA"
         agent: "main"
         comment: |
-          Fix attempt for dark-camera issue:
-          1. Removed `absolute inset-0` from #om-camera div — now uses natural block layout with aspectRatio 16/10 + minHeight 220px so html5-qrcode measures real dimensions
-          2. Added globals.css CSS rules to force injected <video>, canvas, and internal divs to width:100% height:100% object-fit:cover — prevents small centered video with black bars
-          3. useEffect now waits (via requestAnimationFrame double-frame) for container to have actual dimensions (width>=40, height>=40) before calling startCameraScanner
-          4. Added getUserMedia availability check with clear Indonesian error message
-          5. Improved scanner.js config: removed too-small qrbox (was 260x130) → whole video is scan area (better for wide resi barcodes); added videoConstraints with facingMode ideal environment + 1280x720 ideal resolution; upped fps to 15
-          6. All errors now logged to console with '[OM Camera]' prefix for remote-debug via DevTools
-          Files changed: /app/app/globals.css, /app/components/modules/order-management/OrderManagementModule.js, /app/components/modules/order-management/scanner.js
+          Fix attempt #1 (with html5-qrcode): CSS force video 100%, wait rAF for size, exact->env->user facingMode fallback, videoConstraints 1280x720. Did not solve.
+      - working: false
+        agent: "user"
+        comment: "sudah coba tapi masih gelap atau tidak bekerja"
+      - working: "NA"
+        agent: "main"
+        comment: |
+          ROOT CAUSE identified via troubleshoot_agent RCA: html5-qrcode v2.3.8 creates <video> internally WITHOUT the iOS-required attributes `playsInline`, `autoplay`, `muted`. On iOS Safari (and many mobile browsers 2025), these attributes are MANDATORY for the media stream to render inline — without them, permission is granted, stream starts, but video renders black.
+          
+          Fix attempt #2 — full rewrite:
+          1. Replaced html5-qrcode with @zxing/browser (0.1.5) + @zxing/library (0.21.3) → we now OWN the <video> element and can set all required attributes.
+          2. /app/components/modules/order-management/scanner.js completely rewritten:
+             - createElement('video') with attributes: autoplay, muted, playsinline, webkit-playsinline (legacy iOS)
+             - Also sets .muted=true, .autoplay=true, .playsInline=true properties for redundancy
+             - Uses native navigator.mediaDevices.getUserMedia with facingMode fallback chain (ideal:'environment' → 'environment' → true)
+             - Manually appends to container, calls video.play() with retry
+             - Then BrowserMultiFormatReader.decodeFromVideoElement() for barcode decoding
+             - Robust stop() function tears down stream tracks + removes video
+          3. globals.css #om-camera simplified — position:relative w/h 100%, video forced 100% with object-fit:cover.
+          4. Removed the container-size-check infinite retry (was: rect.width<40 → retry rAF forever). Now retries max 120 frames looking for element only, no size gate. Video element itself grows the container.
+          5. Added visible on-screen diagnostic: "LIVE 1280×720" when video renders, "⚠ 0×0" if stream active but no frames (helps remote-debug without DevTools).
+          6. Preserved: dedupe of consecutive decodes within 1200ms, disabled-pause behavior, retry button on error.
+          
+          Verified in headless Playwright: page loads, ScannerShell renders, "KAMERA DIJEDA" overlay correctly appears when disabled=true (before ekspedisi picked). Cannot fully verify getUserMedia in headless — awaits real-device verification.
+          
+          Files changed: /app/package.json, /app/components/modules/order-management/scanner.js, /app/components/modules/order-management/OrderManagementModule.js, /app/app/globals.css
 
   - task: "Tab workflow (Cetak/Packing/Kirim/Selesai) with cutoff-hour archival"
     implemented: true
