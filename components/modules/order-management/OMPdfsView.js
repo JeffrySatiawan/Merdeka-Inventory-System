@@ -17,6 +17,8 @@ import {
   Eye,
   Store,
   Copy,
+  X,
+  ArrowLeft,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -786,7 +788,7 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
                 )}
               </div>
             </div>
-            <div className="flex gap-2 shrink-0">
+            <div className="flex gap-2 shrink-0 flex-wrap justify-end">
               {pdfBlobUrl && (
                 <a
                   href={pdfBlobUrl}
@@ -799,6 +801,15 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
               )}
               <Button size="sm" onClick={handlePrint} disabled={!pdfBlobUrl} className="gap-1">
                 <Printer className="w-3.5 h-3.5" /> Print
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onClose}
+                className="gap-1 border-white/20 hover:bg-white/10"
+                title="Tutup preview (Esc)"
+              >
+                <X className="w-3.5 h-3.5" /> Tutup
               </Button>
             </div>
           </div>
@@ -876,6 +887,26 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Sticky footer — quick action to return to list & print the next resi */}
+        <div className="border-t border-white/10 p-3 flex items-center justify-between gap-2 bg-neutral-950/60 backdrop-blur-sm">
+          <div className="text-[11px] text-muted-foreground hidden sm:block">
+            Tekan <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/10 text-[10px] font-mono">Esc</kbd> untuk tutup, atau klik tombol di bawah.
+          </div>
+          <div className="flex gap-2 ml-auto">
+            <Button size="sm" onClick={handlePrint} disabled={!pdfBlobUrl} className="gap-1">
+              <Printer className="w-3.5 h-3.5" /> Print
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onClose}
+              className="gap-1.5 border-white/20 hover:bg-white/10"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" /> Kembali ke Daftar
+            </Button>
           </div>
         </div>
       </DialogContent>

@@ -804,12 +804,26 @@ frontend:
 
   - task: "OM PDF Resi frontend — upload/list/preview/print + auto QR scan"
     implemented: true
-    working: true
+    working: "NA"
     file: "/app/components/modules/order-management/OMPdfsView.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: false
+    needs_retesting: true
     status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          UX IMPROVEMENT (user request: "setelah file pdf terbuka tombol back atau close untuk cetak resi berikutnya tambahkan"):
+          User wants explicit Back/Close button after opening PDF so they can quickly return to list & print the next resi.
+          
+          CHANGES in PdfPreviewModal:
+          1. Added `X` and `ArrowLeft` icons from lucide-react.
+          2. Header action row now shows (right side, `flex-wrap justify-end` for mobile): "Buka di tab baru" · "Print" · "Tutup" (X icon).
+          3. NEW sticky footer below the PDF viewer with:
+             - Left: keyboard hint "Tekan Esc untuk tutup" (hidden on mobile via `sm:block`).
+             - Right: big "Print" + "Kembali ke Daftar" (ArrowLeft icon) buttons — obvious CTAs so after printing user can immediately return to list to open the next PDF.
+          Both close buttons call `onClose` → parent resets previewItem to null.
+
       - working: "NA"
         agent: "main"
         comment: |
