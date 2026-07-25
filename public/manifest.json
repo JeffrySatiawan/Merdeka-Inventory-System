@@ -25,8 +25,25 @@
     }
   ],
   "shortcuts": [
+    { "name": "Merdeka Share (Upload PDF)", "short_name": "Share PDF", "url": "/share" },
     { "name": "Scan Mulai Packing", "short_name": "Packing", "url": "/?view=om:scan_pack" },
     { "name": "Scan Serah Terima Kurir", "short_name": "Kurir", "url": "/?view=om:scan_deliver" },
     { "name": "My Tasks Cycle Count", "short_name": "Tasks", "url": "/?view=cc:tasks" }
-  ]
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "shared_files",
+          "accept": ["application/pdf", ".pdf"]
+        }
+      ]
+    }
+  }
 }

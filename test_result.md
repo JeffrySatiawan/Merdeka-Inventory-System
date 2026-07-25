@@ -888,6 +888,84 @@ frontend:
           
           **CONCLUSION:**
           Backend implementation of Merdeka Share PWA is FULLY WORKING. All owner-only guards, auto-rename logic, storage path, and metadata fields (uploaded_via, uploaded_wita_date) are correctly implemented and tested.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 6 TEST CATEGORIES PASSED (100%) - PWA Share Target Manifest Fix VERIFIED
+          
+          **TEST SCOPE:** Backend/HTTP-level verification of PWA share target fix for bug "aplikasi Merdeka Share tidak muncul di share target"
+          **TEST FILE:** /app/test_pwa_share_manifest.py
+          **TEST METHOD:** Python requests library with curl verification
+          **BASE URL:** https://priview-staging.preview.emergentagent.com
+          
+          **FIX VERIFIED:**
+          The root cause was that the `<link rel="manifest">` on the /share page was being served at SSR time pointing to /manifest.json (main MIS manifest, no share_target). The client-side manifest swapper was too late — Chrome had already parsed the wrong manifest.
+          
+          **FIXES CONFIRMED WORKING:**
+          1. Root layout now uses Next.js `metadata.manifest = '/manifest.json'` (removed hardcoded `<link>`)
+          2. /share layout now uses `metadata.manifest = '/share-manifest.webmanifest'` (SSR override)
+          3. Main /manifest.json now ALSO has `share_target` field (redundant but ensures already-installed MIS PWAs immediately gain share capability)
+          
+          **TEST RESULTS:**
+          
+          1. ✅ MANIFEST LINK SSR OVERRIDE (2/2 tests passed):
+             - Root page (/) HTML contains `<link rel="manifest" href="/manifest.json">` (NOT /share-manifest.webmanifest) ✓
+             - /share page HTML contains `<link rel="manifest" href="/share-manifest.webmanifest">` (NOT /manifest.json) ✓
+             - Verified via curl with grep: SSR-rendered HTML has correct manifest links before any client-side JavaScript runs
+          
+          2. ✅ MANIFEST CONTENT VALIDATION (18/18 checks passed):
+             **Main manifest (/manifest.json):**
+             - name = "Merdeka Inventory System" ✓
+             - share_target.action = "/share" ✓
+             - share_target.method = "POST" ✓
+             - share_target.enctype = "multipart/form-data" ✓
+             - share_target.params.files array with entry accepting "application/pdf" and ".pdf" ✓
+             - icons array with 512×512 icon ✓
+             
+             **Share manifest (/share-manifest.webmanifest):**
+             - name = "Merdeka Share" ✓
+             - scope = "/share" ✓
+             - start_url = "/share" ✓
+             - share_target.action = "/share" ✓
+             - share_target.method = "POST" ✓
+             - share_target.enctype = "multipart/form-data" ✓
+             - share_target.params.files array with entry accepting "application/pdf" and ".pdf" ✓
+             - icons array with 512×512 icon ✓
+          
+          3. ✅ CONTENT-TYPE HEADERS (2/2 tests passed):
+             - /manifest.json returns Content-Type: application/json; charset=UTF-8 ✓
+             - /share-manifest.webmanifest returns Content-Type: application/manifest+json ✓
+          
+          4. ✅ SERVICE WORKER (4/4 tests passed):
+             - /sw.js returns 200 with Content-Type: application/javascript ✓
+             - Contains handleShareTarget function ✓
+             - Contains POST /share handling ✓
+             - Contains pathname check for /share ✓
+          
+          5. ✅ BACKEND ENDPOINT REGRESSION (4/4 tests passed):
+             - Owner can POST small PDF to /api/om/pdfs/auto → 200 with filename matching DDMMYY-N.pdf pattern (250726-9.pdf) ✓
+             - Staff without OM module → 403 (correctly denied) ✓
+             - Owner-only enforcement verified (staff with OM module would also get 403) ✓
+             - Cleanup: test PDF deleted successfully ✓
+          
+          6. ✅ /SHARE PAGE LOADS (2/2 tests passed):
+             - GET /share returns 200 ✓
+             - HTML content length: 23353 bytes (valid page) ✓
+          
+          **TECHNICAL VERIFICATION:**
+          - Next.js metadata API correctly overrides manifest link at SSR time (layout-level metadata inheritance working)
+          - Both manifests have identical share_target configuration (redundancy ensures compatibility)
+          - Service worker intercepts POST /share and handles file extraction from formData
+          - Backend endpoint /api/om/pdfs/auto maintains owner-only access control
+          
+          **NOT TESTED (as per review request):**
+          - Real Android share sheet visibility (requires actual Android device with Chrome)
+          - Service worker installation in browser (requires browser environment)
+          - IndexedDB queue behavior (requires browser environment)
+          - Background Sync (requires browser environment)
+          
+          **CONCLUSION:**
+          The PWA share target manifest fix is FULLY WORKING at the backend/HTTP level. The SSR manifest link override is correctly implemented and will ensure Chrome parses the correct manifest (share-manifest.webmanifest) when the /share page is loaded, which should make "Merdeka Share" appear in the Android share sheet. Real-device testing required to confirm Android share sheet visibility.
 
   - task: "OM PDF Resi frontend — upload/list/preview/print + auto QR scan"
     implemented: true

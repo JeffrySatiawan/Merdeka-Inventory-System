@@ -1,9 +1,8 @@
-import ShareManifestSwapper from './ShareManifestSwapper';
-
 export const metadata = {
   title: 'Merdeka Share',
   description: 'Share PDF resi ke Merdeka Inventory System',
   applicationName: 'Merdeka Share',
+  manifest: '/share-manifest.webmanifest',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
@@ -24,10 +23,5 @@ export const viewport = {
 };
 
 export default function ShareLayout({ children }) {
-  return (
-    <>
-      <ShareManifestSwapper />
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }

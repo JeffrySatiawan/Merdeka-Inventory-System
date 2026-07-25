@@ -6,6 +6,7 @@ export const metadata = {
   title: 'Merdeka Inventory System',
   description: 'Merdeka Inventory System — Cycle Count & Order Management',
   applicationName: 'MIS',
+  manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
@@ -50,7 +51,6 @@ export default function RootLayout({ children }) {
   return (
     <html lang="id" className="dark" suppressHydrationWarning>
       <head>
-        <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#09090b" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
