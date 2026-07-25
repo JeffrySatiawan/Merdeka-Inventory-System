@@ -97,11 +97,13 @@ function loadPdfJs() {
 }
 
 // ---------- Module-level caches (survive modal remount) ----------
-const _bufferCache = new Map();       // pdfId -> ArrayBuffer promise
+const _bufferCache = new Map();       // pdfId -> Uint8Array (owned copy)
 const _pdfDocCache = new Map();       // pdfId -> PDFDocumentProxy promise
 const _blobUrlCache = new Map();      // pdfId -> object URL string
 
-// Fetch pdf as authenticated blob → return ArrayBuffer (cached per id)
+// Fetch pdf as authenticated blob → return a Uint8Array (cached).
+// We keep an owned Uint8Array copy in cache; consumers slice a fresh copy
+// because pdf.js and Blob may take ownership (detach) of the buffer.
 function fetchPdfBuffer(pdfId) {
   if (_bufferCache.has(pdfId)) return _bufferCache.get(pdfId);
   const p = (async () => {
@@ -110,33 +112,42 @@ function fetchPdfBuffer(pdfId) {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return resp.arrayBuffer();
+    const ab = await resp.arrayBuffer();
+    // Copy into our own Uint8Array so we keep control
+    return new Uint8Array(ab);
   })();
   _bufferCache.set(pdfId, p);
-  // If it fails, drop cache so next call retries
   p.catch(() => _bufferCache.delete(pdfId));
   return p;
 }
 
-// Get (or create) a pdfDoc for a given id — cached
+// Slice a fresh copy of the buffer for a consumer (pdf.js / Blob).
+async function getPdfBufferCopy(pdfId) {
+  const u8 = await fetchPdfBuffer(pdfId);
+  // Uint8Array#slice returns a copy with its own ArrayBuffer
+  return u8.slice();
+}
+
+// Get (or create) a pdfDoc for a given id — cached.
+// Uses a FRESH copy of the buffer so pdf.js can safely take ownership.
 function getPdfDoc(pdfId) {
   if (_pdfDocCache.has(pdfId)) return _pdfDocCache.get(pdfId);
   const p = (async () => {
     const pdfjs = await loadPdfJs();
-    const buf = await fetchPdfBuffer(pdfId);
-    // Pass a fresh Uint8Array so pdf.js can safely retain it
-    return pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+    const copy = await getPdfBufferCopy(pdfId);
+    return pdfjs.getDocument({ data: copy }).promise;
   })();
   _pdfDocCache.set(pdfId, p);
   p.catch(() => _pdfDocCache.delete(pdfId));
   return p;
 }
 
-// Get (or create) an object URL for the PDF — for print + "open in new tab"
+// Get (or create) an object URL for the PDF — for print + "open in new tab".
+// Uses a fresh copy too, so cached buffer stays intact.
 async function getPdfBlobUrl(pdfId) {
   if (_blobUrlCache.has(pdfId)) return _blobUrlCache.get(pdfId);
-  const buf = await fetchPdfBuffer(pdfId);
-  const blob = new Blob([new Uint8Array(buf)], { type: 'application/pdf' });
+  const copy = await getPdfBufferCopy(pdfId);
+  const blob = new Blob([copy], { type: 'application/pdf' });
   const url = URL.createObjectURL(blob);
   _blobUrlCache.set(pdfId, url);
   return url;
@@ -649,7 +660,9 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
     setRenderedPages(0);
 
     // Kick off blob URL creation in parallel (used only for print / fallback)
-    getPdfBlobUrl(pdfId).then((u) => { if (!cancelled) setPdfBlobUrl(u); }).catch(() => {});
+    getPdfBlobUrl(pdfId)
+      .then((u) => { if (!cancelled) setPdfBlobUrl(u); })
+      .catch((e) => console.error('[PDF preview] blob URL failed:', e));
 
     (async () => {
       try {
@@ -658,6 +671,7 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
         setPdfDoc(doc);
         setNumPages(doc.numPages);
       } catch (e) {
+        console.error('[PDF preview] getPdfDoc failed:', e);
         if (!cancelled) setError(e?.message || String(e));
       }
     })();
@@ -672,14 +686,19 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
     (async () => {
       for (let p = 1; p <= pdfDoc.numPages; p += 1) {
         if (cancelled) return;
-        const canvas = canvasesRef.current[p - 1];
-        if (!canvas) {
-          // Wait one animation frame for canvas to mount
+        // Wait for the canvas element to mount (up to ~500ms).
+        // React may not have committed the new canvas array yet if numPages just grew.
+        let c = canvasesRef.current[p - 1];
+        for (let tries = 0; !c && tries < 30; tries += 1) {
           // eslint-disable-next-line no-await-in-loop
-          await new Promise((r) => requestAnimationFrame(r));
+          await new Promise((r) => setTimeout(r, 20));
+          if (cancelled) return;
+          c = canvasesRef.current[p - 1];
         }
-        const c = canvasesRef.current[p - 1];
-        if (!c) continue;
+        if (!c) {
+          console.warn(`[PDF preview] canvas ${p} not mounted, skipping`);
+          continue;
+        }
         try {
           // eslint-disable-next-line no-await-in-loop
           const page = await pdfDoc.getPage(p);
@@ -699,7 +718,8 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
           // eslint-disable-next-line no-await-in-loop
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
           if (!cancelled) setRenderedPages((n) => Math.max(n, p));
-        } catch {
+        } catch (renderErr) {
+          console.error(`[PDF preview] page ${p} render failed:`, renderErr);
           /* per-page render error, keep going */
         }
       }
@@ -767,6 +787,16 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
               </div>
             </div>
             <div className="flex gap-2 shrink-0">
+              {pdfBlobUrl && (
+                <a
+                  href={pdfBlobUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-white/10 text-xs hover:bg-white/[0.04] whitespace-nowrap"
+                >
+                  <Eye className="w-3.5 h-3.5" /> Buka di tab baru
+                </a>
+              )}
               <Button size="sm" onClick={handlePrint} disabled={!pdfBlobUrl} className="gap-1">
                 <Printer className="w-3.5 h-3.5" /> Print
               </Button>
@@ -778,8 +808,18 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
           {/* PDF viewer — pdf.js canvas render, no iframe */}
           <div className="bg-neutral-900 relative min-h-[400px] md:min-h-0 overflow-y-auto p-3">
             {error ? (
-              <div className="absolute inset-0 flex items-center justify-center text-rose-400 text-sm p-6 text-center">
-                Gagal memuat PDF: {error}
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-sm p-6 text-center gap-3">
+                <div className="text-rose-400">Gagal memuat preview: {error}</div>
+                {pdfBlobUrl && (
+                  <a
+                    href={pdfBlobUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-2 rounded-md border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] text-white"
+                  >
+                    <Eye className="w-4 h-4" /> Buka di tab baru
+                  </a>
+                )}
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3">
