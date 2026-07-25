@@ -19,6 +19,8 @@ import {
   Copy,
   X,
   ArrowLeft,
+  Share2,
+  Smartphone,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -409,6 +411,38 @@ export default function OMPdfsView({ user }) {
           )}
         </div>
       </div>
+
+      {/* Merdeka Share PWA promo (owner only) */}
+      {isOwner && (
+        <Card className="border-emerald-500/20 bg-gradient-to-r from-emerald-500/10 via-blue-500/5 to-transparent">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-blue-500 flex items-center justify-center shrink-0">
+                <Share2 className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold flex items-center gap-2 flex-wrap">
+                  Merdeka Share
+                  <Badge variant="outline" className="text-[9px] py-0 h-4 border-emerald-500/40 text-emerald-400">
+                    PWA
+                  </Badge>
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-0.5">
+                  Install di HP Android → bisa share PDF resi langsung dari WhatsApp/Shopee ke OMS
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
+                onClick={() => window.open('/share', '_blank', 'noopener')}
+              >
+                <Smartphone className="w-3.5 h-3.5" /> Buka
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
