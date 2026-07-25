@@ -378,31 +378,35 @@ export default function OMPdfsView({ user }) {
           <Button size="sm" variant="outline" onClick={load} disabled={loading} className="gap-2">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/pdf,.pdf"
-            multiple
-            className="hidden"
-            onChange={(e) => handleFiles(e.target.files)}
-          />
-          <Button
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="gap-2"
-          >
-            {uploading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Mengunggah {uploadProgress}%
-              </>
-            ) : (
-              <>
-                <Upload className="w-4 h-4" /> Unggah PDF
-              </>
-            )}
-          </Button>
+          {isOwner && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
+                className="hidden"
+                onChange={(e) => handleFiles(e.target.files)}
+              />
+              <Button
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="gap-2"
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Mengunggah {uploadProgress}%
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4" /> Unggah PDF
+                  </>
+                )}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -452,7 +456,9 @@ export default function OMPdfsView({ user }) {
               <FileText className="w-10 h-10 mx-auto text-muted-foreground/40 mb-3" />
               <div className="text-sm text-muted-foreground">Belum ada PDF diunggah.</div>
               <div className="text-xs text-muted-foreground/70 mt-1">
-                Klik &quot;Unggah PDF&quot; untuk mulai — bisa pilih dari galeri / file HP.
+                {isOwner
+                  ? 'Klik "Unggah PDF" untuk mulai — bisa pilih dari galeri / file HP.'
+                  : 'Hanya owner (ADMIN) yang dapat mengunggah PDF resi.'}
               </div>
             </div>
           ) : (
