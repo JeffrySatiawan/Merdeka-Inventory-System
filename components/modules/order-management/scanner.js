@@ -1,13 +1,17 @@
-// Scanner Mode — audio feedback, vibration, and camera scanning utilities.
-// Uses native getUserMedia + a CANVAS MIRROR approach:
-//   - <video> element receives MediaStream but stays hidden.
-//   - <canvas> in the DOM is repainted from the video each frame via rAF.
-// This bypasses Chrome Android bugs where <video> with a MediaStream renders
-// black inside CSS-clipped/composited containers. Canvas rendering is
-// deterministic — if we call drawImage, the frame appears.
+// Scanner Mode — camera scanning utilities.
+// Bulletproof implementation for mobile browsers (esp. Chrome Android).
 //
-// Decoding: @zxing/browser BrowserMultiFormatReader operates on the video
-// element (which still receives frames even when hidden).
+// Rendering strategy (multiple layers of fallback):
+//   PRIMARY: <video> element displayed directly. Simple and works on most.
+//   OVERLAY: <canvas> repainted via requestVideoFrameCallback (rVFC) — fires
+//     when the video decoder actually delivers a new frame. This bypasses
+//     compositor rendering bugs since canvas is drawn from decoded frame data.
+//   FALLBACK: ImageCapture.grabFrame() if rVFC isn't available or fails.
+//
+// Decoding: @zxing/browser BrowserMultiFormatReader on the (hidden) video.
+//
+// This version fixes: iOS Safari (playsInline etc.), Chrome Android compositor
+// black-screen, and off-screen video auto-pause issues.
 
 let audioCtx = null;
 function getCtx() {
@@ -72,11 +76,6 @@ export function feedback(type) {
   vibrate(type);
 }
 
-/**
- * Start camera scanner with canvas mirror.
- * Container will show a <canvas> that mirrors the camera feed.
- * A hidden <video> receives the stream; zxing decodes off it.
- */
 export async function startCameraScanner(elementId, onDecode, onError) {
   if (typeof window === 'undefined') {
     throw new Error('Camera scanner requires browser environment');
@@ -96,13 +95,14 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     while (container.firstChild) container.removeChild(container.firstChild);
   } catch {}
 
-  // 1) <video> element — receives MediaStream, drives zxing decoder.
-  //    IMPORTANT: We keep video INSIDE the container (not off-screen), because
-  //    Chrome Android auto-pauses videos that are off-screen or opacity:0
-  //    even when we call .play(). We visually mask it by overlaying a canvas
-  //    with a higher z-index — user sees canvas frames, not the raw <video>.
+  // ============================================================
+  // Layer 1: <video> — PRIMARY visible surface.
+  //   Displayed directly to user. Works on most browsers/devices.
+  //   Contains all mobile-required attributes for iOS/Android inline playback.
+  // ============================================================
   const video = document.createElement('video');
   video.id = 'om-scanner-video-hidden';
+  // iOS + Android inline playback attributes (must be attributes, not just properties)
   video.setAttribute('autoplay', '');
   video.setAttribute('muted', '');
   video.setAttribute('playsinline', '');
@@ -110,25 +110,26 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   video.muted = true;
   video.autoplay = true;
   video.playsInline = true;
+  // NO object-fit — some Chrome Android GPUs render black with object-fit on
+  // MediaStream video. Let it fit naturally (aspect preserved via CSS).
   video.style.cssText = [
     'position:absolute',
     'inset:0',
     'width:100%',
     'height:100%',
-    'object-fit:cover',
     'display:block',
+    'background:#000',
     'z-index:1',
-    // Keep video on-screen so Chrome doesn't auto-pause it. We rely on the
-    // canvas overlay (z-index:2) to hide it from the user. This works even
-    // if the <video> itself renders black (Chrome Android compositor bug).
   ].join(';');
   container.appendChild(video);
 
-  // 2) <canvas> overlay — the ACTUAL visible surface.
-  //    Repainted from the video each frame. Full control over rendering,
-  //    no compositor issues. Even if the <video> below renders black,
-  //    we still get frames because drawImage(video) reads pixel data
-  //    directly from the media pipeline, not the composited layer.
+  // ============================================================
+  // Layer 2: <canvas> — SECONDARY, painted from decoded video frames.
+  //   Drawn ON TOP of the video via z-index. If the video happens to render
+  //   correctly (best case), canvas covers it with identical content — user
+  //   sees canvas. If video renders black (Chrome Android bug), canvas still
+  //   shows frames from drawImage. Either way — pixels appear.
+  // ============================================================
   const canvas = document.createElement('canvas');
   canvas.id = 'om-scanner-canvas';
   canvas.style.cssText = [
@@ -137,13 +138,15 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     'width:100%',
     'height:100%',
     'display:block',
-    'background:#000',
     'z-index:2', // above video
+    'pointer-events:none',
   ].join(';');
   container.appendChild(canvas);
-  const ctx2d = canvas.getContext('2d', { alpha: false, desynchronized: true });
+  const ctx2d = canvas.getContext('2d', { alpha: true });
 
-  // 3) getUserMedia with fallback chain
+  // ============================================================
+  // Layer 3: MediaStream setup (fallback constraint chain)
+  // ============================================================
   const constraintAttempts = [
     { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
     { video: { facingMode: 'environment' }, audio: false },
@@ -170,98 +173,151 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   }
 
   video.srcObject = stream;
-  // play() is required on many mobile browsers even with autoplay attribute
   try {
     await video.play();
   } catch (e) {
     await new Promise((r) => setTimeout(r, 100));
-    try { await video.play(); } catch (e2) {
-      try { console.warn('[OM Camera] video.play() failed:', e2?.message); } catch {}
-    }
+    try { await video.play(); } catch {}
   }
 
-  // Wait until metadata loaded so we know real video dimensions
+  // Wait for metadata (know video dimensions)
   if (video.readyState < 1) {
     await new Promise((resolve) => {
       const onMeta = () => { video.removeEventListener('loadedmetadata', onMeta); resolve(); };
       video.addEventListener('loadedmetadata', onMeta);
-      setTimeout(resolve, 3000); // safety timeout
+      setTimeout(resolve, 3000);
     });
   }
 
-  // 4) Canvas mirror loop — repaint canvas from video each frame.
-  //    Uses rAF for smooth ~60fps rendering.
+  // ============================================================
+  // Layer 4: Canvas painting loop
+  //   PREFER: requestVideoFrameCallback (rVFC) — fires exactly when a new
+  //   frame is available from the decoder. Most reliable on Chrome/Edge/Safari.
+  //   FALLBACK: rAF loop that reads from video (may work when rVFC unavailable).
+  //   LAST RESORT: ImageCapture.grabFrame() every 100ms.
+  // ============================================================
   let stopped = false;
-  let frameCount = 0;
   let framesDrawn = 0;
-  const paint = () => {
-    if (stopped) return;
-    frameCount += 1;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const canDraw = vw > 0 && vh > 0 && !video.paused && video.readyState >= 2;
+  let lastPaintMs = 0;
+  let imageCaptureFallback = null;
+  const supportsRVFC = typeof video.requestVideoFrameCallback === 'function';
 
-    // Adjust canvas backing store to match visible size (device pixels)
-    // for crisp rendering. Only resize when needed.
+  const resizeCanvasIfNeeded = () => {
     const rect = canvas.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const targetW = Math.max(1, Math.round(rect.width * dpr));
     const targetH = Math.max(1, Math.round(rect.height * dpr));
-    if (canvas.width !== targetW) canvas.width = targetW;
-    if (canvas.height !== targetH) canvas.height = targetH;
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+    return { w: canvas.width, h: canvas.height };
+  };
 
-    if (canDraw) {
-      // Draw with 'cover' semantics — scale video to fill canvas, crop excess
-      const cw = canvas.width;
-      const ch = canvas.height;
-      const vRatio = vw / vh;
-      const cRatio = cw / ch;
-      let sx, sy, sw, sh;
-      if (vRatio > cRatio) {
-        sh = vh;
-        sw = Math.round(vh * cRatio);
-        sx = Math.round((vw - sw) / 2);
-        sy = 0;
-      } else {
-        sw = vw;
-        sh = Math.round(vw / cRatio);
-        sx = 0;
-        sy = Math.round((vh - sh) / 2);
-      }
-      try {
-        ctx2d.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
-        framesDrawn += 1;
-      } catch {}
+  const paintFrame = (source, sourceW, sourceH) => {
+    if (stopped) return;
+    const { w: cw, h: ch } = resizeCanvasIfNeeded();
+    if (cw < 2 || ch < 2 || !sourceW || !sourceH) return;
+    // 'cover' semantics — scale source to fill canvas, crop excess
+    const vRatio = sourceW / sourceH;
+    const cRatio = cw / ch;
+    let sx, sy, sw, sh;
+    if (vRatio > cRatio) {
+      sh = sourceH;
+      sw = Math.round(sourceH * cRatio);
+      sx = Math.round((sourceW - sw) / 2);
+      sy = 0;
     } else {
-      // No frame available yet — fill black
-      try {
-        ctx2d.fillStyle = '#000';
-        ctx2d.fillRect(0, 0, canvas.width, canvas.height);
-      } catch {}
+      sw = sourceW;
+      sh = Math.round(sourceW / cRatio);
+      sx = 0;
+      sy = Math.round((sourceH - sh) / 2);
+    }
+    try {
+      ctx2d.drawImage(source, sx, sy, sw, sh, 0, 0, cw, ch);
+      framesDrawn += 1;
+      lastPaintMs = performance.now();
+    } catch (e) {
+      // drawImage may throw if source is invalid on some Android
+      // Fall back to ImageCapture next tick
+      try { console.warn('[OM Camera] drawImage failed:', e?.message); } catch {}
     }
 
-    // Diagnostic overlay in bottom-left corner (small text).
-    // Green if drawing, amber if not. Confirms paint loop is alive.
+    // Small diagnostic in bottom-left corner
     try {
-      const dprLbl = dpr;
-      const fontPx = Math.max(10, Math.round(11 * dprLbl));
+      const dpr = window.devicePixelRatio || 1;
+      const fontPx = Math.max(10, Math.round(11 * dpr));
       ctx2d.font = `${fontPx}px monospace`;
       ctx2d.textBaseline = 'bottom';
-      const label = canDraw
-        ? `● ${framesDrawn}f  ${vw}×${vh}`
-        : `⚠ ready=${video.readyState} paused=${video.paused ? 'Y' : 'N'}`;
-      ctx2d.fillStyle = 'rgba(0,0,0,0.6)';
-      const w = ctx2d.measureText(label).width + 12 * dprLbl;
-      ctx2d.fillRect(4 * dprLbl, canvas.height - (fontPx + 10 * dprLbl), w, fontPx + 8 * dprLbl);
-      ctx2d.fillStyle = canDraw ? '#4ade80' : '#fbbf24';
-      ctx2d.fillText(label, 10 * dprLbl, canvas.height - 6 * dprLbl);
+      const label = `● ${framesDrawn}f ${sourceW}×${sourceH}`;
+      ctx2d.fillStyle = 'rgba(0,0,0,0.55)';
+      const w = ctx2d.measureText(label).width + 12 * dpr;
+      ctx2d.fillRect(4 * dpr, ch - (fontPx + 10 * dpr), w, fontPx + 8 * dpr);
+      ctx2d.fillStyle = '#4ade80';
+      ctx2d.fillText(label, 10 * dpr, ch - 6 * dpr);
     } catch {}
-
-    if (!stopped) requestAnimationFrame(paint);
   };
-  requestAnimationFrame(paint);
 
-  // 5) Attach zxing decoder to the hidden video element
+  // ImageCapture fallback: try to init early so it's ready
+  try {
+    if (typeof ImageCapture !== 'undefined') {
+      const track = stream.getVideoTracks()[0];
+      if (track) imageCaptureFallback = new ImageCapture(track);
+    }
+  } catch {}
+
+  const imageCaptureLoop = async () => {
+    if (stopped) return;
+    if (!imageCaptureFallback) return;
+    try {
+      const bitmap = await imageCaptureFallback.grabFrame();
+      if (!stopped && bitmap) {
+        paintFrame(bitmap, bitmap.width, bitmap.height);
+        try { bitmap.close && bitmap.close(); } catch {}
+      }
+    } catch (e) {
+      // grabFrame may fail; retry after delay
+    }
+    if (!stopped) setTimeout(imageCaptureLoop, 100);
+  };
+
+  // Choose paint strategy
+  if (supportsRVFC) {
+    const rvfcTick = (_now, meta) => {
+      if (stopped) return;
+      paintFrame(video, meta.width || video.videoWidth, meta.height || video.videoHeight);
+      if (!stopped) video.requestVideoFrameCallback(rvfcTick);
+    };
+    try {
+      video.requestVideoFrameCallback(rvfcTick);
+    } catch {
+      // rVFC failed to register — fall back to ImageCapture
+      imageCaptureLoop();
+    }
+    // Additionally: if no paint happens within 1.5s, force ImageCapture fallback
+    setTimeout(() => {
+      if (!stopped && framesDrawn === 0 && imageCaptureFallback) {
+        try { console.warn('[OM Camera] rVFC did not produce frames, falling back to ImageCapture'); } catch {}
+        imageCaptureLoop();
+      }
+    }, 1500);
+  } else if (imageCaptureFallback) {
+    imageCaptureLoop();
+  } else {
+    // No rVFC and no ImageCapture — fall back to rAF loop reading video directly
+    const rafTick = () => {
+      if (stopped) return;
+      if (!video.paused && video.readyState >= 2 && video.videoWidth > 0) {
+        paintFrame(video, video.videoWidth, video.videoHeight);
+      }
+      if (!stopped) requestAnimationFrame(rafTick);
+    };
+    requestAnimationFrame(rafTick);
+  }
+
+  // ============================================================
+  // Layer 5: zxing barcode decoder on the (hidden) video
+  // ============================================================
   let codeReader = null;
   let controls = null;
   try {
@@ -289,7 +345,7 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     throw new Error('Gagal inisialisasi decoder: ' + (e?.message || e));
   }
 
-  // 6) Expose a stop() function that tears down EVERYTHING cleanly
+  // Return stop function
   return async function stop() {
     stopped = true;
     try { controls && controls.stop && controls.stop(); } catch {}

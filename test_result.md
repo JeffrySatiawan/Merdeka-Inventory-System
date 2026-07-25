@@ -356,11 +356,11 @@ frontend:
 
   - task: "Camera-only scan for tracking number (Cetak / Packing / Kurir)"
     implemented: true
-    working: "NA"
+    working: false
     file: "/app/components/modules/order-management/OrderManagementModule.js"
-    stuck_count: 2
+    stuck_count: 3
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -398,6 +398,43 @@ frontend:
           Verified in headless Playwright: page loads, ScannerShell renders, "KAMERA DIJEDA" overlay correctly appears when disabled=true (before ekspedisi picked). Cannot fully verify getUserMedia in headless — awaits real-device verification.
           
           Files changed: /app/package.json, /app/components/modules/order-management/scanner.js, /app/components/modules/order-management/OrderManagementModule.js, /app/app/globals.css
+      - working: false
+        agent: "testing"
+        comment: |
+          ❌ CRITICAL BUG CONFIRMED via programmatic testing with fake camera device.
+          
+          **DIAGNOSTIC FINDINGS:**
+          Video element: ✅ WORKING PERFECTLY
+            - MediaStream attached and active
+            - Video dimensions: 1280×720
+            - Playing state: not paused, readyState=4 (HAVE_ENOUGH_DATA)
+            - All required attributes present (playsinline, autoplay, muted)
+          
+          Container #om-camera: ❌ ZERO DIMENSIONS
+            - Width: 0px, Height: 0px
+            - This is the ROOT CAUSE of black screen
+          
+          Canvas #om-scanner-canvas: ❌ COLLAPSED
+            - Canvas dimensions: 1×1 pixels (collapsed due to zero-sized container)
+            - Pixel sampling: RGB(0,0,0) sum=0 → fully black
+            - Paint loop cannot draw frames to a 1×1 canvas
+          
+          **ROOT CAUSE:**
+          The container `#om-camera` has `position: absolute; inset: 0; width: 100%; height: 100%` which depends on parent having defined dimensions. Parent wrapper has `style={{ height: '260px' }}` but container still collapses to 0×0. This suggests:
+          1. Container may not be properly attached to parent in DOM hierarchy
+          2. Parent wrapper might not have proper positioning context (needs position: relative)
+          3. CSS specificity or React rendering timing issue
+          
+          **EVIDENCE:**
+          - "LIVE 1280×720" indicator IS visible on screen (confirms video stream working)
+          - User sees black rectangle (confirms container renders but has no content)
+          - Fake camera device test reproduces issue (not device-specific)
+          
+          **RECOMMENDATION:**
+          Fix the container sizing issue. The video/canvas paint loop is working correctly — the problem is purely CSS/DOM layout causing container collapse.
+          
+          Test environment: Chromium with fake camera device, mobile viewport 420×900
+          Screenshots: .screenshots/after_om_click.png shows black camera area with LIVE indicator
 
   - task: "Tab workflow (Cetak/Packing/Kirim/Selesai) with cutoff-hour archival"
     implemented: true
@@ -525,6 +562,52 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      🔍 CAMERA SCANNER BLACK SCREEN - ROOT CAUSE IDENTIFIED
+      
+      Completed programmatic diagnostic testing with fake camera device on Scan Cetak Resi page.
+      
+      **CRITICAL FINDING:**
+      The video element and MediaStream are working PERFECTLY. The issue is a CSS/DOM layout bug causing the container to collapse to zero dimensions.
+      
+      **DETAILED DIAGNOSTICS:**
+      ✅ Video element (#om-scanner-video-hidden):
+         - MediaStream: attached and active
+         - Dimensions: 1280×720 (valid)
+         - Playback: playing, readyState=4 (HAVE_ENOUGH_DATA)
+         - Attributes: playsinline ✓, autoplay ✓, muted ✓
+      
+      ❌ Container (#om-camera):
+         - Dimensions: 0×0 pixels ← ROOT CAUSE
+         - Expected: should inherit parent's 260px height
+         - CSS: position:absolute, inset:0, width:100%, height:100%
+      
+      ❌ Canvas (#om-scanner-canvas):
+         - Dimensions: 1×1 pixels (collapsed due to zero-sized container)
+         - Pixel sampling: RGB(0,0,0) - fully black
+         - Paint loop cannot draw to 1×1 canvas
+      
+      **WHY CONTAINER IS ZERO-SIZED:**
+      The container uses `position: absolute` with percentage-based dimensions, which requires parent to have:
+      1. Defined dimensions (parent has `style={{ height: '260px' }}` ✓)
+      2. Positioning context (parent needs `position: relative` ?)
+      
+      Likely causes:
+      - Parent wrapper missing `position: relative`
+      - React rendering timing issue (container appended before parent sized)
+      - CSS specificity conflict
+      
+      **EVIDENCE:**
+      - "LIVE 1280×720" indicator IS visible on screen (proves video stream working)
+      - User sees black rectangle (proves container renders but empty)
+      - Reproduced with fake camera device (not device-specific)
+      
+      **RECOMMENDATION:**
+      Fix container sizing in OrderManagementModule.js line 310-317. Add `position: relative` to parent wrapper or change container CSS to not depend on parent positioning.
+      
+      Test screenshots saved: .screenshots/after_om_click.png
+      
   - agent: "main"
     message: |
       MVP built. Please test backend endpoints comprehensively.

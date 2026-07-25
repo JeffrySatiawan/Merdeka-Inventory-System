@@ -198,22 +198,29 @@ code {
    surrounded by black bars — looking like "camera is dark".
    ============================================================ */
 #om-camera {
-  /* Fill parent absolutely — avoids Chrome Android bug where height:100%
-     inside an aspect-ratio parent resolves to 0, making the canvas invisible. */
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
   min-height: 220px;
+  background: #000;
 }
-#om-camera canvas,
+#om-camera canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+  z-index: 2;
+  pointer-events: none;
+}
 #om-camera video {
   position: absolute;
   inset: 0;
   width: 100% !important;
   height: 100% !important;
-  object-fit: cover !important;
   display: block !important;
   z-index: 1;
+  background: #000;
 }
