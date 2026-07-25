@@ -379,25 +379,37 @@ frontend:
       - working: "NA"
         agent: "main"
         comment: |
-          ROOT CAUSE identified via troubleshoot_agent RCA: html5-qrcode v2.3.8 creates <video> internally WITHOUT the iOS-required attributes `playsInline`, `autoplay`, `muted`. On iOS Safari (and many mobile browsers 2025), these attributes are MANDATORY for the media stream to render inline — without them, permission is granted, stream starts, but video renders black.
+          ROOT CAUSE FINAL — identified by deep_testing_frontend_nextjs agent:
           
-          Fix attempt #2 — full rewrite:
-          1. Replaced html5-qrcode with @zxing/browser (0.1.5) + @zxing/library (0.21.3) → we now OWN the <video> element and can set all required attributes.
-          2. /app/components/modules/order-management/scanner.js completely rewritten:
-             - createElement('video') with attributes: autoplay, muted, playsinline, webkit-playsinline (legacy iOS)
-             - Also sets .muted=true, .autoplay=true, .playsInline=true properties for redundancy
-             - Uses native navigator.mediaDevices.getUserMedia with facingMode fallback chain (ideal:'environment' → 'environment' → true)
-             - Manually appends to container, calls video.play() with retry
-             - Then BrowserMultiFormatReader.decodeFromVideoElement() for barcode decoding
-             - Robust stop() function tears down stream tracks + removes video
-          3. globals.css #om-camera simplified — position:relative w/h 100%, video forced 100% with object-fit:cover.
-          4. Removed the container-size-check infinite retry (was: rect.width<40 → retry rAF forever). Now retries max 120 frames looking for element only, no size gate. Video element itself grows the container.
-          5. Added visible on-screen diagnostic: "LIVE 1280×720" when video renders, "⚠ 0×0" if stream active but no frames (helps remote-debug without DevTools).
-          6. Preserved: dedupe of consecutive decodes within 1200ms, disabled-pause behavior, retry button on error.
+          The app renders **TWO instances of OrderManagementModule** side-by-side in the DOM:
+          - Desktop shell: `<div className="hidden md:flex">` — display:none on mobile viewport
+          - Mobile shell: `<div className="md:hidden">` — display:none on desktop viewport
           
-          Verified in headless Playwright: page loads, ScannerShell renders, "KAMERA DIJEDA" overlay correctly appears when disabled=true (before ekspedisi picked). Cannot fully verify getUserMedia in headless — awaits real-device verification.
+          Old code used `document.getElementById('om-camera')` which returns the FIRST match in DOM order (the desktop shell). On a mobile viewport, desktop shell is hidden (`display:none`) → its `#om-camera` has 0×0 dimensions. Scanner appended `<video>` + `<canvas>` to the HIDDEN container → user's actual VISIBLE #om-camera stayed empty → black screen!
           
-          Files changed: /app/package.json, /app/components/modules/order-management/scanner.js, /app/components/modules/order-management/OrderManagementModule.js, /app/app/globals.css
+          This ALSO explains the "smaller viewport works" clue: when user shrank the browser window BELOW md breakpoint, the layout switched — desktop shell became visible (or dev tools mobile emulation switched instance rendering) and the query happened to match the visible one.
+          
+          FIX applied:
+          1. `OrderManagementModule.js`:
+             - `cameraContainerRef = useRef(null)` — one ref per instance
+             - `<div id="om-camera" ref={cameraContainerRef} />` — pass ref to div
+             - `useEffect` gets container via `cameraContainerRef.current` (specific to THIS instance, not global lookup)
+             - Added `if (el.offsetParent === null)` check → SKIP starting scanner when THIS instance is display:none (the sibling shell is the visible one, and its own useEffect will start scanner)
+          2. `scanner.js`:
+             - `startCameraScanner(elementOrId, ...)` — now accepts DOM element directly
+             - Uses captured `container` variable throughout (no repeated `getElementById`)
+             - Stop function uses captured element ref for cleanup
+          3. globals.css restored to `#om-camera { position: relative; width:100%; height:100% }` — works with fixed-height parent (260px).
+          4. scanner.js uses primary video display + canvas overlay (requestVideoFrameCallback + ImageCapture fallback) — all mobile attributes present.
+          
+          Also kept all the other robustness improvements from previous attempts:
+          - Native getUserMedia with facingMode fallback chain
+          - iOS/Android video attributes (playsInline, autoplay, muted, webkit-playsinline)
+          - Canvas overlay for guaranteed rendering
+          - On-screen diagnostic (frame counter)
+          - Retry button on error
+          
+          Frontend testing agent verified code changes are correct via review. Runtime verification blocked by container's inability to run full Chromium with fake camera, but logic is sound. Files changed: /app/components/modules/order-management/OrderManagementModule.js, /app/components/modules/order-management/scanner.js, /app/app/globals.css
       - working: false
         agent: "testing"
         comment: |
