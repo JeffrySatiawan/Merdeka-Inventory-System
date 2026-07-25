@@ -76,7 +76,7 @@ export function feedback(type) {
   vibrate(type);
 }
 
-export async function startCameraScanner(elementId, onDecode, onError) {
+export async function startCameraScanner(elementOrId, onDecode, onError) {
   if (typeof window === 'undefined') {
     throw new Error('Camera scanner requires browser environment');
   }
@@ -85,8 +85,12 @@ export async function startCameraScanner(elementId, onDecode, onError) {
       'Browser tidak mendukung akses kamera (getUserMedia). Gunakan Chrome/Safari terbaru & akses lewat HTTPS.'
     );
   }
-  const container = document.getElementById(elementId);
-  if (!container) {
+  // Accept either a DOM element (preferred) or an id string (backward compat).
+  const container =
+    typeof elementOrId === 'string'
+      ? document.getElementById(elementOrId)
+      : elementOrId;
+  if (!container || !container.appendChild) {
     throw new Error('Camera container tidak ditemukan');
   }
 
@@ -358,7 +362,7 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     try { video.pause(); } catch {}
     try { video.srcObject = null; } catch {}
     try {
-      const c = document.getElementById(elementId);
+      const c = container; // use captured element ref, not id-based lookup
       if (c) {
         while (c.firstChild) {
           try { c.removeChild(c.firstChild); } catch { break; }

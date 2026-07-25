@@ -170,6 +170,11 @@ function ScannerShell({
   const [retryTick, setRetryTick] = useState(0);
   const stopCameraRef = useRef(null);
   const lastDecodeRef = useRef({ code: '', ts: 0 });
+  // CRITICAL: use ref instead of id-based lookup. The app renders TWO instances
+  // of the module (desktop shell + mobile shell) — using getElementById would
+  // return the first (potentially display:none) match, causing the visible
+  // container to stay empty. Ref points to THIS instance's container.
+  const cameraContainerRef = useRef(null);
   // Keep latest onScanDecoded without restarting camera on every render
   const decodedCbRef = useRef(onScanDecoded);
   useEffect(() => {
@@ -183,17 +188,21 @@ function ScannerShell({
     setCameraErr(null);
     setCameraReady(false);
 
-    // Give the DOM 2 frames to render #om-camera, then start.
-    // We no longer require a specific size — since we own the <video> element
-    // (see scanner.js), the container will grow with its child regardless of
-    // initial measurement quirks. This avoids infinite retry loops.
     const startWhenReady = (attempt = 0) => {
       if (!mounted) return;
-      const el = document.getElementById('om-camera');
+      const el = cameraContainerRef.current;
       if (!el) {
-        // element not mounted yet; try again on next frame (max ~120 frames)
         if (attempt < 120) requestAnimationFrame(() => startWhenReady(attempt + 1));
         else setCameraErr('Kamera container tidak muncul. Coba refresh halaman.');
+        return;
+      }
+
+      // Skip if this instance is display:none (the other shell's copy).
+      // offsetParent is null for display:none or absolutely-positioned in hidden ancestor.
+      if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') {
+        // Try again — maybe layout still settling
+        if (attempt < 120) requestAnimationFrame(() => startWhenReady(attempt + 1));
+        else setCameraErr('Kamera container tidak visible. Coba refresh halaman.');
         return;
       }
 
@@ -204,7 +213,7 @@ function ScannerShell({
       }
 
       startCameraScanner(
-        'om-camera',
+        el, // pass element directly (not id string)
         (decoded) => {
           if (!mounted) return;
           const now = Date.now();
@@ -229,7 +238,6 @@ function ScannerShell({
           try { console.error('[OM Camera] Init failed:', e); } catch {}
         });
     };
-    // Use rAF-based wait so React finishes rendering the container first
     requestAnimationFrame(() => requestAnimationFrame(() => startWhenReady(0)));
 
     return () => {
@@ -312,9 +320,8 @@ function ScannerShell({
           style={{ height: '260px' }}
         >
           {/* Camera container — scanner.js appends <video> + <canvas> here.
-              Using fixed height avoids Chrome Android aspect-ratio + height:100% bug
-              where children collapse to 0-height. */}
-          <div id="om-camera" />
+              Ref-based lookup avoids picking wrong instance in dual-shell layout. */}
+          <div id="om-camera" ref={cameraContainerRef} />
           {/* Overlays are siblings, positioned absolutely — never mixed with camera DOM */}
           {!cameraErr && !cameraReady && !disabled && (
             <div className="absolute inset-0 flex items-center justify-center text-blue-200/80 text-xs gap-2 pointer-events-none z-10 bg-black/40">

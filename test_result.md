@@ -356,7 +356,7 @@ frontend:
 
   - task: "Camera-only scan for tracking number (Cetak / Packing / Kurir)"
     implemented: true
-    working: false
+    working: "NA"
     file: "/app/components/modules/order-management/OrderManagementModule.js"
     stuck_count: 4
     priority: "high"
@@ -475,6 +475,95 @@ frontend:
           
           Test environment: Chromium with fake camera device, mobile viewport 420×900
           Screenshot: .screenshots/css_fix_verification.png shows camera area still black
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Fix attempt #4 — REF-BASED CONTAINER LOOKUP (addressing dual-shell root cause):
+          
+          **ROOT CAUSE ANALYSIS:**
+          The app renders TWO instances of OrderManagementModule (desktop shell + mobile shell), one is always display:none. 
+          Scanner used `getElementById('om-camera')` which returned the FIRST match (usually the hidden one), causing video/canvas 
+          to be appended to an invisible 0×0 container.
+          
+          **FIX APPLIED:**
+          1. /app/components/modules/order-management/OrderManagementModule.js:
+             - Line 177: Added `cameraContainerRef = useRef(null)` on ScannerShell
+             - Line 324: `<div id="om-camera" ref={cameraContainerRef} />` — now uses React ref instead of id lookup
+             - Line 194: `useEffect` gets container via `cameraContainerRef.current` (specific to THIS instance)
+             - Line 202: Added `el.offsetParent === null` check to SKIP starting scanner when this instance is display:none 
+               (the other shell's copy) → only the visible instance's scanner starts
+          
+          2. /app/components/modules/order-management/scanner.js:
+             - Line 79-95: `startCameraScanner(elementOrId, ...)` — now accepts DOM element directly (not just id string)
+             - Uses captured `container` variable throughout instead of `document.getElementById(elementId)`
+          
+          **TECHNICAL DETAILS:**
+          - Ref ensures each React component instance has its own container reference
+          - offsetParent check: returns null for display:none elements (or absolutely-positioned in hidden ancestor)
+          - Only the visible instance (offsetParent !== null) proceeds to start camera
+          - Hidden instance's useEffect exits early, preventing duplicate scanner initialization
+          
+          Files changed: /app/components/modules/order-management/OrderManagementModule.js, /app/components/modules/order-management/scanner.js
+      - working: "NA"
+        agent: "testing"
+        comment: |
+          📋 CODE REVIEW VERIFICATION (Runtime testing blocked by test environment issues)
+          
+          **CODE ANALYSIS - FIX CORRECTNESS:**
+          ✅ VERIFIED: Ref-based approach correctly implemented
+            - Line 177: `cameraContainerRef = useRef(null)` properly declared
+            - Line 324: `<div id="om-camera" ref={cameraContainerRef} />` correctly binds ref
+            - Line 194: `const el = cameraContainerRef.current` uses ref instead of getElementById
+          
+          ✅ VERIFIED: offsetParent visibility check present
+            - Line 202-207: Checks `el.offsetParent === null` and `getComputedStyle(el).position !== 'fixed'`
+            - Exits early if container is hidden (display:none or in hidden ancestor)
+            - Only visible instance proceeds to start camera
+          
+          ✅ VERIFIED: scanner.js accepts DOM element directly
+            - Line 89-92: Handles both `typeof elementOrId === 'string'` and direct element
+            - Line 90: Falls back to getElementById for backward compat
+            - Line 91: Uses passed element directly (preferred)
+            - Line 215: Container passed as `el` (the ref'd element)
+          
+          ✅ VERIFIED: All mobile attributes present
+            - Lines 110-116: video element has autoplay, muted, playsinline, webkit-playsinline attributes
+            - Both setAttribute() and property assignment used for redundancy
+          
+          ✅ VERIFIED: Canvas painting strategy
+            - Lines 136-149: Canvas positioned above video (z-index:2)
+            - Lines 209-263: Proper resize logic with devicePixelRatio
+            - Lines 289-320: requestVideoFrameCallback with ImageCapture fallback
+          
+          **RUNTIME TESTING ATTEMPTED:**
+          ❌ BLOCKED: Test environment login flow issues
+            - Playwright unable to complete login sequence
+            - Cannot navigate to Order Management → Cetak page
+            - Cannot verify actual camera rendering with fake device
+          
+          **ASSESSMENT:**
+          The code changes are SOUND and correctly address the dual-shell root cause:
+          1. ✅ Ref-based lookup ensures correct instance is targeted
+          2. ✅ offsetParent check prevents hidden instance from starting scanner
+          3. ✅ scanner.js properly handles direct element passing
+          4. ✅ All required mobile video attributes present
+          
+          **LIMITATIONS:**
+          Cannot verify at runtime:
+          - Actual camera stream rendering (requires getUserMedia permissions)
+          - Canvas pixel data (requires active camera stream)
+          - Frame counter visibility (requires running scanner)
+          - Behavior at both mobile (420×900) and desktop (1280×800) viewports
+          
+          **RECOMMENDATION:**
+          Based on thorough code review, the fix is CORRECT and should resolve the black screen issue.
+          Runtime verification requires:
+          - Manual testing on actual device with camera
+          - OR fixing test environment authentication flow
+          - OR integration test with mocked MediaStream
+          
+          Status set to "NA" pending real-device verification by user or main agent.
+
 
   - task: "Tab workflow (Cetak/Packing/Kirim/Selesai) with cutoff-hour archival"
     implemented: true
@@ -828,3 +917,55 @@ agent_communication:
       
       ZERO BREAKING CHANGES. All existing Cycle Count functionality preserved.
       Backend is production-ready for module-based architecture.
+
+
+  - agent: "testing"
+    message: |
+      📋 CAMERA SCANNER FIX VERIFICATION (Ref-based container lookup)
+      
+      **TASK:** Verify fix for dual-shell rendering issue causing black camera screen
+      
+      **CODE REVIEW COMPLETED:**
+      ✅ Fix implementation is CORRECT and addresses root cause
+      
+      **VERIFIED CHANGES:**
+      1. OrderManagementModule.js:
+         - ✅ Line 177: `cameraContainerRef = useRef(null)` properly declared
+         - ✅ Line 324: Ref correctly bound to `<div id="om-camera">`
+         - ✅ Line 194: Container accessed via `cameraContainerRef.current` (not getElementById)
+         - ✅ Line 202: offsetParent check prevents hidden instance from starting scanner
+      
+      2. scanner.js:
+         - ✅ Line 89-92: Accepts DOM element directly (elementOrId parameter)
+         - ✅ Uses captured container variable throughout (not repeated getElementById)
+         - ✅ All mobile video attributes present (playsinline, autoplay, muted)
+      
+      **ROOT CAUSE ADDRESSED:**
+      The app renders TWO OrderManagementModule instances (desktop + mobile shells), one always display:none.
+      Old code used getElementById which returned FIRST match (often the hidden one) → 0×0 container → black screen.
+      New code uses React ref (instance-specific) + offsetParent check (skips hidden) → only visible instance starts camera.
+      
+      **RUNTIME TESTING STATUS:**
+      ❌ BLOCKED by test environment issues:
+         - Playwright unable to complete login flow
+         - Cannot navigate to Order Management → Cetak page
+         - Cannot verify actual camera rendering with fake device
+      
+      **ASSESSMENT:**
+      Based on thorough code review, the fix is SOUND and should resolve the issue.
+      The implementation correctly:
+      - Uses ref-based lookup (instance-specific, not global getElementById)
+      - Checks visibility before starting scanner (offsetParent !== null)
+      - Passes element directly to scanner (no repeated DOM queries)
+      - Includes all required mobile video attributes
+      
+      **RECOMMENDATION:**
+      Status set to "NA" pending real-device verification.
+      Main agent should:
+      1. Request user to test on actual mobile device with camera
+      2. OR manually test in browser DevTools with mobile emulation + camera permissions
+      3. Verify at both mobile (420×900) and desktop (1280×800) viewports
+      4. Confirm only ONE scanner starts (not both instances)
+      5. Confirm canvas shows non-black pixels (camera frames rendering)
+      
+      Code changes are correct. Runtime verification requires actual camera access.
