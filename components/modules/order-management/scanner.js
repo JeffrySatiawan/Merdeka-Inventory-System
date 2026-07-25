@@ -96,9 +96,11 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     while (container.firstChild) container.removeChild(container.firstChild);
   } catch {}
 
-  // 1) Hidden <video> — receives MediaStream, drives zxing decoder.
-  //    We keep it off-screen (not display:none, because some browsers
-  //    disable rendering pipeline when display:none).
+  // 1) <video> element — receives MediaStream, drives zxing decoder.
+  //    IMPORTANT: We keep video INSIDE the container (not off-screen), because
+  //    Chrome Android auto-pauses videos that are off-screen or opacity:0
+  //    even when we call .play(). We visually mask it by overlaying a canvas
+  //    with a higher z-index — user sees canvas frames, not the raw <video>.
   const video = document.createElement('video');
   video.id = 'om-scanner-video-hidden';
   video.setAttribute('autoplay', '');
@@ -110,20 +112,25 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   video.playsInline = true;
   video.style.cssText = [
     'position:absolute',
-    'left:-9999px',
-    'top:-9999px',
-    'width:1px',
-    'height:1px',
-    'opacity:0',
-    'pointer-events:none',
+    'inset:0',
+    'width:100%',
+    'height:100%',
+    'object-fit:cover',
+    'display:block',
+    'z-index:1',
+    // Keep video on-screen so Chrome doesn't auto-pause it. We rely on the
+    // canvas overlay (z-index:2) to hide it from the user. This works even
+    // if the <video> itself renders black (Chrome Android compositor bug).
   ].join(';');
-  // Append video to <body> (not to container), so container CSS never affects it
-  document.body.appendChild(video);
+  container.appendChild(video);
 
-  // 2) Visible <canvas> — the ONLY thing user sees inside container.
-  //    We repaint it from the video each frame. Full control over rendering,
-  //    no compositor issues.
+  // 2) <canvas> overlay — the ACTUAL visible surface.
+  //    Repainted from the video each frame. Full control over rendering,
+  //    no compositor issues. Even if the <video> below renders black,
+  //    we still get frames because drawImage(video) reads pixel data
+  //    directly from the media pipeline, not the composited layer.
   const canvas = document.createElement('canvas');
+  canvas.id = 'om-scanner-canvas';
   canvas.style.cssText = [
     'position:absolute',
     'inset:0',
@@ -131,7 +138,7 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     'height:100%',
     'display:block',
     'background:#000',
-    'z-index:1',
+    'z-index:2', // above video
   ].join(';');
   container.appendChild(canvas);
   const ctx2d = canvas.getContext('2d', { alpha: false, desynchronized: true });
@@ -155,7 +162,7 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   }
   if (!stream) {
     try { container.removeChild(canvas); } catch {}
-    try { document.body.removeChild(video); } catch {}
+    try { container.removeChild(video); } catch {}
     throw new Error(
       'Tidak dapat mengakses kamera. Pastikan izin kamera diaktifkan di browser. (' +
         (lastErr?.name || 'unknown') + ': ' + (lastErr?.message || lastErr || '') + ')'
@@ -185,20 +192,25 @@ export async function startCameraScanner(elementId, onDecode, onError) {
   // 4) Canvas mirror loop — repaint canvas from video each frame.
   //    Uses rAF for smooth ~60fps rendering.
   let stopped = false;
+  let frameCount = 0;
+  let framesDrawn = 0;
   const paint = () => {
     if (stopped) return;
+    frameCount += 1;
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    if (vw > 0 && vh > 0 && !video.paused) {
-      // Adjust canvas backing store to match visible size (device pixels)
-      // for crisp rendering. Only resize when needed.
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const targetW = Math.max(1, Math.round(rect.width * dpr));
-      const targetH = Math.max(1, Math.round(rect.height * dpr));
-      if (canvas.width !== targetW) canvas.width = targetW;
-      if (canvas.height !== targetH) canvas.height = targetH;
+    const canDraw = vw > 0 && vh > 0 && !video.paused && video.readyState >= 2;
 
+    // Adjust canvas backing store to match visible size (device pixels)
+    // for crisp rendering. Only resize when needed.
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetW = Math.max(1, Math.round(rect.width * dpr));
+    const targetH = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== targetW) canvas.width = targetW;
+    if (canvas.height !== targetH) canvas.height = targetH;
+
+    if (canDraw) {
       // Draw with 'cover' semantics — scale video to fill canvas, crop excess
       const cw = canvas.width;
       const ch = canvas.height;
@@ -206,7 +218,6 @@ export async function startCameraScanner(elementId, onDecode, onError) {
       const cRatio = cw / ch;
       let sx, sy, sw, sh;
       if (vRatio > cRatio) {
-        // video wider than canvas (relative) → crop horizontally
         sh = vh;
         sw = Math.round(vh * cRatio);
         sx = Math.round((vw - sw) / 2);
@@ -219,8 +230,33 @@ export async function startCameraScanner(elementId, onDecode, onError) {
       }
       try {
         ctx2d.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
+        framesDrawn += 1;
+      } catch {}
+    } else {
+      // No frame available yet — fill black
+      try {
+        ctx2d.fillStyle = '#000';
+        ctx2d.fillRect(0, 0, canvas.width, canvas.height);
       } catch {}
     }
+
+    // Diagnostic overlay in bottom-left corner (small text).
+    // Green if drawing, amber if not. Confirms paint loop is alive.
+    try {
+      const dprLbl = dpr;
+      const fontPx = Math.max(10, Math.round(11 * dprLbl));
+      ctx2d.font = `${fontPx}px monospace`;
+      ctx2d.textBaseline = 'bottom';
+      const label = canDraw
+        ? `● ${framesDrawn}f  ${vw}×${vh}`
+        : `⚠ ready=${video.readyState} paused=${video.paused ? 'Y' : 'N'}`;
+      ctx2d.fillStyle = 'rgba(0,0,0,0.6)';
+      const w = ctx2d.measureText(label).width + 12 * dprLbl;
+      ctx2d.fillRect(4 * dprLbl, canvas.height - (fontPx + 10 * dprLbl), w, fontPx + 8 * dprLbl);
+      ctx2d.fillStyle = canDraw ? '#4ade80' : '#fbbf24';
+      ctx2d.fillText(label, 10 * dprLbl, canvas.height - 6 * dprLbl);
+    } catch {}
+
     if (!stopped) requestAnimationFrame(paint);
   };
   requestAnimationFrame(paint);
@@ -249,7 +285,7 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     stopped = true;
     try { stream.getTracks().forEach((t) => t.stop()); } catch {}
     try { container.removeChild(canvas); } catch {}
-    try { document.body.removeChild(video); } catch {}
+    try { container.removeChild(video); } catch {}
     throw new Error('Gagal inisialisasi decoder: ' + (e?.message || e));
   }
 
@@ -265,7 +301,6 @@ export async function startCameraScanner(elementId, onDecode, onError) {
     } catch {}
     try { video.pause(); } catch {}
     try { video.srcObject = null; } catch {}
-    try { document.body.removeChild(video); } catch {}
     try {
       const c = document.getElementById(elementId);
       if (c) {
