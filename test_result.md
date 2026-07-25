@@ -247,11 +247,11 @@ backend:
 
   - task: "OM PDF Resi — upload, list, preview, print, QR scan"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/lib/modules/order-management/service.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
@@ -265,6 +265,88 @@ backend:
           - DELETE /api/om/pdfs/[id] → soft-delete (mark deleted:true) + unlink file.
           Retention: maybeRunOMCleanup now also purges PDFs older than photo_retention_days (same setting as photos).
           Smoke-tested via curl: upload 681-byte valid PDF, list, download, scan-result (dedupe verified: input 3 → stored 2), mark-printed, delete → list empty. All endpoints return 200 with expected shape.
+      - working: "NA"
+        agent: "main"
+        comment: |
+          CRITICAL INFRASTRUCTURE FIX for user report "saya tidak bisa preview nya langsung di halaman emergent atau melalui share link, halamnya terus loading tidak terbuka":
+          
+          Root cause was NOT the PDF preview code — it was two infrastructure issues:
+          1. `/app/.env` file was MISSING entirely → `process.env.MONGO_URL` was undefined → every API call threw `TypeError: Cannot read properties of undefined (reading 'startsWith')` in MongoClient constructor → returned 500. App loading state (initial `load()`, auth check, etc.) hung indefinitely because API responses were failing.
+          2. `NODE_OPTIONS='--max-old-space-size=512'` in package.json dev script — 512 MB heap is insufficient for Next.js 15 dev + pdfjs-dist. Server hit memory threshold and restarted mid-compile in an infinite loop, so page never rendered.
+          
+          FIXES APPLIED:
+          - Recreated `/app/.env` with: MONGO_URL=mongodb://localhost:27017, DB_NAME=cycle_count, NEXT_PUBLIC_BASE_URL=https://c4aa9ed2-b7fe-4c94-9761-f01c1a277b3a.preview.emergentagent.com
+          - Bumped Node heap to 1536 MB in package.json: `"dev": "NODE_OPTIONS='--max-old-space-size=1536' next dev --hostname 0.0.0.0 --port 3000"`
+          - Restarted nextjs. Verified: root=200 in 51ms after first compile, /api/om/pdfs returns correct 401 when no token / 200 {"items":[]} with valid token. Login endpoint works.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ INFRASTRUCTURE FIX VERIFIED - All tests passed, app fully functional.
+          
+          **TEST ENVIRONMENT:**
+          - URL: https://c4aa9ed2-b7fe-4c94-9761-f01c1a277b3a.preview.emergentagent.com
+          - Credentials: owner / owner123
+          - Test method: Playwright browser automation with real user flow
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST A: APP LOADS WITHOUT INFINITE LOADING
+          - Page loaded in <30s (first compile)
+          - Login page rendered with "MIS", "Merdeka Inventory System", "Masuk" heading
+          - Username and password fields present
+          - NO infinite loading spinner detected
+          
+          ✅ TEST B: LOGIN FLOW
+          - Successfully logged in with owner/owner123
+          - Redirected to module selection page showing "Selamat datang, Owner"
+          - Two modules visible: Cycle Count and Order Management
+          - No authentication errors
+          
+          ✅ TEST C: NAVIGATE TO PDF RESI
+          - Order Management section found in sidebar
+          - PDF Resi link clicked successfully
+          - Page loaded with header "PDF Resi"
+          - All expected elements present:
+            * "Refresh" button ✓
+            * "Unggah PDF" button ✓
+            * 4 summary cards (Total File: 2, Resi Terdeteksi: 7, Sudah Diprint: 0/2, Input KETOKO: 0/2) ✓
+          - Existing PDFs displayed in list with auto-scan status badges
+          - Detected tracking numbers shown as green chips inline
+          
+          ✅ TEST D: PDF PREVIEW END-TO-END
+          - Clicked "Buka" (preview) button on existing PDF
+          - Preview modal opened successfully
+          - **PDF RENDERED PERFECTLY** - Shopee SPX shipping label clearly visible with barcode and QR code
+          - Canvas rendering working: 6 canvas elements detected (710x1001 pixels each)
+          - Modal header shows filename: "DOC-20260725-WA0072.pdf"
+          - "Buka di tab baru" fallback link present with valid blob URL
+          - "Print" button present
+          - Right panel shows 6 detected tracking numbers
+          - **NO BLACK SCREEN** - PDF content fully visible
+          - **NO HANGING** - Modal opened and rendered within 5 seconds
+          
+          ✅ TEST E: CONSOLE ERROR CHECK
+          - Only minor warnings detected (not errors):
+            * ERR_ABORTED: Normal network cancellations (not critical)
+            * Canvas2D willReadFrequently: Performance optimization suggestion
+            * Missing Description: Accessibility warning (not functional issue)
+          - NO critical errors in console
+          
+          **VERIFICATION:**
+          - Server logs confirm: GET / 200, POST /api/auth/login 200, GET /api/om/pdfs 200, GET /api/om/pdfs/[id]/file 200
+          - All API endpoints responding correctly
+          - MongoDB connection working (MONGO_URL properly configured)
+          - Next.js dev server stable with 1536 MB heap (no restarts)
+          
+          **CONCLUSION:**
+          The infrastructure fix completely resolved the user's issue. The app now:
+          1. Loads without infinite loading spinner ✓
+          2. Allows successful login ✓
+          3. Navigates to PDF Resi page ✓
+          4. Previews PDFs with canvas rendering ✓
+          5. No hanging or black screen issues ✓
+          
+          User report "halamnya terus loading tidak terbuka" is RESOLVED.
 
 
 frontend:
@@ -731,7 +813,30 @@ frontend:
       - working: "NA"
         agent: "main"
         comment: |
-          FOLLOW-UP FIX for "masih belum bisa preview":
+          CRITICAL INFRASTRUCTURE FIX for "saya tidak bisa preview nya langsung di halaman emergent atau melalui share link, halamnya terus loading tidak terbuka":
+          
+          Root cause was NOT the PDF preview code — it was two infrastructure issues:
+          1. `/app/.env` file was MISSING entirely → `process.env.MONGO_URL` was undefined →
+             every API call threw `TypeError: Cannot read properties of undefined (reading 'startsWith')`
+             in MongoClient constructor → returned 500. App loading state (initial `load()`, auth check, etc.)
+             hung indefinitely because API responses were failing.
+          2. `NODE_OPTIONS='--max-old-space-size=512'` in package.json dev script — 512 MB heap is
+             insufficient for Next.js 15 dev + pdfjs-dist. Server hit memory threshold and restarted
+             mid-compile in an infinite loop, so page never rendered.
+          
+          FIXES APPLIED:
+          - Recreated `/app/.env` with:
+              MONGO_URL=mongodb://localhost:27017
+              DB_NAME=cycle_count
+              NEXT_PUBLIC_BASE_URL=https://c4aa9ed2-b7fe-4c94-9761-f01c1a277b3a.preview.emergentagent.com
+          - Bumped Node heap to 1536 MB in package.json:
+              `"dev": "NODE_OPTIONS='--max-old-space-size=1536' next dev --hostname 0.0.0.0 --port 3000"`
+          - Restarted nextjs. Verified: root=200 in 51ms after first compile, /api/om/pdfs returns
+            correct 401 when no token / 200 {"items":[]} with valid token. Login endpoint works.
+          - Screenshot confirms login page renders fully (Merdeka Inventory System branding, Masuk button, form).
+          
+          The PDF preview code from previous fixes (Uint8Array cache, getPdfBufferCopy, canvas render, "Buka di tab baru" fallback) is untouched and correctly in place.
+
           
           Root cause suspected: pdf.js may take ownership of (detach) the ArrayBuffer passed via
           `getDocument({ data: ... })`. Since we cached the underlying ArrayBuffer and reused it for
@@ -996,6 +1101,65 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "testing"
+    message: |
+      ✅ INFRASTRUCTURE FIX VERIFIED - User issue "halamnya terus loading tidak terbuka" RESOLVED
+      
+      **USER REPORT:** "saya tidak bisa preview nya langsung di halaman emergent atau melalui share link, halamnya terus loading tidak terbuka" (I can't preview directly on emergent page or via share link, the page keeps loading and doesn't open)
+      
+      **ROOT CAUSE IDENTIFIED BY MAIN AGENT:**
+      NOT a PDF code bug — two infrastructure issues:
+      1. `/app/.env` file was MISSING → MONGO_URL undefined → every API call returned 500 → app hung on initial data load
+      2. `NODE_OPTIONS='--max-old-space-size=512'` too small for Next.js 15 dev + pdfjs-dist → dev server kept restarting mid-compile
+      
+      **FIXES APPLIED BY MAIN AGENT:**
+      1. Recreated /app/.env with MONGO_URL, DB_NAME, NEXT_PUBLIC_BASE_URL
+      2. Bumped heap in package.json dev script to 1536 MB
+      3. Restarted nextjs supervisor
+      
+      **TESTING VERIFICATION (Playwright browser automation):**
+      ✅ ALL TESTS PASSED - App fully functional
+      
+      TEST A: App loads without infinite loading ✓
+      - Page loaded in <30s (first compile)
+      - Login page rendered with all elements
+      - NO infinite loading spinner
+      
+      TEST B: Login flow ✓
+      - Successfully logged in with owner/owner123
+      - Redirected to module selection page
+      - No authentication errors
+      
+      TEST C: Navigate to PDF Resi ✓
+      - PDF Resi page loaded with all expected elements
+      - Summary cards showing: Total File: 2, Resi Terdeteksi: 7, Sudah Diprint: 0/2, Input KETOKO: 0/2
+      - Existing PDFs displayed with auto-scan status badges
+      - Detected tracking numbers shown as green chips inline
+      
+      TEST D: PDF Preview end-to-end ✓
+      - Preview modal opened successfully
+      - **PDF RENDERED PERFECTLY** - Shopee SPX shipping label clearly visible with barcode and QR code
+      - Canvas rendering working: 6 canvas elements (710x1001 pixels each)
+      - "Buka di tab baru" fallback link present with valid blob URL
+      - "Print" button present
+      - **NO BLACK SCREEN** - PDF content fully visible
+      - **NO HANGING** - Modal opened and rendered within 5 seconds
+      
+      TEST E: Console error check ✓
+      - Only minor warnings (not errors): ERR_ABORTED, Canvas2D willReadFrequently, Missing Description
+      - NO critical errors in console
+      
+      **SERVER LOGS CONFIRMATION:**
+      - GET / 200, POST /api/auth/login 200, GET /api/om/pdfs 200, GET /api/om/pdfs/[id]/file 200
+      - All API endpoints responding correctly
+      - MongoDB connection working
+      - Next.js dev server stable (no restarts)
+      
+      **CONCLUSION:**
+      User issue COMPLETELY RESOLVED. The app now loads, allows login, navigates to PDF Resi, and previews PDFs without any hanging or black screen issues.
+      
+      **RECOMMENDATION FOR MAIN AGENT:**
+      Infrastructure fix is verified and working. No further action needed. Ready to summarize and finish.
   - agent: "testing"
     message: |
       ✅ PDF PREVIEW ARRAYBUFFER DETACHMENT FIX VERIFIED (Code Review)
