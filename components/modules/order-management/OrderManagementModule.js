@@ -305,11 +305,12 @@ function ScannerShell({
       {/* Camera-only scan area — no text input, no keyboard popup */}
       <div className="rounded-xl border-2 border-blue-500/30 bg-blue-500/5 p-3 space-y-2">
         <div
-          className={`relative w-full rounded-lg overflow-hidden bg-black border border-white/10 ${disabled ? 'opacity-40' : ''}`}
+          className={`relative w-full border border-white/10 ${disabled ? 'opacity-40' : ''}`}
           style={{ aspectRatio: '16 / 10', minHeight: 220 }}
         >
-          {/* Camera-managed container — MUST have no React children so html5-qrcode owns DOM.
-              Fills its parent via CSS (see globals.css #om-camera). */}
+          {/* Camera container — video element is directly appended here by scanner.js.
+              No border-radius / overflow:hidden on wrapper to avoid Chrome Android
+              compositing bug where video renders black inside rounded clip. */}
           <div id="om-camera" />
           {/* Overlays are siblings, positioned absolutely — never mixed with camera DOM */}
           {!cameraErr && !cameraReady && !disabled && (
