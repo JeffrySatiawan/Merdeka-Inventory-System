@@ -203,13 +203,22 @@ code {
   height: 100%;
   display: block;
   background: #000;
-  overflow: hidden;
   min-height: 220px;
+  /* isolate: create own stacking context — prevents Chrome Android
+     from compositing the <video> outside the parent's rounded clip */
+  isolation: isolate;
 }
 #om-camera video {
+  position: absolute;
+  inset: 0;
   width: 100% !important;
   height: 100% !important;
   object-fit: cover !important;
   display: block !important;
-  background: #000;
+  z-index: 1;
+  /* Force video to its own GPU compositing layer — fixes Chrome Android
+     black-video-in-rounded-container bug */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: transform;
 }

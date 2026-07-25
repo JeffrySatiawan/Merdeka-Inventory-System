@@ -361,6 +361,11 @@ function ScannerShell({
                   ⚠ 0×0
                 </span>
               )}
+              {videoInfo && !videoInfo.playing && videoInfo.w > 0 && (
+                <span className="text-rose-400 ml-1" title="Video paused">
+                  ⏸
+                </span>
+              )}
             </span>
           )}
         </div>
