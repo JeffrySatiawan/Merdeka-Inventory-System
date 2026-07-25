@@ -358,7 +358,7 @@ frontend:
     implemented: true
     working: false
     file: "/app/components/modules/order-management/OrderManagementModule.js"
-    stuck_count: 3
+    stuck_count: 4
     priority: "high"
     needs_retesting: false
     status_history:
@@ -435,6 +435,46 @@ frontend:
           
           Test environment: Chromium with fake camera device, mobile viewport 420×900
           Screenshots: .screenshots/after_om_click.png shows black camera area with LIVE indicator
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Fix attempt #3 — CSS container positioning change:
+          Changed #om-camera CSS in /app/app/globals.css from `position: absolute; inset: 0` to `position: relative; width: 100%; height: 100%` to avoid absolute positioning quirks where empty children report 0×0.
+      - working: false
+        agent: "testing"
+        comment: |
+          ❌ CSS FIX FAILED - Container still 0×0 pixels after CSS change.
+          
+          **RE-TEST RESULTS (after CSS fix):**
+          Container #om-camera: ❌ STILL ZERO DIMENSIONS
+            - BoundingClientRect: 0×0 px
+            - offsetWidth/Height: 0×0 px
+            - Parent dimensions: 0×0 px ← ROOT CAUSE
+            - Computed CSS: position:relative, width:100%, height:100%, min-height:220px, display:block
+          
+          Video element: ✅ STILL WORKING
+            - Dimensions: 1280×720, readyState=4, srcObject present, not paused
+          
+          Canvas: ❌ STILL COLLAPSED
+            - Backing store: 1×1 px (collapsed due to zero-sized container)
+            - Pixel data: RGB(0,0,0) sum=0 (black)
+          
+          **DEEPER ROOT CAUSE IDENTIFIED:**
+          The CSS change from `position: absolute` to `position: relative` did NOT fix the issue because BOTH the container AND its parent wrapper have zero dimensions. The problem is:
+          1. Parent wrapper itself has 0×0 dimensions (not the expected 260px height)
+          2. Container with `width: 100%; height: 100%` inherits parent's zero size
+          3. `min-height: 220px` is not taking effect (possibly overridden or not applicable to this layout context)
+          
+          **ACTUAL ISSUE:**
+          The parent wrapper in OrderManagementModule.js likely does not have explicit dimensions set, or the height style is not being applied correctly. Need to inspect the parent wrapper's inline styles and ensure it has explicit height (e.g., `style={{ height: '260px', position: 'relative' }}`).
+          
+          **RECOMMENDATION:**
+          1. Check parent wrapper in OrderManagementModule.js (around line 310-317) - ensure it has explicit height AND position:relative
+          2. OR change #om-camera to use fixed height instead of percentage: `height: 260px` instead of `height: 100%`
+          3. Verify parent wrapper's inline styles are actually being applied in the DOM
+          
+          Test environment: Chromium with fake camera device, mobile viewport 420×900
+          Screenshot: .screenshots/css_fix_verification.png shows camera area still black
 
   - task: "Tab workflow (Cetak/Packing/Kirim/Selesai) with cutoff-hour archival"
     implemented: true

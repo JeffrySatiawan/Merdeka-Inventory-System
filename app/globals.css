@@ -198,8 +198,10 @@ code {
    surrounded by black bars — looking like "camera is dark".
    ============================================================ */
 #om-camera {
-  position: absolute;
-  inset: 0;
+  /* Use relative + explicit 100% dimensions.
+     Parent has fixed height:260px so this resolves correctly.
+     Avoids absolute-positioning quirks where empty children report 0×0. */
+  position: relative;
   width: 100%;
   height: 100%;
   display: block;
