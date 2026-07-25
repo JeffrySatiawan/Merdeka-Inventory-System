@@ -245,6 +245,28 @@ backend:
         agent: "testing"
         comment: "✅ SKU history endpoint working. GET /api/products/PRD00001/history returns product data (sku_code, product_name) and history array (0 records initially, verified record creation after task completion). Owner-only access enforced."
 
+  - task: "OM PDF Resi — upload, list, preview, print, QR scan"
+    implemented: true
+    working: "NA"
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE — OM PDF Resi endpoints:
+          - POST /api/om/pdfs (multipart/form-data upload, max 10 MB, PDF only) → saves to /app/uploads/om/pdfs/{year}/{month}/{uuid}_{filename} + metadata in om_pdfs collection.
+          - GET /api/om/pdfs → list non-deleted PDFs (id, filename, size, uploaded_at/by, pages_count, detected_tracking_numbers, scanned_at, printed_at/by, deleted).
+          - GET /api/om/pdfs/[id]/file → stream binary as application/pdf (inline). Returns 410 if soft-deleted, 404 if missing.
+          - POST /api/om/pdfs/[id]/scan-result → save detected tracking_numbers[] + pages_count from client-side QR scan. Deduplicates + caps at 200 items.
+          - POST /api/om/pdfs/[id]/mark-printed → record printed_at + printed_by from current user.
+          - DELETE /api/om/pdfs/[id] → soft-delete (mark deleted:true) + unlink file.
+          Retention: maybeRunOMCleanup now also purges PDFs older than photo_retention_days (same setting as photos).
+          Smoke-tested via curl: upload 681-byte valid PDF, list, download, scan-result (dedupe verified: input 3 → stored 2), mark-printed, delete → list empty. All endpoints return 200 with expected shape.
+
+
 frontend:
   - task: "Login screen + demo quick-pick"
     implemented: true
@@ -688,6 +710,53 @@ frontend:
     stuck_count: 0
     priority: "high"
     needs_retesting: false
+
+  - task: "OM PDF Resi frontend — upload/list/preview/print + auto QR scan"
+    implemented: true
+    working: "NA"
+    file: "/app/components/modules/order-management/OMPdfsView.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE — user asked: "kirim file pdf ke dalam order management melalui hp saya, di order management ada fitur untuk buka file pdf yang saya kirim kemudian di print". User specs: multi-resi PDF (1 file bisa berisi banyak resi), OM auto-baca QR di tiap halaman, preview inline + Print button (opsi B), semua staff bisa lihat, retensi mengikuti setting foto.
+          
+          Implementation:
+          - New view /app/components/modules/order-management/OMPdfsView.js
+          - Menu "PDF Resi" added to sidebar (Order Management → PDF Resi) + labels updated in page.js
+          - Module dispatcher case 'om:pdfs' → <OMPdfsView />
+          - Layout: Header with Refresh + Unggah PDF buttons; 3 summary cards (Total File / Resi Terdeteksi / Sudah Diprint); List rows with filename, size, page count, resi count, uploaded_by, upload date, "PRINTED" badge, "BELUM SCAN" badge, Buka + Delete actions
+          - Upload: <input type="file" accept="application/pdf" multiple/>. Uses XMLHttpRequest for progress. Client-side validates size (<= 10 MB) + type before upload. Auth via localStorage.getItem('cc_token').
+          - Preview modal: fetches PDF as authenticated blob → creates blob URL → <iframe> for browser-native PDF viewer + print
+          - Auto QR scan on first open: uses pdfjs-dist@4.10.38 to render each page to canvas at scale=2.0, then @zxing/browser BrowserMultiFormatReader.decodeFromCanvas() to decode QR. Results dedupe, sent to POST /api/om/pdfs/[id]/scan-result. Toast reports N resi from M halaman.
+          - Manual Re-scan: "Scan QR" button re-runs the scanner on demand
+          - Print button: calls iframe.contentWindow.print() → browser native print dialog. Non-blocking marks printed_at via POST /mark-printed.
+          - Right panel: list of detected tracking numbers with QR icon, monospace font
+          
+          Verified via Playwright screenshots:
+          - PDF Resi menu appears in sidebar ✓
+          - Empty state renders correctly ✓
+          - After upload via curl (681-byte valid.pdf), UI displays row with correct metadata ✓
+          - Buka opens preview modal ✓
+          - PDF loads into iframe (auth blob URL works) ✓
+          - Auto-QR-scan fires on modal open, PDFjs parses (pages_count updated to 2), zxing runs, toast "Tidak ada QR code terbaca pada 2 halaman" appears (correct — test PDF has no QR)
+          - No JS console errors
+          
+          Files changed/added:
+          - /app/lib/modules/order-management/service.js (backend endpoints + retention)
+          - /app/components/modules/order-management/OMPdfsView.js (NEW)
+          - /app/components/modules/order-management/OrderManagementModule.js (dispatcher case + import)
+          - /app/app/page.js (sidebar item + labels)
+          - /app/package.json (added pdfjs-dist@4.10.38)
+          
+          Known limitations (phase 1 MVP):
+          - Upload via file picker only (works from HP: opens native file picker → pick PDF from downloads/gallery)
+          - Share intent from WhatsApp/marketplace NOT YET implemented (Phase 2 planned: PWA manifest + Service Worker share_target)
+          - QR scan is client-side only (server doesn't parse PDF); works well in Chrome/Safari with pdfjs+zxing.
+
 
 metadata:
   created_by: "main_agent"

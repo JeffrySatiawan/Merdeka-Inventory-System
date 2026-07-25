@@ -233,6 +233,7 @@ function buildNav(user) {
             { key: 'om:completed', label: 'Selesai' },
             { key: 'om:reports', label: 'Laporan' },
             { key: 'om:expeditions', label: 'Master Ekspedisi' },
+            { key: 'om:pdfs', label: 'PDF Resi' },
             { key: 'om:settings', label: 'Pengaturan', ownerOnly: true },
           ],
         },
@@ -515,6 +516,7 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
     'om:completed': 'Selesai',
     'om:reports': 'Laporan',
     'om:expeditions': 'Master Ekspedisi',
+    'om:pdfs': 'PDF Resi',
     'om:settings': 'Pengaturan OM',
     'ad:users': 'User Management',
   };
@@ -681,6 +683,7 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'om:completed': 'OM · Selesai',
     'om:reports': 'OM · Laporan',
     'om:expeditions': 'OM · Master Ekspedisi',
+    'om:pdfs': 'OM · PDF Resi',
     'om:settings': 'OM · Pengaturan',
     'rp:history': 'Reports · Riwayat SKU',
     'ad:users': 'User Management',

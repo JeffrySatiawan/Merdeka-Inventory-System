@@ -2004,6 +2004,8 @@ function OMCompletedView({ user }) {
 // ============================================================
 // Main Module Entry
 // ============================================================
+import OMPdfsView from './OMPdfsView';
+
 export default function OrderManagementModule({ view, user }) {
   const isOwner = user?.role === 'owner';
   switch (view) {
@@ -2014,6 +2016,7 @@ export default function OrderManagementModule({ view, user }) {
     case 'om:completed': return <OMCompletedView user={user} />;
     case 'om:reports': return <OMReportsView user={user} />;
     case 'om:expeditions': return <OMExpeditionsView isOwner={isOwner} />;
+    case 'om:pdfs': return <OMPdfsView user={user} />;
     case 'om:settings': return <OMSettingsView isOwner={isOwner} />;
     default: return <OMDashboardView />;
   }
