@@ -14,6 +14,8 @@
 // black-screen, and off-screen video auto-pause issues.
 
 let audioCtx = null;
+let unlockAttached = false;
+
 function getCtx() {
   if (typeof window === 'undefined') return null;
   if (audioCtx) return audioCtx;
@@ -27,45 +29,97 @@ function getCtx() {
   return audioCtx;
 }
 
+// Auto-unlock AudioContext on first user gesture — modern browsers block
+// AudioContext.start() until user interacts. Without this, beep() silently
+// fails on iOS/Android until the user's first tap.
+function attachUnlock() {
+  if (unlockAttached || typeof window === 'undefined') return;
+  unlockAttached = true;
+  const unlock = () => {
+    const ctx = getCtx();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    // Play a silent (0 gain) tone to fully unlock on iOS Safari
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.02);
+    } catch {}
+  };
+  const opts = { once: true, capture: true, passive: true };
+  ['pointerdown', 'touchstart', 'mousedown', 'keydown', 'click'].forEach((ev) => {
+    try { document.addEventListener(ev, unlock, opts); } catch {}
+  });
+}
+
+if (typeof window !== 'undefined') {
+  // Attach unlock listener on module load (client-side only)
+  attachUnlock();
+}
+
+/**
+ * Play a beep — types:
+ *   'ok'   → high double-chirp (successful scan)
+ *   'warn' → mid two-tone (duplicate/warning)
+ *   'err'  → low double-buzz (error)
+ */
 export function beep(type = 'ok') {
   const ctx = getCtx();
   if (!ctx) return;
+  // Ensure unlock listener is attached (in case module was tree-shaken)
+  attachUnlock();
   if (ctx.state === 'suspended') {
     ctx.resume().catch(() => {});
   }
   const now = ctx.currentTime;
+  // Distinctive tone patterns — each type sounds clearly different so users
+  // can distinguish outcomes by ear without looking at the screen.
   const tones =
     type === 'ok'
-      ? [{ f: 1320, d: 0.08 }]
+      ? [
+          { f: 1400, d: 0.06, wave: 'sine' },
+          { f: 1900, d: 0.09, delay: 0.06, wave: 'sine' },
+        ]
       : type === 'warn'
-      ? [{ f: 700, d: 0.18 }]
+      ? [
+          { f: 660, d: 0.11, wave: 'triangle' },
+          { f: 660, d: 0.11, delay: 0.16, wave: 'triangle' },
+        ]
       : type === 'err'
       ? [
-          { f: 220, d: 0.18 },
-          { f: 180, d: 0.22, delay: 0.22 },
+          { f: 260, d: 0.18, wave: 'square' },
+          { f: 180, d: 0.24, delay: 0.20, wave: 'square' },
         ]
-      : [{ f: 880, d: 0.08 }];
+      : [{ f: 880, d: 0.08, wave: 'sine' }];
 
   tones.forEach((t) => {
     try {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(t.f, now + (t.delay || 0));
-      gain.gain.setValueAtTime(0.0001, now + (t.delay || 0));
-      gain.gain.exponentialRampToValueAtTime(0.28, now + (t.delay || 0) + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + (t.delay || 0) + t.d);
+      osc.type = t.wave || 'sine';
+      const startAt = now + (t.delay || 0);
+      const endAt = startAt + t.d;
+      osc.frequency.setValueAtTime(t.f, startAt);
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.exponentialRampToValueAtTime(0.35, startAt + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, endAt);
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start(now + (t.delay || 0));
-      osc.stop(now + (t.delay || 0) + t.d + 0.02);
+      osc.start(startAt);
+      osc.stop(endAt + 0.02);
     } catch {}
   });
 }
 
 export function vibrate(type = 'ok') {
   if (typeof navigator === 'undefined' || !navigator.vibrate) return;
-  const patterns = { ok: [40], warn: [80], err: [120, 60, 120] };
+  const patterns = { ok: [40], warn: [80, 60, 80], err: [140, 60, 140] };
   try {
     navigator.vibrate(patterns[type] || patterns.ok);
   } catch {}
