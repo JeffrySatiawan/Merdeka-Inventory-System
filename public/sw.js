@@ -1,6 +1,6 @@
 // Merdeka Inventory System - Service Worker (with Merdeka Share support)
 // Cache only manifest + icons. NEVER cache app code (JS/CSS) so updates are always fresh.
-const CACHE_VERSION = 'mis-v6-share-2026-07-25';
+const CACHE_VERSION = 'mis-v7-share-png-2026-07-25';
 const DB_NAME = 'merdeka-share-db';
 const DB_STORE_QUEUE = 'queue';   // pending shared PDFs waiting to be uploaded
 const DB_STORE_AUTH = 'auth';     // token + base info (from main app handoff)
@@ -129,8 +129,8 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // Share Target POST → intercept
-  if (req.method === 'POST' && url.pathname === '/share') {
+  // Share Target POST → intercept (both /share and /share/ for safety)
+  if (req.method === 'POST' && (url.pathname === '/share' || url.pathname === '/share/')) {
     event.respondWith(handleShareTarget(event));
     return;
   }

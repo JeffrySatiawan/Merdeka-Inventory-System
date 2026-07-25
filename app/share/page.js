@@ -12,6 +12,7 @@ import {
   FileText,
   Trash2,
   LogIn,
+  Smartphone,
   Share2,
   WifiOff,
   Clock,
@@ -142,6 +143,8 @@ export default function ShareApp() {
   const [online, setOnline] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState({}); // { itemId: 0..100 }
+  const [installPrompt, setInstallPrompt] = useState(null); // beforeinstallprompt event
+  const [isInstalled, setIsInstalled] = useState(false);
   const fileInputRef = useRef(null);
 
   // ---- boot: load token + user + queue ----
@@ -205,12 +208,44 @@ export default function ShareApp() {
     setOnline(navigator.onLine);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+    // Capture beforeinstallprompt so we can show a manual "Install" button
+    const onBeforeInstall = (e) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    // Detect if already installed (running standalone)
+    const standalone =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      window.navigator.standalone === true;
+    setIsInstalled(standalone);
+    const onAppInstalled = () => {
+      setIsInstalled(true);
+      setInstallPrompt(null);
+    };
+    window.addEventListener('appinstalled', onAppInstalled);
     return () => {
       navigator.serviceWorker?.removeEventListener('message', onMsg);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onAppInstalled);
     };
   }, [loadEverything]);
+
+  async function triggerInstall() {
+    if (!installPrompt) return;
+    try {
+      installPrompt.prompt();
+      const choice = await installPrompt.userChoice;
+      if (choice?.outcome === 'accepted') {
+        setInstallPrompt(null);
+        toast.success('Merdeka Share terinstall!');
+      }
+    } catch (e) {
+      toast.error(String(e?.message || e));
+    }
+  }
 
   // when token/user set, load today list, then kick off upload of pending items
   useEffect(() => {
@@ -369,6 +404,15 @@ export default function ShareApp() {
         >
           <LogIn className="w-4 h-4" /> Login di MIS
         </Button>
+        {installPrompt && !isInstalled && (
+          <Button
+            onClick={triggerInstall}
+            variant="outline"
+            className="gap-2 z-10 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
+          >
+            <Smartphone className="w-4 h-4" /> Install App
+          </Button>
+        )}
         <div className="text-[10px] text-muted-foreground/60 text-center max-w-xs">
           Setelah login di MIS, kembali ke aplikasi Merdeka Share ini. Session akan otomatis terpakai.
         </div>
@@ -452,6 +496,43 @@ export default function ShareApp() {
             <ExternalLink className="w-3.5 h-3.5" /> Buka OMS
           </Button>
         </div>
+
+        {/* Install banner (only shown when installable and not already installed) */}
+        {installPrompt && !isInstalled && (
+          <Card className="border-blue-500/30 bg-gradient-to-r from-blue-500/10 to-emerald-500/5">
+            <CardContent className="pt-4 pb-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center shrink-0">
+                  <Smartphone className="w-5 h-5 text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold">Install Merdeka Share ke HP</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    Setelah install, akan muncul di menu share HP untuk terima PDF dari aplikasi lain.
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={triggerInstall}
+                  className="gap-1.5"
+                >
+                  <Smartphone className="w-3.5 h-3.5" /> Install
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {isInstalled && (
+          <Card className="border-emerald-500/30 bg-emerald-500/5">
+            <CardContent className="pt-3 pb-3">
+              <div className="flex items-center gap-2 text-xs text-emerald-400">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Merdeka Share sudah terinstall. Aplikasi ini akan muncul di menu Share HP Anda.</span>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Instructions */}
         <Card className="border-emerald-500/20 bg-emerald-500/5">

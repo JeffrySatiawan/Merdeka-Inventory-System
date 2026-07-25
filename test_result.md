@@ -966,6 +966,112 @@ frontend:
           
           **CONCLUSION:**
           The PWA share target manifest fix is FULLY WORKING at the backend/HTTP level. The SSR manifest link override is correctly implemented and will ensure Chrome parses the correct manifest (share-manifest.webmanifest) when the /share page is loaded, which should make "Merdeka Share" appear in the Android share sheet. Real-device testing required to confirm Android share sheet visibility.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 50 BACKEND TESTS PASSED (100%) - PNG Icon Fix VERIFIED (Second Round)
+          
+          **TEST SCOPE:** Backend/HTTP-level verification of PNG icon fix for bug "masih belum muncul merdeka share saat mau share pdf" (Merdeka Share PWA still doesn't appear in Android share sheet after previous manifest link fix)
+          **TEST FILE:** /app/test_merdeka_share_png_fix.py
+          **TEST METHOD:** Python requests library with comprehensive HTTP checks
+          **BASE URL:** https://priview-staging.preview.emergentagent.com
+          
+          **ROOT CAUSES FIXED (per troubleshoot_agent):**
+          1. SVG data URI icons don't satisfy Chrome Android PWA installability → PWA cannot be installed → share_target cannot register
+          2. Scope overlap: both main manifest (scope=/) and share manifest (scope=/share) had share_target — Chrome gets confused
+          3. Trailing slash mismatch in share manifest
+          
+          **FIXES VERIFIED:**
+          1. Generated real PNG icons at 192×192 and 512×512 (with maskable variants) using Python PIL
+          2. Updated main manifest: replaced SVG with PNG, REMOVED share_target field
+          3. Updated share manifest: replaced SVG with PNG, consistent no-trailing-slash
+          4. Bumped SW cache version to force reload
+          5. Added beforeinstallprompt handler in /share page
+          
+          **TEST RESULTS:**
+          
+          1. ✅ PNG ICONS SERVED CORRECTLY (18/18 checks passed):
+             All 6 PNG icons verified:
+             - merdeka-share-192.png: 1818 bytes, valid PNG magic bytes ✓
+             - merdeka-share-512.png: 4356 bytes, valid PNG magic bytes ✓
+             - merdeka-share-maskable-512.png: 3034 bytes, valid PNG magic bytes ✓
+             - mis-192.png: 1488 bytes, valid PNG magic bytes ✓
+             - mis-512.png: 3479 bytes, valid PNG magic bytes ✓
+             - mis-maskable-512.png: 2669 bytes, valid PNG magic bytes ✓
+             All served with HTTP 200, Content-Type: image/png, Content-Length > 500 bytes
+             PNG magic bytes verified: \x89PNG\r\n\x1a\n
+          
+          2. ✅ MAIN MANIFEST (/manifest.json) (8/8 checks passed):
+             - HTTP 200 with Content-Type: application/json ✓
+             - name: "Merdeka Inventory System" ✓
+             - short_name: "MIS" ✓
+             - start_url: "/" ✓
+             - Has 192×192 PNG icon (type: image/png, src: /icons/mis-192.png) ✓
+             - Has 512×512 PNG icon (type: image/png, src: /icons/mis-512.png) ✓
+             - **CRITICAL: share_target field REMOVED** ✓ (was present in first round, now correctly removed)
+             - Shortcuts array points to /share for Share PDF shortcut ✓
+          
+          3. ✅ SHARE MANIFEST (/share-manifest.webmanifest) (14/14 checks passed):
+             - HTTP 200 with Content-Type: application/manifest+json ✓
+             - name: "Merdeka Share" ✓
+             - id: "/share" (no trailing slash, consistent) ✓
+             - scope: "/share" (no trailing slash, consistent) ✓
+             - start_url: "/share" (no trailing slash, consistent) ✓
+             - display: "standalone" ✓
+             - Has 192×192 PNG icon (any) ✓
+             - Has 512×512 PNG icon (any) ✓
+             - Has 512×512 PNG icon (maskable) ✓
+             - share_target.action: "/share" ✓
+             - share_target.method: "POST" ✓
+             - share_target.enctype: "multipart/form-data" ✓
+             - share_target.params.files accepts "application/pdf" and ".pdf" ✓
+             - All icons use PNG (no SVG data URIs) ✓
+          
+          4. ✅ SSR MANIFEST LINK INJECTION (2/2 checks passed):
+             - Root page (/) HTML contains `<link rel="manifest" href="/manifest.json">` ✓
+             - /share page HTML contains `<link rel="manifest" href="/share-manifest.webmanifest">` ✓
+             - Verified via curl: SSR-rendered HTML has correct manifest links before client-side JS runs
+          
+          5. ✅ SERVICE WORKER (3/3 checks passed):
+             - /sw.js returns HTTP 200 with Content-Type: application/javascript ✓
+             - Cache version updated: 'mis-v7-share-png-2026-07-25' ✓
+             - POST /share handler present (handleShareTarget function) ✓
+          
+          6. ✅ BACKEND ENDPOINT REGRESSION (3/3 checks passed):
+             - Owner (owner/owner123) can upload PDF → 200 with filename 250726-11.pdf (DDMMYY-N pattern) ✓
+             - Staff (cindy/cindy123) without OM module → 403 (correctly denied) ✓
+             - Test PDF cleanup successful ✓
+          
+          7. ✅ /SHARE PAGE LOADS (2/2 checks passed):
+             - GET /share returns HTTP 200 ✓
+             - HTML contains "Merdeka Share" ✓
+          
+          **TECHNICAL VERIFICATION:**
+          - PNG icons are real bitmap images (not SVG data URIs) → satisfies Chrome Android PWA installability requirements
+          - Main manifest NO LONGER has share_target → eliminates scope overlap confusion
+          - Share manifest is the ONLY manifest with share_target → clear ownership
+          - All paths in share manifest use consistent no-trailing-slash format → eliminates mismatch issues
+          - Service worker cache version bumped → forces clients to reload new manifest
+          - SSR manifest link injection working correctly → Chrome parses correct manifest at page load time
+          
+          **COMPARISON WITH FIRST ROUND:**
+          First round fixed: SSR manifest link injection (was client-side, now SSR)
+          Second round fixed: PNG icons (was SVG, now PNG) + scope overlap (main manifest share_target removed) + trailing slash consistency
+          
+          **NOT TESTED (as per review request):**
+          - Real Android share sheet visibility (requires actual Android device with Chrome)
+          - PWA installation flow (requires browser environment)
+          - beforeinstallprompt handler behavior (requires browser environment)
+          - Service worker installation in browser (requires browser environment)
+          
+          **CONCLUSION:**
+          The PNG icon fix is FULLY WORKING at the backend/HTTP level. All three root causes identified by troubleshoot_agent have been addressed:
+          1. ✅ Real PNG icons generated and served correctly
+          2. ✅ Scope overlap eliminated (only share manifest has share_target)
+          3. ✅ Trailing slash consistency achieved
+          
+          The PWA should now be installable on Android Chrome, and after installation, "Merdeka Share" should appear in the Android share sheet when sharing PDF files. Real-device testing required to confirm Android share sheet visibility.
+
 
   - task: "OM PDF Resi frontend — upload/list/preview/print + auto QR scan"
     implemented: true
