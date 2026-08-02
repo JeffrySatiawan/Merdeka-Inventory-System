@@ -39,7 +39,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { omApi } from './api';
 import {
   loadNotifSettings,
-  saveNotifSettings,
+  fetchGlobalNotifSettings,
+  updateGlobalNotifSettings,
   requestBrowserPermission,
 } from './useOMPdfNotifications';
 
@@ -300,19 +301,64 @@ export default function OMPdfsView({ user }) {
     return () => window.removeEventListener('om:new-pdf', onNew);
   }, []);
 
-  // Setting toggle helpers
+  // Fetch GLOBAL notification settings from server on mount so the toggles
+  // shown to the owner always reflect the actual saved config. Also listens
+  // for local 'om:notif-settings-changed' broadcasts so if another component
+  // (e.g. the hook itself) refreshes state, we stay in sync.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await fetchGlobalNotifSettings();
+      if (!cancelled) setNotifSettings(s);
+    })();
+    const onChange = (e) => {
+      if (e?.detail) setNotifSettings(e.detail);
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('om:notif-settings-changed', onChange);
+    }
+    return () => {
+      cancelled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('om:notif-settings-changed', onChange);
+      }
+    };
+  }, []);
+
+  // Setting toggle helpers — OWNER ONLY. Reads/writes GLOBAL server settings.
+  // Non-owners never see the toggle UI (button is wrapped in `{isOwner && ...}`)
+  // and even if they somehow trigger this handler, the backend returns 403.
   const toggleNotifSetting = async (key) => {
+    if (!isOwner) {
+      toast.error('Hanya owner yang dapat mengubah pengaturan notifikasi.');
+      return;
+    }
     if (key === 'browser' && !notifSettings.browser) {
-      // Turning ON — request permission
+      // Turning ON — request permission from THIS browser first. Note the
+      // browser permission is per-device, not global; the global toggle just
+      // controls whether the app WILL fire browser notifications for anyone
+      // whose browser has already granted permission.
       const p = await requestBrowserPermission();
       if (p !== 'granted') {
         toast.error(p === 'denied' ? 'Izin browser notif ditolak. Aktifkan lewat pengaturan browser.' : 'Izin browser notif tidak diberikan.');
         return;
       }
     }
-    const next = { ...notifSettings, [key]: !notifSettings[key] };
-    setNotifSettings(next);
-    saveNotifSettings(next);
+    const nextValue = !notifSettings[key];
+    // Optimistic UI
+    setNotifSettings((prev) => ({ ...prev, [key]: nextValue }));
+    try {
+      const server = await updateGlobalNotifSettings({ [key]: nextValue });
+      setNotifSettings(server);
+    } catch (e) {
+      // Rollback on failure
+      const status = e?.status || e?.response?.status;
+      toast.error(status === 403 ? 'Hanya owner yang boleh mengubah pengaturan.' : 'Gagal menyimpan pengaturan notifikasi.');
+      try {
+        const fresh = await fetchGlobalNotifSettings();
+        setNotifSettings(fresh);
+      } catch {}
+    }
   };
 
   const setItemScanning = useCallback((id, on) => {

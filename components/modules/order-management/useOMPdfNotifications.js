@@ -30,14 +30,22 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { omApi } from './api';
 
-// ---------- Settings persistence ----------
-const SETTINGS_KEY = 'om.pdf.notif.settings.v1';
+// ---------- Settings persistence (GLOBAL, server-side) ----------
+// Notification settings are stored server-side in om_settings and shared by
+// ALL users. Only the OWNER account is allowed to modify them via PUT.
+// Non-owner users still receive notifications, they just can't change the
+// configuration.
+//
+// A short-lived localStorage cache keeps the first render responsive before
+// the server responds (and covers offline reloads). It is NOT the source of
+// truth — the polled server response always overwrites it.
+const SETTINGS_CACHE_KEY = 'om.pdf.notif.settings.cache.v1';
 const DEFAULT_SETTINGS = { popup: true, sound: true, browser: true };
 
-export function loadNotifSettings() {
+function readCache() {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS;
   try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    const raw = window.localStorage.getItem(SETTINGS_CACHE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw);
     return { ...DEFAULT_SETTINGS, ...parsed };
@@ -46,11 +54,65 @@ export function loadNotifSettings() {
   }
 }
 
-export function saveNotifSettings(next) {
+function writeCache(next) {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    window.localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(next));
   } catch {}
+}
+
+// Exposed helpers so views (e.g. OMPdfsView) can read the cached snapshot
+// synchronously for their initial render.
+export function loadNotifSettings() {
+  return readCache();
+}
+
+// Legacy no-op kept for backward-compat with any existing imports.
+// Persistence now goes through the API (owner-only), not localStorage.
+export function saveNotifSettings(_next) {
+  /* no-op — moved to server (see updateGlobalNotifSettings) */
+}
+
+// Fetch current global settings from the server. Returns DEFAULT_SETTINGS on
+// any failure (network, unauth, etc.) so the caller always has valid values.
+export async function fetchGlobalNotifSettings() {
+  try {
+    const resp = await omApi('notif-settings');
+    const s = resp?.settings || {};
+    const merged = {
+      popup: s.popup !== undefined ? !!s.popup : DEFAULT_SETTINGS.popup,
+      sound: s.sound !== undefined ? !!s.sound : DEFAULT_SETTINGS.sound,
+      browser: s.browser !== undefined ? !!s.browser : DEFAULT_SETTINGS.browser,
+    };
+    writeCache(merged);
+    return merged;
+  } catch {
+    return readCache();
+  }
+}
+
+// Owner-only. Sends PUT and returns the server's authoritative response.
+// The API guard will return 403 for non-owners; caller should handle that.
+export async function updateGlobalNotifSettings(patch) {
+  const resp = await omApi('notif-settings', {
+    method: 'PUT',
+    body: JSON.stringify(patch || {}),
+  });
+  const s = resp?.settings || {};
+  const merged = {
+    popup: s.popup !== undefined ? !!s.popup : DEFAULT_SETTINGS.popup,
+    sound: s.sound !== undefined ? !!s.sound : DEFAULT_SETTINGS.sound,
+    browser: s.browser !== undefined ? !!s.browser : DEFAULT_SETTINGS.browser,
+  };
+  writeCache(merged);
+  // Broadcast so other components (hook + view) refresh immediately without
+  // waiting for their next poll tick.
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('om:notif-settings-changed', { detail: merged }));
+    }
+  } catch {}
+  return merged;
 }
 
 // ---------- Notification sound (MP3 with Web Audio fallback) ----------
@@ -250,7 +312,7 @@ function popupNewPdf(item) {
 // =============================================================================
 // Hook: useOMPdfNotifications
 // =============================================================================
-export function useOMPdfNotifications({ enabled = true, intervalMs = 5000 } = {}) {
+export function useOMPdfNotifications({ enabled = true, intervalMs = 5000, settingsPollMs = 15000 } = {}) {
   const [settings, setSettings] = useState(loadNotifSettings);
   const seenIdsRef = useRef(new Set());
   const lastCursorRef = useRef(null); // ISO string
@@ -260,19 +322,60 @@ export function useOMPdfNotifications({ enabled = true, intervalMs = 5000 } = {}
   // Keep ref current so async polling loop reads latest settings
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
-  // Update setting + persist
-  const updateSettings = useCallback((patch) => {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch };
-      saveNotifSettings(next);
-      return next;
-    });
+  // Update setting via server (owner-only — API will 403 for non-owners).
+  // Local state updates optimistically; server response reconciles final state.
+  const updateSettings = useCallback(async (patch) => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+    try {
+      const server = await updateGlobalNotifSettings(patch);
+      setSettings(server);
+      return server;
+    } catch (e) {
+      // Rollback if the API rejected the change (403 non-owner, network error, …).
+      const fresh = await fetchGlobalNotifSettings();
+      setSettings(fresh);
+      throw e;
+    }
   }, []);
 
   // Prime audio unlock on mount so first ding-dong can play
   useEffect(() => {
     attachAudioUnlock();
   }, []);
+
+  // Poll GLOBAL notification settings from the server. All users share the
+  // same config so any change made by the owner propagates to everyone on
+  // their next poll tick (typically within ~15s). Also refreshes immediately
+  // when the local tab dispatches 'om:notif-settings-changed' (owner just
+  // toggled).
+  useEffect(() => {
+    if (!enabled || typeof window === 'undefined') return undefined;
+    let cancelled = false;
+    let firstDone = false;
+
+    const refresh = async () => {
+      if (cancelled) return;
+      const s = await fetchGlobalNotifSettings();
+      if (cancelled) return;
+      setSettings(s);
+      firstDone = true;
+    };
+
+    refresh();
+    const id = setInterval(refresh, settingsPollMs);
+    const onLocalChange = (e) => {
+      if (e?.detail) setSettings(e.detail);
+      else refresh();
+    };
+    window.addEventListener('om:notif-settings-changed', onLocalChange);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      window.removeEventListener('om:notif-settings-changed', onLocalChange);
+      // Silence lint on unused firstDone
+      void firstDone;
+    };
+  }, [enabled, settingsPollMs]);
 
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return undefined;

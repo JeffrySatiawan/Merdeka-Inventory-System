@@ -2227,11 +2227,11 @@ import { useOMPdfNotifications } from './useOMPdfNotifications';
 
 export default function OrderManagementModule({ view, user }) {
   const isOwner = user?.role === 'owner';
-  // Global PDF Resi notification watcher — owner-only, since only the owner
-  // account is allowed to configure notification settings. Emits `window`
-  // event 'om:new-pdf' which OMPdfsView subscribes to for live list updates
-  // + highlight (still fires for the owner's session).
-  useOMPdfNotifications({ enabled: !!user && isOwner });
+  // Global PDF Resi notification watcher — runs for ANY user with OM access.
+  // Non-owners still receive realtime notifications (popup/sound/browser); they
+  // just cannot change the configuration. Settings are fetched globally from
+  // the server so every session obeys whatever the owner has enabled.
+  useOMPdfNotifications({ enabled: !!user });
   switch (view) {
     case 'om:dashboard': return <OMDashboardView />;
     case 'om:scan_print': return <OMScanPrintView user={user} />;
