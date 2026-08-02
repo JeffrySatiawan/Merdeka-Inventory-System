@@ -394,6 +394,41 @@ export default function OMPdfsView({ user }) {
     }
   }
 
+  // Open PDF preview + record the open event on the server (increments open_count,
+  // updates last_open_at, first_open_at if first time).
+  async function openPdf(item) {
+    // Show preview immediately for speed.
+    setPreviewItem(item);
+    // Optimistic bump so the button turns red / status flips right away.
+    const nowIso = new Date().toISOString();
+    setItems((prev) =>
+      prev.map((x) =>
+        x.id === item.id
+          ? {
+              ...x,
+              first_open_at: x.first_open_at || nowIso,
+              first_open_by_id: x.first_open_by_id || user?.id || null,
+              first_open_by_name: x.first_open_by_name || user?.name || 'You',
+              last_open_at: nowIso,
+              last_open_by_id: user?.id || null,
+              last_open_by_name: user?.name || 'You',
+              open_count: (x.open_count || 0) + 1,
+            }
+          : x
+      )
+    );
+    try {
+      const r = await omApi(`pdfs/${item.id}/open`, { method: 'POST' });
+      if (r?.item) {
+        setItems((prev) => prev.map((x) => (x.id === item.id ? r.item : x)));
+      }
+    } catch (e) {
+      // Silent — the preview is already showing; just log.
+      // eslint-disable-next-line no-console
+      console.warn('[open] gagal catat event:', e?.message || e);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -498,7 +533,7 @@ export default function OMPdfsView({ user }) {
                   item={it}
                   isOwner={isOwner}
                   isScanning={scanningIds.has(it.id)}
-                  onOpen={() => setPreviewItem(it)}
+                  onOpen={() => openPdf(it)}
                   onDelete={() => del(it.id, it.filename)}
                   onToggleKetoko={(next) => toggleKetoko(it, next)}
                   onRescan={() => runAutoScan(it.id)}
@@ -586,6 +621,59 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
     }
   };
 
+  // ------ Dynamic PIN verification for "Buka Lagi" (re-open PDF) ------
+  const openCount = item.open_count || 0;
+  const hasBeenOpened = openCount > 0 || !!item.first_open_at;
+  const [openPin, setOpenPin] = useState(null);
+  const [openPinInput, setOpenPinInput] = useState('');
+  const [openShake, setOpenShake] = useState(false);
+  const openPinInputRef = useRef(null);
+
+  const focusOpenPinInput = () => {
+    setTimeout(() => {
+      openPinInputRef.current?.focus();
+      openPinInputRef.current?.select?.();
+    }, 30);
+  };
+
+  const openOpenPinPanel = () => {
+    setOpenPin(generatePin());
+    setOpenPinInput('');
+    focusOpenPinInput();
+  };
+
+  const closeOpenPinPanel = () => {
+    setOpenPin(null);
+    setOpenPinInput('');
+    setOpenShake(false);
+  };
+
+  const submitOpenPin = () => {
+    if (!openPin) return;
+    if (openPinInput === openPin) {
+      closeOpenPinPanel();
+      // Correct — actually open PDF (this also increments open_count on server).
+      onOpen();
+    } else {
+      // Wrong — regenerate PIN, clear input, keep panel open, refocus.
+      setOpenPin(generatePin());
+      setOpenPinInput('');
+      setOpenShake(true);
+      setTimeout(() => setOpenShake(false), 400);
+      focusOpenPinInput();
+    }
+  };
+
+  const handleBukaClick = () => {
+    if (!hasBeenOpened) {
+      // First open — go directly, no PIN.
+      onOpen();
+    } else {
+      // Already opened before — require PIN inline.
+      openOpenPinPanel();
+    }
+  };
+
   return (
     <div className="rounded-lg border border-white/5 hover:bg-white/[0.02] transition-colors">
       {/* Top row: file info + KETOKO + actions */}
@@ -616,12 +704,31 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
                 BELUM SCAN
               </Badge>
             )}
+            {/* PDF open status badge */}
+            {hasBeenOpened ? (
+              <Badge
+                variant="outline"
+                className="border-rose-500/40 text-rose-300 text-[9px] gap-1"
+                title={`Terakhir dibuka oleh ${item.last_open_by_name || '-'} · ${fmtDate(item.last_open_at)}`}
+              >
+                <Eye className="w-2.5 h-2.5" /> SUDAH DIBUKA · {openCount}x
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-white/15 text-muted-foreground text-[9px]">
+                BELUM DIBUKA
+              </Badge>
+            )}
           </div>
           <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
             <span>{fmtBytes(item.size)}</span>
             {item.pages_count != null && <span>· {item.pages_count} hal.</span>}
             <span>· {fmtDate(item.uploaded_at)}</span>
             <span>· oleh {item.uploaded_by_name}</span>
+            {hasBeenOpened && item.last_open_at && (
+              <span className="text-rose-300/80">
+                · buka: {item.last_open_by_name} · {fmtDate(item.last_open_at)}
+              </span>
+            )}
           </div>
         </div>
 
@@ -723,9 +830,27 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
         )}
 
         <div className="flex gap-1 shrink-0">
-          <Button size="sm" variant="outline" onClick={onOpen} className="gap-1">
-            <Eye className="w-3.5 h-3.5" /> Buka
-          </Button>
+          {hasBeenOpened ? (
+            <Button
+              size="sm"
+              onClick={handleBukaClick}
+              disabled={openPin !== null}
+              className="gap-1 bg-rose-500 hover:bg-rose-600 text-white border-rose-500 disabled:opacity-70"
+              title={`Sudah dibuka ${openCount}x — verifikasi PIN diperlukan`}
+            >
+              <Eye className="w-3.5 h-3.5" /> Buka Lagi
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleBukaClick}
+              className="gap-1 border-blue-500/40 text-blue-300 hover:bg-blue-500/10"
+              title="Buka PDF pertama kali (tanpa PIN)"
+            >
+              <Eye className="w-3.5 h-3.5" /> Buka
+            </Button>
+          )}
           <Button
             size="icon"
             variant="ghost"
@@ -747,6 +872,66 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
             </Button>
           )}
         </div>
+
+        {/* Inline PIN verification panel for "Buka Lagi" (re-open) — appears right below button row */}
+        {openPin !== null && (
+          <div
+            className="basis-full w-full mt-1 p-3 rounded-md border border-rose-500/40 bg-gradient-to-br from-rose-500/10 to-rose-500/5"
+            style={openShake ? { animation: 'ketoko-shake 0.35s ease-in-out' } : undefined}
+          >
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-rose-300 shrink-0" />
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-rose-200/70">Kode Verifikasi (Buka Lagi)</div>
+                  <div className="font-mono text-2xl font-bold tracking-[0.35em] text-rose-300 select-none leading-none mt-0.5">
+                    {openPin}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 min-w-[140px]">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Input PIN</div>
+                <input
+                  ref={openPinInputRef}
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  autoFocus
+                  value={openPinInput}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/\D/g, '').slice(0, 4);
+                    setOpenPinInput(v);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); submitOpenPin(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); closeOpenPinPanel(); }
+                  }}
+                  placeholder="••••"
+                  maxLength={4}
+                  className="w-full h-9 px-3 rounded-md bg-black/30 border border-rose-500/30 focus:border-rose-400 focus:outline-none focus:ring-1 focus:ring-rose-400/50 font-mono text-lg text-center tracking-[0.35em] text-rose-100"
+                />
+              </div>
+
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  onClick={submitOpenPin}
+                  disabled={openPinInput.length !== 4}
+                  className="bg-rose-500 hover:bg-rose-600 text-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Konfirmasi
+                </Button>
+                <Button size="sm" variant="outline" onClick={closeOpenPinPanel}>
+                  Batal
+                </Button>
+              </div>
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-2">
+              Ketik ulang kode di atas untuk membuka kembali PDF <span className="font-mono text-rose-200/80">{item.filename}</span>. Enter = Konfirmasi · Esc = Batal.
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Inline detected tracking numbers (chips) — shown right after upload / after auto-scan */}

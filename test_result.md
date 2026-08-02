@@ -348,6 +348,99 @@ backend:
           
           User report "halamnya terus loading tidak terbuka" is RESOLVED.
 
+  - task: "OM PDF Resi — open tracking endpoint (POST /api/om/pdfs/[id]/open)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE — OM PDF Resi open tracking (backend):
+          - Added new endpoint POST /api/om/pdfs/[id]/open that increments open_count and
+            updates last_open_at/last_open_by_id/last_open_by_name. First call also sets
+            first_open_at/first_open_by_id/first_open_by_name.
+          - Added new fields to om_pdfs doc initializers (both POST /api/om/pdfs and
+            POST /api/om/pdfs/auto): first_open_at, first_open_by_id, first_open_by_name,
+            last_open_at, last_open_by_id, last_open_by_name, open_count (default 0/null).
+          - Response returns updated item (same shape as ketoko/mark-printed endpoints).
+          - Endpoint requires auth + module 'order_management' (owner bypasses via existing guards).
+          - Body is ignored. Returns 404 if PDF not found.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 10 TESTS PASSED (100%) - PDF open tracking endpoint fully working.
+          
+          **TEST SCOPE:** Backend testing for POST /api/om/pdfs/[id]/open endpoint
+          **TEST FILE:** /app/backend_test_pdf_open.py
+          **TEST METHOD:** Python requests library with real API calls
+          **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+          
+          **TEST RESULTS:**
+          
+          1. ✅ AUTHENTICATION (2/2 tests passed):
+             - Owner login (owner/owner123) → 200 with token ✓
+             - Cindy login (cindy/cindy123) → 200 with token, modules=['cycle_count'] only ✓
+          
+          2. ✅ PDF UPLOAD & FIELD INITIALIZATION (2/2 tests passed):
+             - POST /api/om/pdfs/auto as owner → 200 with item (filename: 020826-8.pdf) ✓
+             - GET /api/om/pdfs → uploaded PDF has all new fields initialized correctly:
+               * first_open_at: null ✓
+               * first_open_by_id: null ✓
+               * first_open_by_name: null ✓
+               * last_open_at: null ✓
+               * last_open_by_id: null ✓
+               * last_open_by_name: null ✓
+               * open_count: 0 ✓
+          
+          3. ✅ FIRST OPEN (7/7 checks passed):
+             - POST /api/om/pdfs/[id]/open as owner → 200 ✓
+             - open_count incremented to 1 ✓
+             - first_open_at set to valid ISO timestamp (within 10s of request time) ✓
+             - first_open_by_id set to owner's user ID ✓
+             - first_open_by_name set to "Owner" ✓
+             - last_open_at set to same timestamp as first_open_at ✓
+             - last_open_by_id and last_open_by_name set to owner's info ✓
+          
+          4. ✅ SECOND OPEN (4/4 checks passed):
+             - Waited 2 seconds, then POST /api/om/pdfs/[id]/open → 200 ✓
+             - open_count incremented to 2 ✓
+             - first_open_at UNCHANGED (same as first call) ✓
+             - last_open_at UPDATED to newer timestamp (2.14s later) ✓
+          
+          5. ✅ THIRD OPEN (1/1 check passed):
+             - POST /api/om/pdfs/[id]/open → 200 ✓
+             - open_count incremented to 3 ✓
+          
+          6. ✅ ERROR HANDLING (2/2 tests passed):
+             - POST /api/om/pdfs/nonexistent-id-12345/open → 404 with error "PDF tidak ditemukan" ✓
+             - POST /api/om/pdfs/[id]/open as Cindy (no OM module) → 403 with error "Anda tidak memiliki akses ke module Order Management" ✓
+          
+          7. ✅ REGRESSION CHECKS (4/4 tests passed):
+             - POST /api/om/pdfs/[id]/ketoko {input: true} → 200, ketoko_input_at set ✓
+             - POST /api/om/pdfs/[id]/mark-printed → 200, printed_at set ✓
+             - POST /api/om/pdfs (multipart) → 200, new PDF has all new fields (open_count=0, first_open_at=null, last_open_at=null) ✓
+             - GET /api/om/pdfs → 200, test PDFs have all new fields ✓
+          
+          8. ✅ CLEANUP (2/2 tests passed):
+             - Deleted 2 test PDFs via DELETE /api/om/pdfs/[id] → both 200 ✓
+          
+          **VERIFICATION DETAILS:**
+          - Endpoint correctly increments open_count on each call (1 → 2 → 3)
+          - First open sets both first_open_* and last_open_* fields to current user & timestamp
+          - Subsequent opens only update last_open_* fields, leaving first_open_* unchanged
+          - Timestamps are valid ISO 8601 format with timezone (e.g., 2026-08-02T07:50:55.043Z)
+          - Module-based access control working: staff without order_management module denied with 403
+          - Owner bypasses module check (can access endpoint)
+          - 404 error for nonexistent PDF with correct Indonesian error message
+          - All existing endpoints (ketoko, mark-printed, upload, list) unaffected by new fields
+          - New fields properly initialized in both POST /api/om/pdfs and POST /api/om/pdfs/auto
+          
+          **CONCLUSION:**
+          PDF open tracking endpoint is FULLY WORKING. All field initialization, increment logic, timestamp tracking, and access control are correctly implemented and tested.
 
 frontend:
   - task: "Login screen + demo quick-pick"
@@ -1376,7 +1469,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.1"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
@@ -1386,6 +1479,31 @@ test_plan:
   test_priority: "high_first"
 
 agent_communication:
+  - agent: "main"
+    message: |
+      NEW FEATURE — OM PDF Resi open tracking (backend):
+      - Added new endpoint POST /api/om/pdfs/[id]/open that increments open_count and
+        updates last_open_at/last_open_by_id/last_open_by_name. First call also sets
+        first_open_at/first_open_by_id/first_open_by_name.
+      - Added new fields to om_pdfs doc initializers (both POST /api/om/pdfs and
+        POST /api/om/pdfs/auto): first_open_at, first_open_by_id, first_open_by_name,
+        last_open_at, last_open_by_id, last_open_by_name, open_count (default 0/null).
+      - Response returns updated item (same shape as ketoko/mark-printed endpoints).
+      - Endpoint requires auth + module 'order_management' (owner bypasses via existing guards).
+      
+      TEST FOCUS:
+      1. Login owner/owner123
+      2. Upload a small PDF via POST /api/om/pdfs OR use existing one
+      3. GET /api/om/pdfs — verify new fields exist on all items (open_count=0, first_open_at=null, etc.)
+      4. POST /api/om/pdfs/[id]/open → 200, item.open_count=1, first_open_at set, last_open_at set,
+         first_open_by_name and last_open_by_name = "Owner"
+      5. POST /api/om/pdfs/[id]/open (2nd call) → 200, open_count=2, first_open_at UNCHANGED,
+         last_open_at UPDATED
+      6. Non-existent id → 404 with "PDF tidak ditemukan"
+      7. Staff without order_management module → 403
+      8. Regression: Verify /api/om/pdfs/[id]/ketoko and /api/om/pdfs/[id]/mark-printed still work
+      9. Regression: Upload flows (POST /api/om/pdfs, POST /api/om/pdfs/auto) still working and
+         return item with new fields
   - agent: "testing"
     message: |
       ✅ INFRASTRUCTURE FIX VERIFIED - User issue "halamnya terus loading tidak terbuka" RESOLVED
@@ -1865,3 +1983,42 @@ agent_communication:
       5. Confirm canvas shows non-black pixels (camera frames rendering)
       
       Code changes are correct. Runtime verification requires actual camera access.
+  - agent: "testing"
+    message: |
+      ✅ PDF OPEN TRACKING ENDPOINT TESTING COMPLETE - ALL 10 TESTS PASSED (100%)
+      
+      **FEATURE TESTED:** POST /api/om/pdfs/[id]/open endpoint for PDF open tracking
+      **TEST FILE:** /app/backend_test_pdf_open.py
+      **TEST METHOD:** Python requests library with comprehensive backend API testing
+      **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+      
+      **TEST SUMMARY:**
+      ✅ Owner login working
+      ✅ PDF upload via /api/om/pdfs/auto working
+      ✅ New fields (first_open_*, last_open_*, open_count) initialized correctly
+      ✅ First open: open_count=1, first_open_* and last_open_* set correctly
+      ✅ Second open: open_count=2, first_open_* unchanged, last_open_* updated
+      ✅ Third open: open_count=3
+      ✅ Nonexistent PDF returns 404 with correct error
+      ✅ Staff without OM module correctly denied with 403
+      ✅ REGRESSION: ketoko endpoint still works
+      ✅ REGRESSION: mark-printed endpoint still works
+      ✅ REGRESSION: regular upload still works with new fields
+      ✅ REGRESSION: list endpoint still works with new fields
+      ✅ Cleanup successful
+      
+      **KEY FINDINGS:**
+      1. Endpoint correctly increments open_count on each call (1 → 2 → 3)
+      2. First open sets both first_open_* and last_open_* fields to current user & timestamp
+      3. Subsequent opens only update last_open_* fields, leaving first_open_* unchanged
+      4. Timestamps are valid ISO 8601 format with timezone (e.g., 2026-08-02T07:50:55.043Z)
+      5. Module-based access control working: staff without order_management module denied with 403
+      6. Owner bypasses module check (can access endpoint)
+      7. 404 error for nonexistent PDF with correct Indonesian error message "PDF tidak ditemukan"
+      8. All existing endpoints (ketoko, mark-printed, upload, list) unaffected by new fields
+      9. New fields properly initialized in both POST /api/om/pdfs and POST /api/om/pdfs/auto
+      
+      **CONCLUSION:**
+      PDF open tracking endpoint is FULLY WORKING with zero issues. All field initialization, 
+      increment logic, timestamp tracking, and access control are correctly implemented.
+      Backend task marked as working=true, needs_retesting=false.
