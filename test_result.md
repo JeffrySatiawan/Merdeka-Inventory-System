@@ -230,6 +230,21 @@ backend:
         agent: "testing"
         comment: "✅ Staff task flow fully working. GET /api/tasks/mine returns only current user's tasks (Cindy got 1 task, all belong to her). POST /api/tasks/:id/complete for own task succeeds, task marked completed in DB, product.last_counted_at updated, sku_history record created with employee name and timestamp. Attempting to complete another employee's task correctly returns 403. POST /api/tasks/:id/uncomplete successfully reverts completion, task marked incomplete in DB."
 
+  - task: "Owner-only Employee Task view (GET /api/tasks/employees)"
+    implemented: true
+    working: true
+    file: "/app/app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/tasks/employees returns ALL daily_tasks for today grouped by employee. Owner-only endpoint. Returns date, time, is_closed, working hours, employees array (with employee info, tasks array, total/completed/backlog counts), and global totals. Includes staff employees with NO tasks assigned (idle) with empty tasks array and total=0."
+      - working: true
+        agent: "testing"
+        comment: "✅ ALL 6 TESTS PASSED (100%) - Owner-only Employee Task view fully working. Owner login → GET /api/tasks/employees returns 200 with complete structure: date (2026-08-02), time (WITA), is_closed (boolean), working hours (07:00-22:00), employees array with 6 staff (Cindy, Desak, Dian, Hayu, Naila, Shinta). Each employee has: id, name, username, role, weight, tasks array, total/completed/backlog counts. Idle employees correctly included: Dian and Shinta have total=0 with empty tasks array. Task structure validated: id, employee_id, sku_code, product_id, product_name, category, completed, date, is_backlog. Global totals correct: total_tasks=4 matches sum of employee totals. No auth → 401. Staff (Cindy) → 403 with correct error 'Hanya owner yang dapat mengakses Employee Task'. REGRESSION VERIFIED: GET /api/tasks/mine still works for both owner (0 tasks) and staff (1 task for Cindy). Minor: Time format uses dots (16.34.18) instead of colons due to Indonesian locale, not critical."
+
   - task: "SKU history lookup"
     implemented: true
     working: true
@@ -2022,3 +2037,82 @@ agent_communication:
       PDF open tracking endpoint is FULLY WORKING with zero issues. All field initialization, 
       increment logic, timestamp tracking, and access control are correctly implemented.
       Backend task marked as working=true, needs_retesting=false.
+
+  - agent: "testing"
+    message: |
+      ✅ EMPLOYEE TASK VIEW ENDPOINT TESTING COMPLETE - ALL 6 TESTS PASSED (100%)
+      
+      **FEATURE TESTED:** GET /api/tasks/employees - Owner-only Employee Task view
+      **TEST FILE:** /app/test_employee_tasks.py
+      **TEST METHOD:** Python requests library with comprehensive backend API testing
+      **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+      **CREDENTIALS:** owner/owner123 (owner), cindy/cindy123 (staff with cycle_count module)
+      
+      **TEST SUMMARY:**
+      ✅ TEST 1: Authentication - Owner and staff login successful
+      ✅ TEST 2: GET /api/tasks/employees as owner → 200 with complete data structure
+      ✅ TEST 3: GET /api/tasks/employees without auth → 401
+      ✅ TEST 4: GET /api/tasks/employees as staff → 403 with correct error message
+      ✅ TEST 5: REGRESSION - GET /api/tasks/mine as owner → 200 (still works)
+      ✅ TEST 6: REGRESSION - GET /api/tasks/mine as staff → 200 (still works)
+      
+      **DETAILED FINDINGS:**
+      
+      1. **Response Structure Validation:**
+         - All required fields present: date, time, is_closed, working, employees, total_tasks, total_completed, total_backlog
+         - Date format correct: YYYY-MM-DD (2026-08-02)
+         - Time format: HH.MM.SS (16.34.18) - uses dots instead of colons due to Indonesian locale (minor, not critical)
+         - is_closed: boolean (False)
+         - Working hours: {start: '07:00', end: '22:00'}
+      
+      2. **Employee Array Validation:**
+         - Total employees: 6 (all expected staff present)
+         - Employee names found: Cindy, Desak, Dian, Hayu, Naila, Shinta ✓
+         - Each employee has required fields: id, name, username, role, weight
+         - Each employee has: tasks (array), total (int), completed (int), backlog (int)
+      
+      3. **Idle Employee Detection:**
+         - Found 2 idle employees: Dian and Shinta
+         - Both have total=0, completed=0, backlog=0
+         - Both have empty tasks array (tasks=[])
+         - Correctly included in response (not filtered out)
+      
+      4. **Task Structure Validation:**
+         - Sample task from Cindy validated
+         - All required fields present: id, employee_id, sku_code, product_id, product_name, category, completed, date, is_backlog
+         - Task data correct: PRD00001 (Paracetamol 500mg), FAST category, not completed, not backlog
+      
+      5. **Global Totals Validation:**
+         - total_tasks: 4
+         - total_completed: 0
+         - total_backlog: 0
+         - Sum of employee totals: 4 (matches total_tasks) ✓
+      
+      6. **Access Control:**
+         - No auth → 401 ✓
+         - Staff (Cindy) → 403 with error "Hanya owner yang dapat mengakses Employee Task" ✓
+         - Owner → 200 with full data ✓
+      
+      7. **Regression Tests:**
+         - GET /api/tasks/mine as owner → 200 (0 tasks assigned to owner)
+         - GET /api/tasks/mine as staff → 200 (1 task assigned to Cindy)
+         - Both endpoints maintain expected structure (tasks, date, time)
+         - No breaking changes to existing functionality
+      
+      **MINOR ISSUE (NOT CRITICAL):**
+      - Time format uses dots instead of colons: "16.34.18" instead of "16:34:18"
+      - This is due to Indonesian locale formatting in getWitaTime() function
+      - Does not affect functionality, only display format
+      
+      **CONCLUSION:**
+      GET /api/tasks/employees endpoint is FULLY WORKING with zero critical issues.
+      - Owner-only access control working correctly
+      - Employee grouping with idle detection working
+      - Task structure complete and correct
+      - Global totals accurate
+      - Regression tests pass (no breaking changes)
+      
+      Backend task marked as working=true, needs_retesting=false.
+      
+      **RECOMMENDATION FOR MAIN AGENT:**
+      All backend endpoints tested and working. Ready to summarize and finish.

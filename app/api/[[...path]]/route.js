@@ -841,6 +841,87 @@ async function handleRequest(req, path, method) {
     });
   }
 
+  // GET /api/tasks/employees — OWNER ONLY.
+  // Returns ALL daily_tasks for today, grouped by employee.
+  // Used by the "Employee Task" view in the Cycle Count module — lets the
+  // owner see every SKU that is currently being checked by every staff.
+  if (path === 'tasks/employees' && method === 'GET') {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    if (user.role !== 'owner') return err('Hanya owner yang dapat mengakses Employee Task', 403);
+    const today = getWitaDate();
+    await generateDailyTasks(db, today);
+    const tasks = await db
+      .collection('daily_tasks')
+      .find({ date: today })
+      .sort({ is_backlog: -1, category: 1, sku_code: 1 })
+      .toArray();
+    const employees = await db
+      .collection('employees')
+      .find({ deleted: { $ne: true } })
+      .toArray();
+    const empMap = {};
+    employees.forEach((e) => {
+      empMap[e.id] = {
+        id: e.id,
+        name: e.name,
+        username: e.username,
+        role: e.role,
+        weight: e.weight || 0,
+      };
+    });
+    const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+
+    // Group by employee
+    const grouped = {};
+    tasks.forEach((t) => {
+      const eid = t.employee_id;
+      if (!grouped[eid]) {
+        grouped[eid] = {
+          employee: empMap[eid] || {
+            id: eid,
+            name: t.employee_name || 'Unknown',
+            username: '',
+            role: 'staff',
+            weight: 0,
+          },
+          tasks: [],
+          total: 0,
+          completed: 0,
+          backlog: 0,
+        };
+      }
+      const { _id: _mid, ...safeTask } = t;
+      grouped[eid].tasks.push(safeTask);
+      grouped[eid].total += 1;
+      if (t.completed) grouped[eid].completed += 1;
+      if (t.is_backlog) grouped[eid].backlog += 1;
+    });
+
+    // Also include employees who have NO tasks assigned today (empty list) so
+    // owner can see idle staff too.
+    Object.values(empMap).forEach((emp) => {
+      if (emp.role === 'staff' && !grouped[emp.id]) {
+        grouped[emp.id] = { employee: emp, tasks: [], total: 0, completed: 0, backlog: 0 };
+      }
+    });
+
+    const list = Object.values(grouped).sort((a, b) =>
+      (a.employee.name || '').localeCompare(b.employee.name || '')
+    );
+
+    return json({
+      date: today,
+      time: getWitaTime(),
+      is_closed: isSessionClosed(settings),
+      working: { start: settings.working_start, end: settings.working_end },
+      employees: list,
+      total_tasks: tasks.length,
+      total_completed: tasks.filter((t) => t.completed).length,
+      total_backlog: tasks.filter((t) => t.is_backlog).length,
+    });
+  }
+
   const taskActionMatch = path.match(/^tasks\/([^/]+)\/(complete|uncomplete)$/);
   if (taskActionMatch && method === 'POST') {
     const user = await getUserFromRequest(req);

@@ -214,7 +214,7 @@ function buildNav(user) {
           module: 'cycle_count',
           children: [
             { key: 'cc:dashboard', label: 'Realtime Monitor', adminOnly: true },
-            { key: 'cc:tasks', label: 'My Tasks' },
+            { key: 'cc:tasks', label: user?.role === 'owner' ? 'Employee Task' : 'My Tasks' },
             { key: 'cc:import', label: 'Product Import', ownerOnly: true },
             { key: 'cc:settings', label: 'Cycle Settings', ownerOnly: true },
             { key: 'cc:history', label: 'Riwayat SKU' },
@@ -467,11 +467,12 @@ function getActiveModule(view) {
 function bottomNavForModule(moduleKey, user) {
   if (moduleKey === 'cycle_count') {
     const isAdmin = isAdminRole(user);
+    const isOwner = user?.role === 'owner';
     // 4-5 items depending on role
     if (isAdmin) {
       return [
         { key: 'cc:dashboard', label: 'Monitor', icon: LayoutDashboard },
-        { key: 'cc:tasks', label: 'Tasks', icon: CheckCircle2 },
+        { key: 'cc:tasks', label: isOwner ? 'Employee' : 'Tasks', icon: CheckCircle2 },
         { key: 'cc:import', label: 'Import', icon: Upload },
         { key: 'cc:settings', label: 'Setting', icon: SettingsIcon },
         { key: 'cc:history', label: 'Riwayat', icon: History },
@@ -504,7 +505,7 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
 
   const labels = {
     'cc:dashboard': 'Realtime Monitor',
-    'cc:tasks': 'My Tasks',
+    'cc:tasks': user?.role === 'owner' ? 'Employee Task' : 'My Tasks',
     'cc:import': 'Product Import',
     'cc:settings': 'Cycle Settings',
     'cc:history': 'Riwayat SKU',
@@ -672,7 +673,7 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
   const labels = {
     dashboard: 'Dashboard',
     'cc:dashboard': 'Cycle Count · Monitor',
-    'cc:tasks': 'Cycle Count · My Tasks',
+    'cc:tasks': user?.role === 'owner' ? 'Cycle Count · Employee Task' : 'Cycle Count · My Tasks',
     'cc:import': 'Cycle Count · Import',
     'cc:settings': 'Cycle Count · Settings',
     'cc:history': 'Cycle Count · Riwayat',
@@ -2032,6 +2033,281 @@ function CycleCountLandingView({ user, onNav }) {
   );
 }
 
+// ============================================================
+// EMPLOYEE TASKS VIEW (owner-only monitoring)
+// Shows ALL SKUs being checked by every employee today.
+// Grouped by employee with progress bar, backlog highlight, and completion status.
+// Polls every 5 seconds for near real-time updates.
+// ============================================================
+function EmployeeTasksView({ user }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(new Set()); // employee IDs to show detailed list
+  const [filter, setFilter] = useState('all'); // 'all' | 'active' | 'idle'
+
+  async function load(silent = false) {
+    if (!silent) setLoading(true);
+    try {
+      const d = await api('tasks/employees');
+      setData(d);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    const t = setInterval(() => load(true), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  const toggleExpand = (empId) => {
+    setExpanded((prev) => {
+      const n = new Set(prev);
+      if (n.has(empId)) n.delete(empId);
+      else n.add(empId);
+      return n;
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-20 rounded-xl" />
+        <Skeleton className="h-40 rounded-2xl" />
+        <Skeleton className="h-40 rounded-2xl" />
+      </div>
+    );
+  }
+
+  const employees = data?.employees || [];
+  const totalTasks = data?.total_tasks || 0;
+  const totalCompleted = data?.total_completed || 0;
+  const totalBacklog = data?.total_backlog || 0;
+  const overallPct = totalTasks > 0 ? Math.round((totalCompleted / totalTasks) * 100) : 0;
+
+  const filtered = employees.filter((emp) => {
+    if (filter === 'active') return emp.total > 0;
+    if (filter === 'idle') return emp.total === 0;
+    return true;
+  });
+
+  return (
+    <div className="space-y-6 max-w-5xl mx-auto">
+      {/* Header + global counters */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-xs text-muted-foreground uppercase tracking-widest">Cycle Count · Owner</div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Users className="w-6 h-6 text-blue-400" /> Employee Task
+          </h1>
+          <div className="text-xs text-muted-foreground mt-0.5">
+            Semua SKU yang sedang dicek karyawan hari ini · {data?.date} · {data?.time} WITA
+            {data?.is_closed && <span className="ml-2 text-rose-400 font-semibold">SESI DITUTUP</span>}
+          </div>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <Badge variant="outline" className="border-blue-500/40 text-blue-300 text-xs py-1 px-3">
+            {employees.length} karyawan
+          </Badge>
+          <Badge variant="outline" className="border-emerald-500/40 text-emerald-300 text-xs py-1 px-3">
+            {totalCompleted}/{totalTasks} SKU selesai
+          </Badge>
+          {totalBacklog > 0 && (
+            <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-xs py-1 px-3">
+              {totalBacklog} backlog
+            </Badge>
+          )}
+          <Badge variant="outline" className="border-white/15 text-xs py-1 px-3">
+            {overallPct}% overall
+          </Badge>
+        </div>
+      </div>
+
+      {/* Filter chips */}
+      <div className="flex gap-2">
+        {[
+          { key: 'all', label: `Semua (${employees.length})` },
+          { key: 'active', label: `Aktif (${employees.filter((e) => e.total > 0).length})` },
+          { key: 'idle', label: `Idle (${employees.filter((e) => e.total === 0).length})` },
+        ].map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={`px-3 py-1 rounded-full text-xs transition-colors ${
+              filter === f.key
+                ? 'bg-blue-500 text-white'
+                : 'bg-white/[0.04] hover:bg-white/[0.08] text-muted-foreground'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Employee cards */}
+      {filtered.length === 0 ? (
+        <Card className="border-white/10 bg-white/[0.02]">
+          <CardContent className="pt-6 pb-6 text-center text-sm text-muted-foreground">
+            Tidak ada karyawan di kategori ini.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((emp) => {
+            const pct = emp.total > 0 ? Math.round((emp.completed / emp.total) * 100) : 0;
+            const isExp = expanded.has(emp.employee.id);
+            const remaining = emp.total - emp.completed;
+            const statusColor = emp.total === 0
+              ? 'text-muted-foreground'
+              : pct === 100
+              ? 'text-emerald-400'
+              : pct >= 50
+              ? 'text-blue-400'
+              : 'text-amber-400';
+            return (
+              <Card
+                key={emp.employee.id}
+                className={`border transition-colors ${
+                  emp.total === 0
+                    ? 'border-white/10 bg-white/[0.02]'
+                    : pct === 100
+                    ? 'border-emerald-500/30 bg-emerald-500/[0.03]'
+                    : 'border-white/10 bg-white/[0.02] hover:border-blue-500/30'
+                }`}
+              >
+                <CardContent className="pt-4 pb-3">
+                  <button
+                    className="w-full flex items-start justify-between gap-3 text-left"
+                    onClick={() => emp.total > 0 && toggleExpand(emp.employee.id)}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0 ${
+                        emp.total === 0
+                          ? 'bg-white/5 text-muted-foreground'
+                          : pct === 100
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : 'bg-blue-500/20 text-blue-300'
+                      }`}>
+                        {(emp.employee.name || '?').slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{emp.employee.name}</div>
+                        <div className="text-[11px] text-muted-foreground truncate">
+                          @{emp.employee.username || '-'}
+                          {emp.employee.weight > 0 && (
+                            <span className="ml-1.5">· bobot {emp.employee.weight}</span>
+                          )}
+                          {emp.backlog > 0 && (
+                            <span className="ml-1.5 text-amber-400 font-medium">· {emp.backlog} backlog</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className={`text-lg font-bold ${statusColor} tabular-nums`}>
+                        {emp.completed}
+                        <span className="text-sm text-muted-foreground">/{emp.total}</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-widest">
+                        {emp.total === 0 ? 'idle' : pct === 100 ? 'selesai' : `${remaining} sisa`}
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Progress bar */}
+                  {emp.total > 0 && (
+                    <div className="mt-3">
+                      <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          transition={{ duration: 0.5, ease: 'easeOut' }}
+                          className={`h-full ${
+                            pct === 100 ? 'bg-emerald-500' : pct >= 50 ? 'bg-blue-500' : 'bg-amber-500'
+                          }`}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Expanded SKU list */}
+                  <AnimatePresence>
+                    {isExp && emp.total > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="mt-3 border-t border-white/10 pt-3 overflow-hidden"
+                      >
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-96 overflow-y-auto pr-1">
+                          {emp.tasks.map((t) => (
+                            <div
+                              key={t.id}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs border ${
+                                t.completed
+                                  ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-100'
+                                  : t.is_backlog
+                                  ? 'bg-amber-500/5 border-amber-500/20 text-amber-100'
+                                  : 'bg-white/[0.02] border-white/10 text-white/90'
+                              }`}
+                            >
+                              <span className="shrink-0">
+                                {t.completed ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                ) : (
+                                  <div className="w-3.5 h-3.5 rounded-full border border-current opacity-40" />
+                                )}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="font-mono text-[10px] font-semibold truncate">{t.sku_code}</div>
+                                <div className="text-[10px] text-muted-foreground truncate">
+                                  {t.product_name}
+                                </div>
+                              </div>
+                              {t.category && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] py-0 h-4 border-white/10 shrink-0"
+                                >
+                                  {t.category}
+                                </Badge>
+                              )}
+                              {t.is_backlog && (
+                                <Badge className="text-[9px] py-0 h-4 bg-amber-500/20 text-amber-300 border-amber-500/40 shrink-0">
+                                  backlog
+                                </Badge>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* Hint */}
+                  {emp.total > 0 && (
+                    <div className="mt-2 text-[10px] text-muted-foreground text-center">
+                      {isExp ? 'Klik untuk sembunyikan detail' : `Klik untuk lihat ${emp.total} SKU`}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="text-[10px] text-muted-foreground text-center mt-4">
+        Data auto-refresh tiap 5 detik · {data?.date} · {data?.working?.start}–{data?.working?.end} WITA
+      </div>
+    </div>
+  );
+}
+
 // Extract staff tasks content so it can render inside AppShell for cc:tasks view
 function StaffTasksView({ user }) {
   const [data, setData] = useState(null);
@@ -2756,7 +3032,8 @@ function App() {
       >
         {activeView === 'dashboard' && <DashboardView />}
         {activeView === 'cc:dashboard' && <DashboardView />}
-        {activeView === 'cc:tasks' && <StaffTasksView user={user} />}
+        {activeView === 'cc:tasks' &&
+          (user?.role === 'owner' ? <EmployeeTasksView user={user} /> : <StaffTasksView user={user} />)}
         {activeView === 'cc:import' && <ImportView />}
         {activeView === 'cc:settings' && <SettingsView />}
         {activeView === 'cc:history' && <HistoryView />}
