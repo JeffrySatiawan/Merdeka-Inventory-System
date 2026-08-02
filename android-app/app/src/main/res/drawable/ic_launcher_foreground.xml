@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Stylized "M" letter for Merdeka Share -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,34 L44,34 L54,58 L64,34 L74,34 L74,74 L66,74 L66,50 L58,72 L50,72 L42,50 L42,74 L34,74 Z"/>
+</vector>

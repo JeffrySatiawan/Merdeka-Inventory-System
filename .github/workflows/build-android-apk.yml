@@ -1,0 +1,81 @@
+name: Build Merdeka Share APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android-app/**'
+      - '.github/workflows/build-android-apk.yml'
+  pull_request:
+    paths:
+      - 'android-app/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Generate Gradle Wrapper
+        working-directory: android-app
+        run: gradle wrapper --gradle-version 8.7 --distribution-type bin
+
+      - name: Grant execute permission for gradlew
+        working-directory: android-app
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        working-directory: android-app
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Build Release APK
+        working-directory: android-app
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APKs
+        working-directory: android-app
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/merdeka-share-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk artifacts/merdeka-share-release.apk
+          ls -la artifacts/
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: merdeka-share-debug-apk
+          path: android-app/artifacts/merdeka-share-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: merdeka-share-release-apk
+          path: android-app/artifacts/merdeka-share-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            android-app/artifacts/merdeka-share-debug.apk
+            android-app/artifacts/merdeka-share-release.apk
+          draft: false
+          prerelease: false
