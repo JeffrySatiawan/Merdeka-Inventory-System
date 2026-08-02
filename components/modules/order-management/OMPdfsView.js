@@ -19,8 +19,7 @@ import {
   Copy,
   X,
   ArrowLeft,
-  Share2,
-  Smartphone,
+  ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -54,6 +53,34 @@ function fmtDate(iso) {
   } catch {
     return iso;
   }
+}
+
+// ---------- KETOKO PIN Verification helper ----------
+// Set of "easy" PINs to avoid so a random one doesn't feel guessable.
+const EASY_PINS = new Set([
+  '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
+  '1234', '2345', '3456', '4567', '5678', '6789', '7890',
+  '4321', '5432', '6543', '7654', '8765', '9876', '0987',
+  '1212', '2121', '1010', '0101',
+]);
+
+// Generate a random 4-digit PIN, skipping "easy" ones.
+function generatePin() {
+  // Use crypto RNG when available for better randomness.
+  const rand = () => {
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const arr = new Uint32Array(1);
+      crypto.getRandomValues(arr);
+      return arr[0] % 10000;
+    }
+    return Math.floor(Math.random() * 10000);
+  };
+  // Loop until we get a non-easy PIN (bounded to avoid infinite loop just in case).
+  for (let i = 0; i < 50; i += 1) {
+    const pin = String(rand()).padStart(4, '0');
+    if (!EASY_PINS.has(pin)) return pin;
+  }
+  return '3617'; // deterministic fallback (extremely unlikely to reach here)
 }
 
 // ---------- API helper: upload multipart ----------
@@ -412,38 +439,6 @@ export default function OMPdfsView({ user }) {
         </div>
       </div>
 
-      {/* Merdeka Share PWA promo (owner only) */}
-      {isOwner && (
-        <Card className="border-emerald-500/20 bg-gradient-to-r from-emerald-500/10 via-blue-500/5 to-transparent">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-emerald-500 to-blue-500 flex items-center justify-center shrink-0">
-                <Share2 className="w-5 h-5 text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold flex items-center gap-2 flex-wrap">
-                  Merdeka Share
-                  <Badge variant="outline" className="text-[9px] py-0 h-4 border-emerald-500/40 text-emerald-400">
-                    PWA
-                  </Badge>
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-0.5">
-                  Install di HP Android → bisa share PDF resi langsung dari WhatsApp/Shopee ke OMS
-                </div>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
-                onClick={() => window.open('/share', '_blank', 'noopener')}
-              >
-                <Smartphone className="w-3.5 h-3.5" /> Buka
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card className="border-white/10 bg-white/[0.02]">
@@ -534,6 +529,53 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
   const printed = !!item.printed_at;
   const ketokoChecked = !!item.ketoko_input_at;
 
+  // ------ Dynamic PIN verification (inline, no modal) ------
+  // pin === null → panel closed; string → panel open with that PIN.
+  const [pin, setPin] = useState(null);
+  const [pinInput, setPinInput] = useState('');
+  const [pendingChecked, setPendingChecked] = useState(null);
+  const [shake, setShake] = useState(false);
+  const pinInputRef = useRef(null);
+
+  const focusPinInput = () => {
+    // Delay so element is mounted after state change.
+    setTimeout(() => {
+      pinInputRef.current?.focus();
+      pinInputRef.current?.select?.();
+    }, 30);
+  };
+
+  const openPinPanel = (nextChecked) => {
+    setPin(generatePin());
+    setPinInput('');
+    setPendingChecked(nextChecked);
+    focusPinInput();
+  };
+
+  const closePinPanel = () => {
+    setPin(null);
+    setPinInput('');
+    setPendingChecked(null);
+    setShake(false);
+  };
+
+  const submitPin = () => {
+    if (!pin) return;
+    if (pinInput === pin) {
+      // Correct — run the underlying toggle then close panel.
+      const next = pendingChecked;
+      closePinPanel();
+      onToggleKetoko(next);
+    } else {
+      // Wrong — regenerate PIN, clear input, keep panel open, refocus.
+      setPin(generatePin());
+      setPinInput('');
+      setShake(true);
+      setTimeout(() => setShake(false), 400);
+      focusPinInput();
+    }
+  };
+
   const copyAll = async () => {
     if (!detected.length) return;
     try {
@@ -583,19 +625,26 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
           </div>
         </div>
 
-        {/* KETOKO POS input checkbox */}
+        {/* KETOKO POS input checkbox — with inline PIN verification */}
         <label
           className={`flex items-center gap-2 px-3 py-2 rounded-md border cursor-pointer transition-colors shrink-0 select-none ${
-            ketokoChecked
-              ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-              : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground'
+            pin !== null
+              ? 'border-amber-400/60 bg-amber-500/15 text-amber-200'
+              : ketokoChecked
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground'
           }`}
           title={ketokoChecked ? `Diinput oleh ${item.ketoko_input_by_name} · ${fmtDate(item.ketoko_input_at)}` : 'Klik jika sudah input ke POS KETOKO'}
         >
           <input
             type="checkbox"
             checked={ketokoChecked}
-            onChange={(e) => onToggleKetoko(e.target.checked)}
+            disabled={pin !== null}
+            onChange={(e) => {
+              // Do NOT run POS KETOKO immediately — open PIN panel first.
+              if (pin !== null) return; // already verifying
+              openPinPanel(e.target.checked);
+            }}
             className="w-4 h-4 accent-amber-500 cursor-pointer"
           />
           <Store className="w-3.5 h-3.5" />
@@ -610,6 +659,68 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
             )}
           </div>
         </label>
+
+        {/* Inline PIN verification panel — appears right below the KETOKO button (basis-full = wraps to new line inside the same flex row) */}
+        {pin !== null && (
+          <div
+            className={`basis-full w-full mt-1 p-3 rounded-md border border-amber-500/40 bg-gradient-to-br from-amber-500/10 to-amber-500/5 ${
+              shake ? 'animate-[shake_0.35s_ease-in-out]' : ''
+            }`}
+            style={shake ? { animation: 'ketoko-shake 0.35s ease-in-out' } : undefined}
+          >
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-amber-300 shrink-0" />
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-amber-200/70">Kode Verifikasi</div>
+                  <div className="font-mono text-2xl font-bold tracking-[0.35em] text-amber-300 select-none leading-none mt-0.5">
+                    {pin}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 min-w-[140px]">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Input PIN</div>
+                <input
+                  ref={pinInputRef}
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  autoFocus
+                  value={pinInput}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/\D/g, '').slice(0, 4);
+                    setPinInput(v);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); submitPin(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); closePinPanel(); }
+                  }}
+                  placeholder="••••"
+                  maxLength={4}
+                  className="w-full h-9 px-3 rounded-md bg-black/30 border border-amber-500/30 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400/50 font-mono text-lg text-center tracking-[0.35em] text-amber-100"
+                />
+              </div>
+
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  onClick={submitPin}
+                  disabled={pinInput.length !== 4}
+                  className="bg-amber-500 hover:bg-amber-600 text-black font-semibold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Konfirmasi
+                </Button>
+                <Button size="sm" variant="outline" onClick={closePinPanel}>
+                  Batal
+                </Button>
+              </div>
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-2">
+              Ketik ulang kode di atas untuk mengonfirmasi tindakan POS KETOKO. Enter = Konfirmasi · Esc = Batal.
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-1 shrink-0">
           <Button size="sm" variant="outline" onClick={onOpen} className="gap-1">
