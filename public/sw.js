@@ -1,6 +1,6 @@
 // Merdeka Inventory System - Service Worker (with Merdeka Share support)
 // Cache only manifest + icons. NEVER cache app code (JS/CSS) so updates are always fresh.
-const CACHE_VERSION = 'mis-v8-unified-share-2026-07-25';
+const CACHE_VERSION = 'mis-v9-share-immediate-upload-2026-08-02';
 const DB_NAME = 'merdeka-share-db';
 const DB_STORE_QUEUE = 'queue';   // pending shared PDFs waiting to be uploaded
 const DB_STORE_AUTH = 'auth';     // token + base info (from main app handoff)
@@ -82,8 +82,12 @@ function uid() {
 
 // ---------------- Share target handler ----------------
 // When Android shares a PDF to us, the browser POSTs multipart/form-data to /share.
-// We intercept here, stash file(s) in IndexedDB, then redirect to /share (GET) so the
-// client page can process the queue.
+// We intercept here, stash file(s) in IndexedDB, IMMEDIATELY try to upload them
+// (best-effort — auth token might already be stored in IDB from an earlier
+// /share visit), THEN redirect to /share (GET) so the client page can show the
+// result. Immediate upload is critical because Chrome's Background Sync API
+// doesn't fire reliably (esp. from PWA share intents on Android). Without it,
+// PDFs would sit in the IDB queue forever unless the user manually opened /share.
 async function handleShareTarget(event) {
   try {
     const formData = await event.request.formData();
@@ -110,7 +114,18 @@ async function handleShareTarget(event) {
       };
       await idbPut(DB_STORE_QUEUE, item);
     }
-    // Try to trigger background sync (best-effort)
+    // Best-effort immediate upload — if the token is available (previously stored
+    // via merdeka-share:set-auth), the PDFs upload right now, so they appear in
+    // /api/om/pdfs immediately (visible in the main app's PDF Resi list within
+    // its next 5s poll). If token is missing or network fails, items stay in the
+    // queue with status='pending' or 'failed' and will be retried when /share
+    // opens or when background sync eventually fires.
+    try {
+      await processQueue();
+    } catch (e) {
+      console.error('[MS SW] immediate upload failed', e);
+    }
+    // Also register background sync as a fallback for future retries.
     try {
       if ('sync' in self.registration) {
         await self.registration.sync.register('merdeka-share-upload');

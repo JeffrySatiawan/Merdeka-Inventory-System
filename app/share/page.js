@@ -82,15 +82,48 @@ function formatBytes(n) {
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
   return (n / (1024 * 1024)).toFixed(2) + ' MB';
 }
-function witaTodayDate() {
-  // Return YYYY-MM-DD in WITA (UTC+8)
+
+// Return the timestamp (ms since epoch) of the most-recent 10:00 WITA moment.
+// The Merdeka Share log/history "shift" runs from 10:00 WITA one day to
+// 09:59 WITA the next day. Anything before that moment is considered stale
+// and hidden from the UI (and IDB queue items older than it are auto-purged).
+const SHIFT_RESET_HOUR_WITA = 10;
+function getLastResetMomentMs() {
+  // Compute current WITA (UTC+8) date components from the browser clock.
   const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  const wita = new Date(utc + 8 * 3600000);
+  const utcMs = now.getTime();
+  const witaMs = utcMs + 8 * 3600000; // shift into WITA "wall time" epoch
+  const wita = new Date(witaMs);
   const yyyy = wita.getUTCFullYear();
-  const mm = String(wita.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(wita.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  const mm = wita.getUTCMonth();
+  const dd = wita.getUTCDate();
+  const hh = wita.getUTCHours();
+  // Today's 10:00 WITA as an absolute UTC ms timestamp:
+  //   WITA 10:00 = UTC 02:00 same date.
+  //   Date.UTC(y, m, d, 10) gives us the same wall-clock moment shifted to UTC,
+  //   then subtract 8h to convert back to real UTC.
+  let resetUtcMs = Date.UTC(yyyy, mm, dd, SHIFT_RESET_HOUR_WITA, 0, 0) - 8 * 3600000;
+  // If we haven't reached 10:00 WITA yet today, the last reset was YESTERDAY.
+  if (hh < SHIFT_RESET_HOUR_WITA) {
+    resetUtcMs -= 86400000;
+  }
+  return resetUtcMs;
+}
+function getNextResetMomentMs() {
+  return getLastResetMomentMs() + 86400000;
+}
+function fmtWitaMoment(ms) {
+  try {
+    return new Date(ms).toLocaleString('id-ID', {
+      timeZone: 'Asia/Makassar',
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
 }
 
 // Register SW and push token to SW so background sync can upload
@@ -169,9 +202,25 @@ export default function ShareApp() {
       setUser(null);
     }
     try {
-      const items = await idbGetAll(STORE_QUEUE);
-      items.sort((a, b) => (b.received_at || 0) - (a.received_at || 0));
-      setQueue(items);
+      // Auto-purge queue items whose received/completed timestamp is BEFORE
+      // the current shift boundary (10:00 WITA). This keeps the display clean
+      // for each new shift. Only completed/failed items are considered stale
+      // — pending/uploading are kept regardless of age so nothing is lost.
+      const lastReset = getLastResetMomentMs();
+      const allItems = await idbGetAll(STORE_QUEUE);
+      const toKeep = [];
+      for (const it of allItems) {
+        const isFinal = it.status === 'success' || it.status === 'failed';
+        const ts = it.completed_at || it.received_at || 0;
+        if (isFinal && ts < lastReset) {
+          // Stale — drop it (out-of-shift)
+          try { await idbDelete(STORE_QUEUE, it.id); } catch { /* ignore */ }
+          continue;
+        }
+        toKeep.push(it);
+      }
+      toKeep.sort((a, b) => (b.received_at || 0) - (a.received_at || 0));
+      setQueue(toKeep);
     } catch {
       setQueue([]);
     }
@@ -183,8 +232,14 @@ export default function ShareApp() {
       const res = await fetch('/api/om/pdfs', { headers: { Authorization: 'Bearer ' + t } });
       if (res.ok) {
         const d = await res.json();
-        const today = witaTodayDate();
-        const items = (d.items || []).filter((x) => x.uploaded_wita_date === today);
+        // Shift filter — only show items uploaded SINCE last 10:00 WITA moment.
+        // Anything older is considered stale and hidden so the page is clean
+        // for the new day's shift.
+        const lastReset = getLastResetMomentMs();
+        const items = (d.items || []).filter((x) => {
+          const t = x.uploaded_at ? new Date(x.uploaded_at).getTime() : 0;
+          return t >= lastReset;
+        });
         items.sort((a, b) => new Date(b.uploaded_at) - new Date(a.uploaded_at));
         setTodayList(items);
       }
@@ -208,6 +263,19 @@ export default function ShareApp() {
     setOnline(navigator.onLine);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+
+    // Shift boundary watcher — when the clock crosses 10:00 WITA while the
+    // page is left open, auto-reload everything so stale items from the
+    // previous shift disappear immediately (no manual refresh needed).
+    let boundaryTimer = setTimeout(function scheduleBoundary() {
+      const delay = Math.max(1000, getNextResetMomentMs() - Date.now() + 500);
+      boundaryTimer = setTimeout(async () => {
+        await loadEverything();
+        const currentToken = localStorage.getItem('cc_token');
+        if (currentToken) await loadToday(currentToken);
+        scheduleBoundary(); // arm for next day
+      }, delay);
+    }, Math.max(1000, getNextResetMomentMs() - Date.now() + 500));
     // Capture beforeinstallprompt so we can show a manual "Install" button
     const onBeforeInstall = (e) => {
       e.preventDefault();
@@ -230,8 +298,9 @@ export default function ShareApp() {
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
       window.removeEventListener('appinstalled', onAppInstalled);
+      if (boundaryTimer) clearTimeout(boundaryTimer);
     };
-  }, [loadEverything]);
+  }, [loadEverything, loadToday]);
 
   async function triggerInstall() {
     if (!installPrompt) return;
@@ -621,18 +690,25 @@ export default function ShareApp() {
 
         {/* Today uploads */}
         <div className="space-y-2">
-          <div className="flex items-center justify-between px-1">
+          <div className="flex items-center justify-between px-1 flex-wrap gap-1">
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Upload Hari Ini ({todayList.length})
+              Upload Shift Ini ({todayList.length})
+            </div>
+            <div className="text-[10px] text-muted-foreground/70 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Reset: {fmtWitaMoment(getNextResetMomentMs())} WITA
             </div>
           </div>
           {todayList.length === 0 && queue.length === 0 ? (
             <Card className="border-white/10 bg-white/[0.02]">
               <CardContent className="pt-8 pb-8 text-center">
                 <FileText className="w-10 h-10 mx-auto text-muted-foreground/40 mb-2" />
-                <div className="text-sm text-muted-foreground">Belum ada upload hari ini</div>
+                <div className="text-sm text-muted-foreground">Belum ada upload shift ini</div>
                 <div className="text-[11px] text-muted-foreground/70 mt-1">
                   Share PDF dari aplikasi lain untuk mulai
+                </div>
+                <div className="text-[10px] text-muted-foreground/60 mt-2">
+                  Riwayat direset otomatis tiap hari jam 10:00 WITA
                 </div>
               </CardContent>
             </Card>
