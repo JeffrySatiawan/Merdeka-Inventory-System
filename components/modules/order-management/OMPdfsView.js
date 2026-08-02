@@ -20,6 +20,11 @@ import {
   X,
   ArrowLeft,
   ShieldCheck,
+  Bell,
+  BellOff,
+  Volume2,
+  VolumeX,
+  MonitorSmartphone,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -32,6 +37,11 @@ import {
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { omApi } from './api';
+import {
+  loadNotifSettings,
+  saveNotifSettings,
+  requestBrowserPermission,
+} from './useOMPdfNotifications';
 
 function fmtBytes(n) {
   if (!n && n !== 0) return '-';
@@ -249,11 +259,61 @@ export default function OMPdfsView({ user }) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [previewItem, setPreviewItem] = useState(null);
   const [scanningIds, setScanningIds] = useState(() => new Set());
+  const [newlyAddedIds, setNewlyAddedIds] = useState(() => new Set()); // green-highlight for 3s
+  const [notifSettings, setNotifSettings] = useState(() => loadNotifSettings());
+  const [notifOpen, setNotifOpen] = useState(false);
   const fileInputRef = useRef(null);
   const scanQueueRef = useRef(new Set()); // ids currently in-flight to avoid double-scan
 
   // Preload pdf.js library at list mount so that opening preview is fast
   useEffect(() => { loadPdfJs().catch(() => {}); }, []);
+
+  // Listen for global 'om:new-pdf' events (fired by useOMPdfNotifications).
+  // Prepends the new item to the list AND highlights the card for 3 seconds.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onNew = (e) => {
+      const item = e?.detail;
+      if (!item?.id) return;
+      setItems((prev) => {
+        // If item already exists (e.g. we just uploaded it locally), just refresh it.
+        const idx = prev.findIndex((x) => x.id === item.id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], ...item };
+          return next;
+        }
+        return [item, ...prev];
+      });
+      setNewlyAddedIds((prev) => new Set(prev).add(item.id));
+      // Remove highlight after 3s
+      setTimeout(() => {
+        setNewlyAddedIds((prev) => {
+          if (!prev.has(item.id)) return prev;
+          const next = new Set(prev);
+          next.delete(item.id);
+          return next;
+        });
+      }, 3000);
+    };
+    window.addEventListener('om:new-pdf', onNew);
+    return () => window.removeEventListener('om:new-pdf', onNew);
+  }, []);
+
+  // Setting toggle helpers
+  const toggleNotifSetting = async (key) => {
+    if (key === 'browser' && !notifSettings.browser) {
+      // Turning ON — request permission
+      const p = await requestBrowserPermission();
+      if (p !== 'granted') {
+        toast.error(p === 'denied' ? 'Izin browser notif ditolak. Aktifkan lewat pengaturan browser.' : 'Izin browser notif tidak diberikan.');
+        return;
+      }
+    }
+    const next = { ...notifSettings, [key]: !notifSettings[key] };
+    setNotifSettings(next);
+    saveNotifSettings(next);
+  };
 
   const setItemScanning = useCallback((id, on) => {
     setScanningIds((prev) => {
@@ -438,7 +498,86 @@ export default function OMPdfsView({ user }) {
             Kirim PDF label resi dari HP · auto-scan QR · buka & print di sini
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 relative">
+          {/* Notification settings toggle */}
+          <div className="relative">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setNotifOpen((v) => !v)}
+              className="gap-2 relative"
+              title="Pengaturan Notifikasi PDF Baru"
+            >
+              {notifSettings.popup || notifSettings.sound || notifSettings.browser ? (
+                <Bell className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <BellOff className="w-4 h-4 text-muted-foreground" />
+              )}
+              <span className="hidden sm:inline">Notifikasi</span>
+            </Button>
+            {notifOpen && (
+              <>
+                {/* Backdrop for outside-click */}
+                <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                <div className="absolute right-0 top-full mt-2 z-50 w-72 rounded-xl border border-white/10 bg-neutral-950/95 backdrop-blur shadow-xl shadow-black/40 p-3 space-y-1">
+                  <div className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold px-1 pb-1">
+                    Notifikasi PDF Baru
+                  </div>
+                  {/* Popup toggle */}
+                  <button
+                    onClick={() => toggleNotifSetting('popup')}
+                    className="w-full flex items-center gap-3 px-2 py-2 rounded-md hover:bg-white/[0.04] transition-colors text-left"
+                  >
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${notifSettings.popup ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-muted-foreground'}`}>
+                      📄
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm font-medium">Popup In-App</div>
+                      <div className="text-[10px] text-muted-foreground">Popup di pojok kanan bawah</div>
+                    </div>
+                    <div className={`w-9 h-5 rounded-full relative transition-colors ${notifSettings.popup ? 'bg-emerald-500' : 'bg-white/10'}`}>
+                      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${notifSettings.popup ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  {/* Sound toggle */}
+                  <button
+                    onClick={() => toggleNotifSetting('sound')}
+                    className="w-full flex items-center gap-3 px-2 py-2 rounded-md hover:bg-white/[0.04] transition-colors text-left"
+                  >
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${notifSettings.sound ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-muted-foreground'}`}>
+                      {notifSettings.sound ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm font-medium">Suara Ding-Dong</div>
+                      <div className="text-[10px] text-muted-foreground">Bunyi ±0.5 detik saat PDF masuk</div>
+                    </div>
+                    <div className={`w-9 h-5 rounded-full relative transition-colors ${notifSettings.sound ? 'bg-emerald-500' : 'bg-white/10'}`}>
+                      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${notifSettings.sound ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  {/* Browser toggle */}
+                  <button
+                    onClick={() => toggleNotifSetting('browser')}
+                    className="w-full flex items-center gap-3 px-2 py-2 rounded-md hover:bg-white/[0.04] transition-colors text-left"
+                  >
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${notifSettings.browser ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/5 text-muted-foreground'}`}>
+                      <MonitorSmartphone className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm font-medium">Browser Notification</div>
+                      <div className="text-[10px] text-muted-foreground">Muncul saat tab lain / minimized</div>
+                    </div>
+                    <div className={`w-9 h-5 rounded-full relative transition-colors ${notifSettings.browser ? 'bg-emerald-500' : 'bg-white/10'}`}>
+                      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${notifSettings.browser ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  <div className="text-[10px] text-muted-foreground text-center pt-1 border-t border-white/5 mt-1">
+                    Polling tiap 5 detik · setelan tersimpan per browser
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <Button size="sm" variant="outline" onClick={load} disabled={loading} className="gap-2">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </Button>
@@ -533,6 +672,7 @@ export default function OMPdfsView({ user }) {
                   item={it}
                   isOwner={isOwner}
                   isScanning={scanningIds.has(it.id)}
+                  isNew={newlyAddedIds.has(it.id)}
                   onOpen={() => openPdf(it)}
                   onDelete={() => del(it.id, it.filename)}
                   onToggleKetoko={(next) => toggleKetoko(it, next)}
@@ -558,7 +698,7 @@ export default function OMPdfsView({ user }) {
 }
 
 // ---------- Row (with inline detected tracking numbers on the right) ----------
-function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, onRescan }) {
+function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onToggleKetoko, onRescan }) {
   const detected = item.detected_tracking_numbers || [];
   const hasScan = !!item.scanned_at;
   const printed = !!item.printed_at;
@@ -675,7 +815,13 @@ function PdfRow({ item, isOwner, isScanning, onOpen, onDelete, onToggleKetoko, o
   };
 
   return (
-    <div className="rounded-lg border border-white/5 hover:bg-white/[0.02] transition-colors">
+    <div
+      className={`rounded-lg border transition-all duration-300 ${
+        isNew
+          ? 'border-emerald-400 bg-emerald-500/10 shadow-lg shadow-emerald-500/20 ring-2 ring-emerald-500/30'
+          : 'border-white/5 hover:bg-white/[0.02]'
+      }`}
+    >
       {/* Top row: file info + KETOKO + actions */}
       <div className="flex flex-wrap items-center gap-3 p-3">
         <div className={`w-10 h-10 rounded-md flex items-center justify-center shrink-0 ${printed ? 'bg-blue-500/10' : 'bg-white/[0.03]'}`}>
