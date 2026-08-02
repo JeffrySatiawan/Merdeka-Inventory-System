@@ -93,6 +93,13 @@ function ScannerCounter({ label, value, tone = 'default' }) {
   );
 }
 
+// ===================================================================
+// SCANNER UI COMPONENTS — split into two areas per WMS best practice:
+//   AREA 1: ScannerAlert   — single latest attention item (dup/warn/err)
+//   AREA 2: LiveScanQueue  — success-only history, max 10
+// ===================================================================
+
+// Compact success card — no messages, just tracking + time + expedition.
 function LiveScanQueue({ items }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
@@ -104,44 +111,153 @@ function LiveScanQueue({ items }) {
         <div className="ml-auto text-[10px] text-muted-foreground tabular-nums">{items.length}/10</div>
       </div>
       {items.length === 0 ? (
-        <div className="p-6 text-center text-xs text-muted-foreground">
-          Belum ada scan. Arahkan scanner ke barcode.
+        <div className="p-4 text-center text-xs text-muted-foreground">
+          Belum ada scan berhasil. Arahkan scanner ke barcode.
         </div>
       ) : (
-        <ul className="divide-y divide-white/5 max-h-[42vh] overflow-y-auto">
+        <ul className="divide-y divide-emerald-500/10 max-h-[42vh] overflow-y-auto">
           <AnimatePresence initial={false}>
-            {items.map((it) => {
-              const tone =
-                it.type === 'ok'
-                  ? 'bg-emerald-500/5 border-l-emerald-500'
-                  : it.type === 'warn'
-                  ? 'bg-amber-500/5 border-l-amber-500'
-                  : it.type === 'err'
-                  ? 'bg-rose-500/5 border-l-rose-500'
-                  : 'bg-white/[0.02] border-l-blue-500';
-              const dot =
-                it.type === 'ok' ? '🟢' : it.type === 'warn' ? '🟡' : it.type === 'err' ? '🔴' : '🔵';
-              return (
-                <motion.li
-                  key={it.id}
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className={`px-3 py-2 border-l-2 ${tone}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm">{dot}</span>
-                    <span className="font-mono text-xs font-semibold truncate">{it.tracking || '-'}</span>
-                    <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">{it.time}</span>
-                  </div>
-                  <div className="text-[11px] text-muted-foreground ml-6 truncate">{it.message}</div>
-                </motion.li>
-              );
-            })}
+            {items.map((it) => (
+              <motion.li
+                key={it.id}
+                initial={{ opacity: 0, x: -10, backgroundColor: 'rgba(16,185,129,0.25)' }}
+                animate={{ opacity: 1, x: 0, backgroundColor: 'rgba(16,185,129,0.06)' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.25 }}
+                className="px-3 py-1.5 border-l-4 border-l-emerald-500"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-emerald-400 font-bold text-sm leading-none shrink-0">✓</span>
+                  <span className="font-mono text-xs font-semibold text-emerald-200 truncate flex-1">
+                    {it.tracking || '-'}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{it.time}</span>
+                </div>
+                {it.expedition && (
+                  <div className="text-[10px] text-emerald-300/70 ml-5 truncate">{it.expedition}</div>
+                )}
+              </motion.li>
+            ))}
           </AnimatePresence>
         </ul>
       )}
+    </div>
+  );
+}
+
+// Big, colour-coded alert card for latest non-success event.
+// Auto-clears when a successful scan is made.
+function ScannerAlert({ alert }) {
+  const empty = !alert;
+  // Colour map by type
+  const style = alert
+    ? alert.type === 'dup'
+      ? {
+          bg: 'bg-gradient-to-br from-rose-600/25 to-rose-500/15',
+          border: 'border-rose-500/60',
+          icon: '⚠',
+          iconClass: 'text-rose-300 bg-rose-500/25',
+          title: 'DUPLIKAT',
+          titleClass: 'text-rose-200',
+          accent: 'text-rose-300',
+        }
+      : alert.type === 'warn'
+      ? {
+          bg: 'bg-gradient-to-br from-orange-600/25 to-orange-500/15',
+          border: 'border-orange-500/60',
+          icon: '!',
+          iconClass: 'text-orange-200 bg-orange-500/30',
+          title: alert.title || 'WORKFLOW SALAH',
+          titleClass: 'text-orange-200',
+          accent: 'text-orange-300',
+        }
+      : {
+          // 'err' / not found → dark grey
+          bg: 'bg-gradient-to-br from-neutral-700/40 to-neutral-800/20',
+          border: 'border-neutral-500/50',
+          icon: '×',
+          iconClass: 'text-neutral-200 bg-neutral-600/40',
+          title: alert.title || 'RESI TIDAK DITEMUKAN',
+          titleClass: 'text-neutral-100',
+          accent: 'text-neutral-300',
+        }
+    : null;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+      <div className="px-3 py-2 border-b border-white/5 flex items-center gap-2">
+        <div className={`w-1.5 h-1.5 rounded-full ${empty ? 'bg-white/20' : 'bg-rose-400 animate-pulse'}`} />
+        <div className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">
+          Scanner Alert
+        </div>
+        {!empty && (
+          <div className="ml-auto text-[10px] text-muted-foreground tabular-nums">
+            {alert.attempts > 1 ? `${alert.attempts}× dicoba` : 'baru'}
+          </div>
+        )}
+      </div>
+      <div className="p-3 min-h-[92px] flex items-center">
+        {empty ? (
+          <div className="w-full text-center text-xs text-muted-foreground py-2 opacity-60">
+            Tidak ada peringatan. Semua scan berjalan lancar.
+          </div>
+        ) : (
+          <motion.div
+            key={`${alert.id}-${alert.blink || 0}`}
+            initial={{ scale: 0.96, opacity: 0 }}
+            animate={{
+              scale: 1,
+              opacity: 1,
+              // Blink 2× on duplicate (alert.blink changes → key changes → animation re-triggers)
+              ...(alert.type === 'dup'
+                ? { boxShadow: ['0 0 0 0 rgba(244,63,94,0)', '0 0 0 8px rgba(244,63,94,0.35)', '0 0 0 0 rgba(244,63,94,0)', '0 0 0 8px rgba(244,63,94,0.35)', '0 0 0 0 rgba(244,63,94,0)'] }
+                : {}),
+            }}
+            transition={{ duration: alert.type === 'dup' ? 0.9 : 0.25 }}
+            className={`w-full flex items-start gap-3 p-3 rounded-lg border-2 ${style.border} ${style.bg} ${
+              alert.type === 'dup' ? 'shadow-lg shadow-rose-500/20' : ''
+            }`}
+          >
+            <div className={`w-10 h-10 rounded-lg ${style.iconClass} flex items-center justify-center text-2xl font-black shrink-0 leading-none`}>
+              {style.icon}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className={`text-[11px] uppercase tracking-widest font-black ${style.titleClass}`}>
+                {style.title}
+              </div>
+              <div className="font-mono text-sm font-bold text-white/95 truncate">
+                {alert.tracking || '-'}
+              </div>
+              {alert.type === 'dup' && (
+                <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+                  {alert.previousStatus && (
+                    <div className={style.accent}>
+                      Status: <span className="text-white/90">{alert.previousStatus}</span>
+                    </div>
+                  )}
+                  {alert.firstOperator && (
+                    <div className={style.accent}>
+                      Operator: <span className="text-white/90">{alert.firstOperator}</span>
+                    </div>
+                  )}
+                  {alert.firstScannedAt && (
+                    <div className={style.accent}>
+                      Scan 1: <span className="text-white/90 tabular-nums">{alert.firstScannedAt}</span>
+                    </div>
+                  )}
+                  <div className={style.accent}>
+                    Percobaan: <span className="text-white/95 font-bold tabular-nums">{alert.attempts || 1}×</span>
+                  </div>
+                </div>
+              )}
+              {(alert.type === 'warn' || alert.type === 'err') && alert.message && (
+                <div className={`text-[12px] ${style.accent} mt-0.5`}>{alert.message}</div>
+              )}
+            </div>
+            <div className={`text-[10px] ${style.accent} tabular-nums shrink-0`}>{alert.time}</div>
+          </motion.div>
+        )}
+      </div>
     </div>
   );
 }
@@ -160,6 +276,7 @@ function ScannerShell({
   stats = [],
   disabled = false,
   queue = [],
+  alert = null,
   children,
   onScanDecoded, // called when camera decodes a barcode
 }) {
@@ -385,21 +502,64 @@ function ScannerShell({
       {/* Optional inline form (children) */}
       {children}
 
-      {/* Live scan queue */}
+      {/* AREA 1 — Scanner Alert (single latest attention item) */}
+      <ScannerAlert alert={alert} />
+
+      {/* AREA 2 — Live scan queue (success only, max 10) */}
       <LiveScanQueue items={queue} />
     </div>
   );
 }
 
 function useScanQueue(max = 10) {
+  // Items = only successful scans (green), max N, latest on top.
   const [items, setItems] = useState([]);
+  // Alert = single latest attention item (dup/warn/err). null when clear.
+  const [alert, setAlert] = useState(null);
+
   const add = (entry) => {
-    setItems((prev) => [
-      { id: `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, time: formatShort(new Date()), ...entry },
-      ...prev,
-    ].slice(0, max));
+    const nowShort = formatShort(new Date());
+    const nowMs = Date.now();
+    const { type, tracking, ...rest } = entry || {};
+
+    if (type === 'ok') {
+      // Success clears the alert AND appends to the success queue.
+      setAlert(null);
+      const id = `${nowMs}_${Math.random().toString(36).slice(2, 6)}`;
+      setItems((prev) => [{ id, time: nowShort, type, tracking, ...rest }, ...prev].slice(0, max));
+      return;
+    }
+
+    // Non-ok → route to alert (dup/warn/err). Deduplicate by tracking+type so
+    // repeated scans of the same barcode update ONE card instead of stacking.
+    setAlert((prev) => {
+      if (prev && prev.tracking && prev.tracking === tracking && prev.type === type) {
+        return {
+          ...prev,
+          ...rest,
+          time: nowShort,
+          lastAt: nowMs,
+          attempts: (prev.attempts || 1) + 1,
+          blink: nowMs, // changing key triggers blink animation
+        };
+      }
+      return {
+        id: `${nowMs}_${Math.random().toString(36).slice(2, 6)}`,
+        type,
+        tracking,
+        time: nowShort,
+        firstAt: nowMs,
+        lastAt: nowMs,
+        attempts: 1,
+        blink: nowMs,
+        ...rest,
+      };
+    });
   };
-  return { items, add };
+
+  const clearAlert = () => setAlert(null);
+
+  return { items, alert, add, clearAlert };
 }
 
 // ---------- Small components ----------
@@ -650,7 +810,7 @@ function OMScanPrintView({ user }) {
   const [expeditions, setExpeditions] = useState([]);
   const [expeditionId, setExpeditionId] = useState('');
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
-  const { items: queue, add: addQueue } = useScanQueue(10);
+  const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
 
   useEffect(() => {
@@ -677,7 +837,7 @@ function OMScanPrintView({ user }) {
     if (!v) return;
     if (!expeditionId) {
       feedback('warn');
-      addQueue({ type: 'warn', tracking: v, message: 'Pilih ekspedisi terlebih dahulu' });
+      addQueue({ type: 'warn', tracking: v, title: 'PILIH EKSPEDISI', message: 'Pilih ekspedisi terlebih dahulu' });
       return;
     }
     processingRef.current = true;
@@ -690,21 +850,32 @@ function OMScanPrintView({ user }) {
       addQueue({
         type: 'ok',
         tracking: v,
+        expedition: resp.shipment.expedition_name,
         message: `Cetak · ${resp.shipment.expedition_name}`,
       });
       setStats((s) => ({ ...s, printed: (s.printed || 0) + 1 }));
     } catch (e) {
       const dup = e?.data?.duplicate || (typeof e === 'object' && e.duplicate);
       if (e.status === 409) {
-        feedback('warn');
+        feedback('dup');
         addQueue({
-          type: 'warn',
+          type: 'dup',
           tracking: v,
+          previousStatus: 'Sudah Dicetak',
+          firstOperator: dup?.operator || '-',
+          firstScannedAt: dup?.at
+            ? new Date(dup.at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+            : '-',
           message: fmtDuplicateMsg('Sudah dicetak', dup),
         });
       } else {
         feedback('err');
-        addQueue({ type: 'err', tracking: v, message: e.message || 'Error' });
+        addQueue({
+          type: 'err',
+          tracking: v,
+          title: 'ERROR',
+          message: e.message || 'Error',
+        });
       }
     } finally {
       processingRef.current = false;
@@ -725,6 +896,7 @@ function OMScanPrintView({ user }) {
       onScanDecoded={(v) => process(v)}
       disabled={!expeditionId}
       queue={queue}
+      alert={alert}
     >
       {/* Batch expedition selector */}
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
@@ -763,7 +935,7 @@ function OMScanPackView({ user }) {
   const itemRef = useRef(null);
   const saveBtnRef = useRef(null);
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
-  const { items: queue, add: addQueue } = useScanQueue(10);
+  const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
 
   useEffect(() => {
@@ -795,7 +967,7 @@ function OMScanPackView({ user }) {
     const v = String(value || '').trim();
     if (!v) return;
     if (pending) {
-      addQueue({ type: 'warn', tracking: v, message: 'Selesaikan resi sebelumnya dulu' });
+      addQueue({ type: 'warn', tracking: v, title: 'SELESAIKAN RESI SEBELUMNYA', message: 'Selesaikan resi sebelumnya dulu' });
       feedback('warn');
       return;
     }
@@ -803,14 +975,27 @@ function OMScanPackView({ user }) {
     try {
       const d = await omApi(`shipments?q=${encodeURIComponent(v)}&limit=1`);
       const s = (d.items || []).find((x) => x.tracking_number === v);
-      if (!s || !s.printed_at) {
+      if (!s) {
         feedback('err');
-        addQueue({ type: 'err', tracking: v, message: 'Resi belum terdaftar pada proses Scan Cetak Resi.' });
-      } else if (s.status === 'packed' || s.status === 'delivered') {
+        addQueue({ type: 'err', tracking: v, title: 'RESI TIDAK DITEMUKAN', message: 'Resi tidak ada di sistem.' });
+      } else if (!s.printed_at) {
         feedback('warn');
         addQueue({
           type: 'warn',
           tracking: v,
+          title: 'BELUM SCAN CETAK RESI',
+          message: 'Resi belum terdaftar pada proses Scan Cetak Resi.',
+        });
+      } else if (s.status === 'packed' || s.status === 'delivered') {
+        feedback('dup');
+        addQueue({
+          type: 'dup',
+          tracking: v,
+          previousStatus: s.status === 'delivered' ? 'Sudah Diserahkan' : 'Sudah Dipacking',
+          firstOperator: s.packed_by_name || '-',
+          firstScannedAt: s.packed_at
+            ? new Date(s.packed_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+            : '-',
           message: fmtDuplicateMsg('Sudah dipacking', {
             operator: s.packed_by_name,
             at: s.packed_at,
@@ -824,7 +1009,7 @@ function OMScanPackView({ user }) {
       }
     } catch (e) {
       feedback('err');
-      addQueue({ type: 'err', tracking: v, message: e.message || 'Error' });
+      addQueue({ type: 'err', tracking: v, title: 'ERROR', message: e.message || 'Error' });
     } finally {
       processingRef.current = false;
     }
@@ -911,6 +1096,7 @@ function OMScanPackView({ user }) {
       onScanDecoded={(v) => lookup(v)}
       disabled={!!pending}
       queue={queue}
+      alert={alert}
     >
       {pending && (
         <motion.div
@@ -1116,7 +1302,7 @@ function OMScanPackView({ user }) {
 // ============================================================
 function OMScanDeliveryView({ user }) {
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
-  const { items: queue, add: addQueue } = useScanQueue(10);
+  const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
 
   useEffect(() => {
@@ -1142,23 +1328,55 @@ function OMScanDeliveryView({ user }) {
         body: JSON.stringify({ tracking_number: v }),
       });
       feedback('ok');
-      addQueue({ type: 'ok', tracking: v, message: `Diserahkan · ${resp.shipment.expedition_name}` });
+      addQueue({
+        type: 'ok',
+        tracking: v,
+        expedition: resp.shipment.expedition_name,
+        message: `Diserahkan · ${resp.shipment.expedition_name}`,
+      });
       setStats((s) => ({ ...s, delivered: (s.delivered || 0) + 1 }));
     } catch (e) {
       if (e.status === 409) {
-        feedback('warn');
         const dup = e?.data?.duplicate;
-        addQueue({
-          type: 'warn',
-          tracking: v,
-          message: dup ? fmtDuplicateMsg('Sudah diserahkan', dup) : (e.message || 'Belum melalui Packing'),
-        });
+        if (dup) {
+          // Real duplicate (already delivered)
+          feedback('dup');
+          addQueue({
+            type: 'dup',
+            tracking: v,
+            previousStatus: 'Sudah Diserahkan',
+            firstOperator: dup.operator || '-',
+            firstScannedAt: dup.at
+              ? new Date(dup.at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+              : '-',
+            message: fmtDuplicateMsg('Sudah diserahkan', dup),
+          });
+        } else {
+          // Workflow issue — belum packing / belum cetak resi
+          feedback('warn');
+          addQueue({
+            type: 'warn',
+            tracking: v,
+            title: 'BELUM SIAP KIRIM',
+            message: e.message || 'Belum melalui Packing',
+          });
+        }
       } else if (e.status === 404) {
         feedback('err');
-        addQueue({ type: 'err', tracking: v, message: e.message || 'Resi tidak ditemukan' });
+        addQueue({
+          type: 'err',
+          tracking: v,
+          title: 'RESI TIDAK DITEMUKAN',
+          message: e.message || 'Resi tidak ditemukan',
+        });
       } else {
         feedback('err');
-        addQueue({ type: 'err', tracking: v, message: e.message || 'Error' });
+        addQueue({
+          type: 'err',
+          tracking: v,
+          title: 'ERROR',
+          message: e.message || 'Error',
+        });
       }
     } finally {
       processingRef.current = false;

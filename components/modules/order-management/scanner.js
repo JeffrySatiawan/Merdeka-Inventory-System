@@ -65,9 +65,10 @@ if (typeof window !== 'undefined') {
 
 /**
  * Play a beep — types:
- *   'ok'   → high double-chirp (successful scan)
- *   'warn' → mid two-tone (duplicate/warning)
- *   'err'  → low double-buzz (error)
+ *   'ok'   → short high chirp (successful scan)
+ *   'dup'  → long single low-mid tone (duplicate scan)
+ *   'warn' → mid two-tone double beep (workflow warning)
+ *   'err'  → low double-buzz (resi tidak ditemukan / error)
  */
 export function beep(type = 'ok') {
   const ctx = getCtx();
@@ -83,18 +84,25 @@ export function beep(type = 'ok') {
   const tones =
     type === 'ok'
       ? [
-          { f: 1400, d: 0.06, wave: 'sine' },
-          { f: 1900, d: 0.09, delay: 0.06, wave: 'sine' },
+          // Short crisp beep — quick "OK"
+          { f: 1600, d: 0.08, wave: 'sine' },
+        ]
+      : type === 'dup'
+      ? [
+          // Long single low-mid tone — clearly different from ok/warn
+          { f: 520, d: 0.55, wave: 'sawtooth' },
         ]
       : type === 'warn'
       ? [
-          { f: 660, d: 0.11, wave: 'triangle' },
-          { f: 660, d: 0.11, delay: 0.16, wave: 'triangle' },
+          // Two identical mid tones — "workflow salah"
+          { f: 720, d: 0.12, wave: 'triangle' },
+          { f: 720, d: 0.12, delay: 0.18, wave: 'triangle' },
         ]
       : type === 'err'
       ? [
+          // Low descending — "error / not found"
           { f: 260, d: 0.18, wave: 'square' },
-          { f: 180, d: 0.24, delay: 0.20, wave: 'square' },
+          { f: 160, d: 0.30, delay: 0.20, wave: 'square' },
         ]
       : [{ f: 880, d: 0.08, wave: 'sine' }];
 
@@ -119,7 +127,12 @@ export function beep(type = 'ok') {
 
 export function vibrate(type = 'ok') {
   if (typeof navigator === 'undefined' || !navigator.vibrate) return;
-  const patterns = { ok: [40], warn: [80, 60, 80], err: [140, 60, 140] };
+  const patterns = {
+    ok: [40],
+    dup: [180],           // long buzz for duplicate
+    warn: [80, 60, 80],   // double buzz for workflow salah
+    err: [140, 60, 140],  // error
+  };
   try {
     navigator.vibrate(patterns[type] || patterns.ok);
   } catch {}
