@@ -499,7 +499,8 @@ export default function OMPdfsView({ user }) {
           </p>
         </div>
         <div className="flex items-center gap-2 relative">
-          {/* Notification settings toggle */}
+          {/* Notification settings toggle — owner only */}
+          {isOwner && (
           <div className="relative">
             <Button
               size="sm"
@@ -578,6 +579,7 @@ export default function OMPdfsView({ user }) {
               </>
             )}
           </div>
+          )}
           <Button size="sm" variant="outline" onClick={load} disabled={loading} className="gap-2">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </Button>
