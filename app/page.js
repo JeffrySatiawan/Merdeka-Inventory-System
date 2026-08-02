@@ -2044,6 +2044,7 @@ function EmployeeTasksView({ user }) {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(new Set()); // employee IDs to show detailed list
   const [filter, setFilter] = useState('all'); // 'all' | 'active' | 'idle'
+  const [regenerating, setRegenerating] = useState(false);
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -2054,6 +2055,27 @@ function EmployeeTasksView({ user }) {
       toast.error(e.message);
     } finally {
       if (!silent) setLoading(false);
+    }
+  }
+
+  // Force redistribute today's uncompleted tasks with the CURRENT set of
+  // employees + weights (owner only). Completed tasks are kept intact for
+  // audit; only the uncompleted ones are wiped and re-generated. Useful
+  // whenever the owner changes weights, adds a new staff mid-shift, or
+  // removes a staff whose SKUs need to be picked up by remaining team.
+  async function regenerateTasks() {
+    if (!confirm('Regenerate ulang task hari ini dengan bobot & daftar karyawan terbaru?\n\nTask yang SUDAH selesai tetap tersimpan. Hanya task yang belum dikerjakan yang akan didistribusi ulang.')) {
+      return;
+    }
+    setRegenerating(true);
+    try {
+      await api('tasks/generate', { method: 'POST', body: JSON.stringify({ force: true }) });
+      toast.success('Task berhasil didistribusi ulang.');
+      await load(true);
+    } catch (e) {
+      toast.error(e.message || 'Gagal regenerate task');
+    } finally {
+      setRegenerating(false);
     }
   }
 
@@ -2123,6 +2145,19 @@ function EmployeeTasksView({ user }) {
           <Badge variant="outline" className="border-white/15 text-xs py-1 px-3">
             {overallPct}% overall
           </Badge>
+          <button
+            type="button"
+            onClick={regenerateTasks}
+            disabled={regenerating}
+            className={`text-xs px-3 py-1 rounded-full transition-colors border ${
+              regenerating
+                ? 'border-white/10 text-muted-foreground/50 cursor-wait'
+                : 'border-blue-500/40 text-blue-300 hover:bg-blue-500/10'
+            }`}
+            title="Redistribusi ulang task hari ini dengan bobot & daftar karyawan terkini. Task yang sudah selesai tetap tersimpan."
+          >
+            {regenerating ? 'Meregen…' : 'Regenerate Task'}
+          </button>
         </div>
       </div>
 

@@ -260,9 +260,19 @@ async function generateDailyTasks(db, dateStr) {
   if (existing > 0) return { skipped: true, count: existing };
 
   const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+  // Only active staff who actually have the cycle_count module get tasks.
+  // Previously the filter was just {role:'staff', status:'active'} which meant
+  // an employee with ONLY the order_management module (or any other) was still
+  // pulled into the Cycle Count task distribution — visible as a phantom row
+  // in Employee Task with a chunk of SKUs they were never supposed to receive.
   const employees = await db
     .collection('employees')
-    .find({ role: 'staff', status: 'active' })
+    .find({
+      role: 'staff',
+      status: 'active',
+      deleted: { $ne: true },
+      modules: 'cycle_count',
+    })
     .toArray();
   if (employees.length === 0) return { skipped: true, reason: 'no active employees' };
 
@@ -741,7 +751,14 @@ async function handleRequest(req, path, method) {
     if (target.role === 'owner') return err('cannot modify owner', 403);
 
     if (method === 'DELETE') {
+      // Cascade cleanup so the deleted employee doesn't leave phantom rows
+      // in Employee Task or a still-valid session token behind.
       await db.collection('employees').deleteOne({ id });
+      // Delete their UNCOMPLETED daily_tasks (completed tasks kept for audit).
+      // Employee Task view auto-reassigns any leftover on next fetch.
+      await db.collection('daily_tasks').deleteMany({ employee_id: id, completed: false });
+      // Invalidate their sessions so a token they still hold can't be used.
+      await db.collection('sessions').deleteMany({ employee_id: id });
       return json({ ok: true });
     }
 
@@ -759,6 +776,15 @@ async function handleRequest(req, path, method) {
     if (mods !== null) update.modules = mods;
     update.updatedAt = new Date();
     await db.collection('employees').updateOne({ id }, { $set: update });
+    // If the employee just lost the cycle_count module (or was deactivated),
+    // release their uncompleted tasks so they don't stay stuck in Employee
+    // Task view. The next GET /api/tasks/employees will redistribute them.
+    const nowLostCC =
+      (mods !== null && !mods.includes('cycle_count') && (target.modules || []).includes('cycle_count')) ||
+      (update.status && update.status !== 'active' && target.status === 'active');
+    if (nowLostCC) {
+      await db.collection('daily_tasks').deleteMany({ employee_id: id, completed: false });
+    }
     const updated = await db.collection('employees').findOne({ id });
     const { password: _p, _id, ...safe } = updated;
     return json({ employee: safe });
@@ -851,6 +877,78 @@ async function handleRequest(req, path, method) {
     if (user.role !== 'owner') return err('Hanya owner yang dapat mengakses Employee Task', 403);
     const today = getWitaDate();
     await generateDailyTasks(db, today);
+
+    // Purge orphan tasks: any daily_task whose employee_id no longer maps to
+    // an active, non-deleted staff with the cycle_count module. This ensures
+    // employees removed from User Management (or whose module was revoked)
+    // do NOT keep appearing in Employee Task with a stack of "yatim" SKUs.
+    const validStaff = await db
+      .collection('employees')
+      .find({
+        role: 'staff',
+        status: 'active',
+        deleted: { $ne: true },
+        modules: 'cycle_count',
+      })
+      .toArray();
+    const validIds = new Set(validStaff.map((e) => e.id));
+    const orphanTasks = await db
+      .collection('daily_tasks')
+      .find({ date: today, employee_id: { $nin: [...validIds] } })
+      .toArray();
+    if (orphanTasks.length > 0) {
+      // Only auto-cleanup UNCOMPLETED orphan tasks — completed ones stay for
+      // audit history. Redistribute the uncompleted ones to remaining valid
+      // staff proportional to their weight so total work coverage is preserved.
+      const uncompletedOrphans = orphanTasks.filter((t) => !t.completed);
+      const uncompletedOrphanIds = uncompletedOrphans.map((t) => t._id);
+      if (uncompletedOrphanIds.length > 0 && validStaff.length > 0) {
+        // Reassign: distribute by weight (fallback to equal if all weights=0)
+        const totalW = validStaff.reduce((s, e) => s + (e.weight || 0), 0);
+        const useEqual = totalW === 0;
+        const perEmp = validStaff.map((e) => ({ emp: e, count: 0 }));
+        uncompletedOrphans.forEach((_t, idx) => {
+          if (useEqual) {
+            perEmp[idx % perEmp.length].count += 1;
+          } else {
+            // Weighted round-robin using a running quota
+            let best = perEmp[0];
+            let bestDeficit = -Infinity;
+            for (const row of perEmp) {
+              const expected = ((idx + 1) * (row.emp.weight || 0)) / totalW;
+              const deficit = expected - row.count;
+              if (deficit > bestDeficit) {
+                bestDeficit = deficit;
+                best = row;
+              }
+            }
+            best.count += 1;
+          }
+        });
+        // Apply: bulk update each orphan task's employee_id
+        const bulk = db.collection('daily_tasks').initializeUnorderedBulkOp();
+        let cursor = 0;
+        for (const row of perEmp) {
+          for (let j = 0; j < row.count; j++) {
+            const orphan = uncompletedOrphans[cursor++];
+            if (!orphan) break;
+            bulk.find({ _id: orphan._id }).updateOne({
+              $set: {
+                employee_id: row.emp.id,
+                employee_name: row.emp.name,
+                reassigned_at: new Date(),
+                reassigned_from: orphan.employee_name || orphan.employee_id,
+              },
+            });
+          }
+        }
+        if (bulk.length > 0) await bulk.execute();
+      } else if (uncompletedOrphanIds.length > 0 && validStaff.length === 0) {
+        // No valid staff left at all — just delete the orphaned uncompleted tasks.
+        await db.collection('daily_tasks').deleteMany({ _id: { $in: uncompletedOrphanIds } });
+      }
+    }
+
     const tasks = await db
       .collection('daily_tasks')
       .find({ date: today })
@@ -868,28 +966,25 @@ async function handleRequest(req, path, method) {
         username: e.username,
         role: e.role,
         weight: e.weight || 0,
+        modules: e.modules || [],
+        status: e.status || 'active',
       };
     });
     const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
 
-    // Group by employee
+    // Group by employee — SKIP any task whose employee_id no longer resolves
+    // to a valid, non-deleted staff. After the orphan-cleanup above these
+    // should already be reassigned, but the guard here protects against edge
+    // races (e.g. tasks completed by a now-deleted employee earlier today).
     const grouped = {};
     tasks.forEach((t) => {
       const eid = t.employee_id;
+      const emp = empMap[eid];
+      if (!emp) return; // deleted employee — skip
+      if (emp.role !== 'staff') return; // owner never gets task rows
+      if (!Array.isArray(emp.modules) || !emp.modules.includes('cycle_count')) return;
       if (!grouped[eid]) {
-        grouped[eid] = {
-          employee: empMap[eid] || {
-            id: eid,
-            name: t.employee_name || 'Unknown',
-            username: '',
-            role: 'staff',
-            weight: 0,
-          },
-          tasks: [],
-          total: 0,
-          completed: 0,
-          backlog: 0,
-        };
+        grouped[eid] = { employee: emp, tasks: [], total: 0, completed: 0, backlog: 0 };
       }
       const { _id: _mid, ...safeTask } = t;
       grouped[eid].tasks.push(safeTask);
@@ -898,10 +993,13 @@ async function handleRequest(req, path, method) {
       if (t.is_backlog) grouped[eid].backlog += 1;
     });
 
-    // Also include employees who have NO tasks assigned today (empty list) so
-    // owner can see idle staff too.
+    // Also include ACTIVE cycle_count staff who have no tasks assigned today
+    // (empty list) so owner can see idle staff too.
     Object.values(empMap).forEach((emp) => {
-      if (emp.role === 'staff' && !grouped[emp.id]) {
+      if (emp.role !== 'staff') return;
+      if (emp.status !== 'active') return;
+      if (!Array.isArray(emp.modules) || !emp.modules.includes('cycle_count')) return;
+      if (!grouped[emp.id]) {
         grouped[emp.id] = { employee: emp, tasks: [], total: 0, completed: 0, backlog: 0 };
       }
     });

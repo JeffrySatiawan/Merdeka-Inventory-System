@@ -13,10 +13,15 @@ function getBaseUrl() {
 export default function manifest() {
   const base = getBaseUrl();
   return {
-    name: 'Merdeka Share',
-    short_name: 'Merdeka Share',
+    // App identity — matches the actual product name so when users install MIS
+    // as a PWA from the main page, the home-screen shortcut shows "MIS" with
+    // the correct logo. The share target is still registered so sharing PDFs
+    // from other Android apps continues to work — Android surfaces this app
+    // in the share sheet as "MIS" (via share target params below).
+    name: 'Merdeka Inventory System',
+    short_name: 'MIS',
     description:
-      'Merdeka Inventory System — upload PDF resi lewat share dari HP + Cycle Count & Order Management',
+      'Merdeka Inventory System — Cycle Count, Order Management, dan share PDF resi dari HP.',
     id: '/',
     start_url: '/',
     scope: '/',
@@ -29,21 +34,26 @@ export default function manifest() {
     lang: 'id-ID',
     prefer_related_applications: false,
     categories: ['business', 'productivity', 'utilities'],
+    // Icon set. Include BOTH `any` (regular) and `maskable` (safe-zone for
+    // Android launcher). The regular 192/512 pair is what most browsers pick
+    // for the home-screen icon. Absolute URLs prevent the "empty/broken icon"
+    // symptom seen when a webview resolves the relative path against a
+    // different origin (e.g. some Chrome PWA install flows).
     icons: [
       {
-        src: '/icons/merdeka-share-192.png',
+        src: `${base}/icons/mis-192.png`,
         sizes: '192x192',
         type: 'image/png',
         purpose: 'any',
       },
       {
-        src: '/icons/merdeka-share-512.png',
+        src: `${base}/icons/mis-512.png`,
         sizes: '512x512',
         type: 'image/png',
         purpose: 'any',
       },
       {
-        src: '/icons/merdeka-share-maskable-512.png',
+        src: `${base}/icons/mis-maskable-512.png`,
         sizes: '512x512',
         type: 'image/png',
         purpose: 'maskable',
@@ -68,7 +78,7 @@ export default function manifest() {
     },
     shortcuts: [
       {
-        name: 'Upload PDF (Merdeka Share)',
+        name: 'Upload PDF Resi (Merdeka Share)',
         short_name: 'Share PDF',
         url: '/share',
       },

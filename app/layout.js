@@ -54,10 +54,15 @@ export default function RootLayout({ children }) {
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="MIS" />
-        <link
-          rel="apple-touch-icon"
-          href="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%23a855f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='512' height='512' rx='96' fill='url(%23g)'/%3E%3Ctext x='256' y='330' text-anchor='middle' font-family='Inter,Arial,sans-serif' font-size='190' font-weight='800' fill='white' letter-spacing='-4'%3EMIS%3C/text%3E%3C/svg%3E"
-        />
+        {/* Prefer real PNG icons over inline data-URIs — iOS Safari can be
+            flaky about rendering data:image/svg+xml apple-touch-icons, which
+            was leaving the home-screen icon blank/white for some users. Point
+            to the same PNG assets the Android manifest uses so the branding
+            is consistent across platforms. */}
+        <link rel="icon" type="image/png" sizes="192x192" href="/icons/mis-192.png" />
+        <link rel="icon" type="image/png" sizes="512x512" href="/icons/mis-512.png" />
+        <link rel="apple-touch-icon" sizes="192x192" href="/icons/mis-192.png" />
+        <link rel="apple-touch-icon" sizes="512x512" href="/icons/mis-512.png" />
         <script dangerouslySetInnerHTML={{__html:'window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);'}} />
         <script dangerouslySetInnerHTML={{ __html: swRegister }} />
       </head>
