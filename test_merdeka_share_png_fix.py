@@ -14,7 +14,7 @@ import json
 import os
 import sys
 
-BASE_URL = "https://priview-staging.preview.emergentagent.com"
+BASE_URL = "https://lanjut-next-1.preview.emergentagent.com"
 
 # Test credentials
 OWNER_USER = "owner"
