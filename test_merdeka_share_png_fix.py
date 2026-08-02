@@ -14,7 +14,7 @@ import json
 import os
 import sys
 
-BASE_URL = "https://lanjut-next-1.preview.emergentagent.com"
+BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
 
 # Test credentials
 OWNER_USER = "owner"

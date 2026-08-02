@@ -53,7 +53,27 @@ export function saveNotifSettings(next) {
   } catch {}
 }
 
-// ---------- Ding-dong sound (Web Audio) ----------
+// ---------- Notification sound (MP3 with Web Audio fallback) ----------
+// Default notification sound is a bell tone (mixkit-bell-notification-933.mp3),
+// served from /public/sounds/pdf-notification.mp3.
+const NOTIFICATION_SOUND_URL = '/sounds/pdf-notification.mp3';
+
+let cachedAudio = null;
+function getAudioElement() {
+  if (typeof window === 'undefined') return null;
+  if (cachedAudio) return cachedAudio;
+  try {
+    const a = new Audio(NOTIFICATION_SOUND_URL);
+    a.preload = 'auto';
+    a.volume = 0.9;
+    cachedAudio = a;
+    return a;
+  } catch {
+    return null;
+  }
+}
+
+// Web Audio fallback (used only if MP3 playback fails, e.g. autoplay blocked).
 let cachedCtx = null;
 function getCtx() {
   if (typeof window === 'undefined') return null;
@@ -74,8 +94,25 @@ function attachAudioUnlock() {
   if (typeof window === 'undefined' || unlockAttached) return;
   unlockAttached = true;
   const unlock = () => {
+    // Unlock Web Audio context
     const ctx = getCtx();
     if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+    // Unlock HTMLAudioElement — play a muted no-op so mobile browsers allow
+    // subsequent programmatic play() calls.
+    const a = getAudioElement();
+    if (a) {
+      try {
+        a.muted = true;
+        const p = a.play();
+        if (p && typeof p.then === 'function') {
+          p.then(() => {
+            try { a.pause(); a.currentTime = 0; a.muted = false; } catch {}
+          }).catch(() => {
+            try { a.muted = false; } catch {}
+          });
+        }
+      } catch {}
+    }
     window.removeEventListener('click', unlock);
     window.removeEventListener('keydown', unlock);
     window.removeEventListener('touchstart', unlock);
@@ -86,14 +123,12 @@ function attachAudioUnlock() {
 }
 
 /**
- * Play a short doorbell-like "ding-dong" (~0.5s):
- *   Tone 1: G#5 (830Hz), 200ms sine, gentle envelope
- *   Tone 2: E5  (660Hz), 300ms sine, longer decay
+ * Play the default PDF notification sound (bell — mixkit-bell-notification-933).
+ * Falls back to a synthesized ding-dong via Web Audio if MP3 playback fails.
  */
-export function playDingDong() {
+function playWebAudioFallback() {
   const ctx = getCtx();
   if (!ctx) return;
-  attachAudioUnlock();
   if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   const now = ctx.currentTime;
   const tones = [
@@ -105,7 +140,6 @@ export function playDingDong() {
     const gain = ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(f, now + delay);
-    // gentle attack (10ms) then exponential decay
     gain.gain.setValueAtTime(0.0001, now + delay);
     gain.gain.exponentialRampToValueAtTime(peak, now + delay + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + dur);
@@ -113,6 +147,29 @@ export function playDingDong() {
     osc.start(now + delay);
     osc.stop(now + delay + dur + 0.02);
   });
+}
+
+export function playDingDong() {
+  if (typeof window === 'undefined') return;
+  attachAudioUnlock();
+  const a = getAudioElement();
+  if (!a) {
+    playWebAudioFallback();
+    return;
+  }
+  try {
+    // Rewind so overlapping notifications always play from the start.
+    a.currentTime = 0;
+    const p = a.play();
+    if (p && typeof p.then === 'function') {
+      p.catch(() => {
+        // Autoplay likely blocked (no user gesture yet) — use synthesized fallback.
+        try { playWebAudioFallback(); } catch {}
+      });
+    }
+  } catch {
+    try { playWebAudioFallback(); } catch {}
+  }
 }
 
 // ---------- Browser Notification API ----------

@@ -290,7 +290,7 @@ backend:
           2. `NODE_OPTIONS='--max-old-space-size=512'` in package.json dev script — 512 MB heap is insufficient for Next.js 15 dev + pdfjs-dist. Server hit memory threshold and restarted mid-compile in an infinite loop, so page never rendered.
           
           FIXES APPLIED:
-          - Recreated `/app/.env` with: MONGO_URL=mongodb://localhost:27017, DB_NAME=cycle_count, NEXT_PUBLIC_BASE_URL=https://lanjut-next-1.preview.emergentagent.com
+          - Recreated `/app/.env` with: MONGO_URL=mongodb://localhost:27017, DB_NAME=cycle_count, NEXT_PUBLIC_BASE_URL=https://pdf-notify-sound.preview.emergentagent.com
           - Bumped Node heap to 1536 MB in package.json: `"dev": "NODE_OPTIONS='--max-old-space-size=1536' next dev --hostname 0.0.0.0 --port 3000"`
           - Restarted nextjs. Verified: root=200 in 51ms after first compile, /api/om/pdfs returns correct 401 when no token / 200 {"items":[]} with valid token. Login endpoint works.
       - working: true
@@ -299,7 +299,7 @@ backend:
           ✅ INFRASTRUCTURE FIX VERIFIED - All tests passed, app fully functional.
           
           **TEST ENVIRONMENT:**
-          - URL: https://lanjut-next-1.preview.emergentagent.com
+          - URL: https://pdf-notify-sound.preview.emergentagent.com
           - Credentials: owner / owner123
           - Test method: Playwright browser automation with real user flow
           
@@ -392,7 +392,7 @@ backend:
           **TEST SCOPE:** Backend testing for POST /api/om/pdfs/[id]/open endpoint
           **TEST FILE:** /app/backend_test_pdf_open.py
           **TEST METHOD:** Python requests library with real API calls
-          **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
           
           **TEST RESULTS:**
           
@@ -1004,7 +1004,7 @@ frontend:
           **TEST SCOPE:** Backend/HTTP-level verification of PWA share target fix for bug "aplikasi Merdeka Share tidak muncul di share target"
           **TEST FILE:** /app/test_pwa_share_manifest.py
           **TEST METHOD:** Python requests library with curl verification
-          **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
           
           **FIX VERIFIED:**
           The root cause was that the `<link rel="manifest">` on the /share page was being served at SSR time pointing to /manifest.json (main MIS manifest, no share_target). The client-side manifest swapper was too late — Chrome had already parsed the wrong manifest.
@@ -1082,7 +1082,7 @@ frontend:
           **TEST SCOPE:** Backend/HTTP-level verification of PNG icon fix for bug "masih belum muncul merdeka share saat mau share pdf" (Merdeka Share PWA still doesn't appear in Android share sheet after previous manifest link fix)
           **TEST FILE:** /app/test_merdeka_share_png_fix.py
           **TEST METHOD:** Python requests library with comprehensive HTTP checks
-          **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
           
           **ROOT CAUSES FIXED (per troubleshoot_agent):**
           1. SVG data URI icons don't satisfy Chrome Android PWA installability → PWA cannot be installed → share_target cannot register
@@ -1221,7 +1221,7 @@ frontend:
           - Recreated `/app/.env` with:
               MONGO_URL=mongodb://localhost:27017
               DB_NAME=cycle_count
-              NEXT_PUBLIC_BASE_URL=https://lanjut-next-1.preview.emergentagent.com
+              NEXT_PUBLIC_BASE_URL=https://pdf-notify-sound.preview.emergentagent.com
           - Bumped Node heap to 1536 MB in package.json:
               `"dev": "NODE_OPTIONS='--max-old-space-size=1536' next dev --hostname 0.0.0.0 --port 3000"`
           - Restarted nextjs. Verified: root=200 in 51ms after first compile, /api/om/pdfs returns
@@ -2005,7 +2005,7 @@ agent_communication:
       **FEATURE TESTED:** POST /api/om/pdfs/[id]/open endpoint for PDF open tracking
       **TEST FILE:** /app/backend_test_pdf_open.py
       **TEST METHOD:** Python requests library with comprehensive backend API testing
-      **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+      **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
       
       **TEST SUMMARY:**
       ✅ Owner login working
@@ -2045,7 +2045,7 @@ agent_communication:
       **FEATURE TESTED:** GET /api/tasks/employees - Owner-only Employee Task view
       **TEST FILE:** /app/test_employee_tasks.py
       **TEST METHOD:** Python requests library with comprehensive backend API testing
-      **BASE URL:** https://lanjut-next-1.preview.emergentagent.com
+      **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
       **CREDENTIALS:** owner/owner123 (owner), cindy/cindy123 (staff with cycle_count module)
       
       **TEST SUMMARY:**

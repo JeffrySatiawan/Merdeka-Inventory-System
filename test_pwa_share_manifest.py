@@ -10,7 +10,7 @@ import io
 from typing import Dict, Any
 
 # Base URL from .env
-BASE_URL = "https://lanjut-next-1.preview.emergentagent.com"
+BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
 
 def print_test(name: str):
     print(f"\n{'='*80}")

@@ -24,7 +24,7 @@ import re
 from datetime import datetime
 
 # Base URL from .env
-BASE_URL = "https://lanjut-next-1.preview.emergentagent.com"
+BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
 
 # Test credentials
 OWNER_USERNAME = "owner"

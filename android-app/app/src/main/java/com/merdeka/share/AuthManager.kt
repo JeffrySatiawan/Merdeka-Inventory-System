@@ -57,6 +57,6 @@ class AuthManager(context: Context) {
 
     companion object {
         private const val PREFS_NAME = "merdeka_secure_prefs"
-        const val DEFAULT_BASE_URL = "https://lanjut-next-1.preview.emergentagent.com"
+        const val DEFAULT_BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
     }
 }
