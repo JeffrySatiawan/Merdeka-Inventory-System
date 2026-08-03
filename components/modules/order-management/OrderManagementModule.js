@@ -59,6 +59,22 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { omApi, compressToWebp } from './api';
 import { feedback, startCameraScanner } from './scanner';
 
+// Build the AUTHENTICATED direct server URL for a packing photo. Same pattern
+// as getPdfServerUrl in OMPdfsView — since <a target=_blank> and <img src>
+// cannot attach an Authorization header, we pass the session token as a URL
+// query parameter (?token=<session>). The backend's getUserFromRequest()
+// accepts this fallback exclusively for browser navigation cases. All
+// downstream role/module checks still apply, so a non-OM user still gets 403.
+//
+// Previously the code used bare `/api/om/photos/{id}` without a token — after
+// deployment this returned {"error":"unauthorized"} because the direct
+// browser navigation (or <img>) never sent the localStorage token.
+function getPhotoUrl(id) {
+  if (typeof window === 'undefined' || !id) return '';
+  const token = window.localStorage.getItem('cc_token') || '';
+  return `/api/om/photos/${encodeURIComponent(id)}?token=${encodeURIComponent(token)}`;
+}
+
 // ============================================================
 // SHARED: Scanner Mode Layout
 // ============================================================
@@ -1843,7 +1859,7 @@ function OMReportsView({ user }) {
                       </td>
                       <td className="py-2 pr-3">
                         {!x.photo_deleted ? (
-                          <a href={`/api/om/photos/${x.id}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline text-[10px]">Lihat</a>
+                          <a href={getPhotoUrl(x.id)} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline text-[10px]">Lihat</a>
                         ) : (
                           <ImageOff className="w-3.5 h-3.5 text-muted-foreground" />
                         )}
@@ -2207,7 +2223,7 @@ function OMCompletedView({ user }) {
           </DialogHeader>
           {photoModal && (
             <img
-              src={`/api/om/photos/${photoModal.id}`}
+              src={getPhotoUrl(photoModal.id)}
               alt="packing"
               className="w-full max-h-[60vh] object-contain rounded-lg"
               onError={(e) => { e.target.style.display = 'none'; toast.error('Foto sudah kadaluarsa atau tidak ditemukan'); }}
