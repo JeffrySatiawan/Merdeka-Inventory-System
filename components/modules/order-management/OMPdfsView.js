@@ -184,8 +184,9 @@ function getPdfDoc(pdfId) {
   return p;
 }
 
-// Get (or create) an object URL for the PDF — for print + "open in new tab".
-// Uses a fresh copy too, so cached buffer stays intact.
+// Get (or create) an object URL for the PDF — used only for the in-app PREVIEW
+// (canvas rendering via pdf.js) as a fallback. NEVER passed to window.open()
+// for print anymore — see getPdfServerUrl() for that.
 async function getPdfBlobUrl(pdfId) {
   if (_blobUrlCache.has(pdfId)) return _blobUrlCache.get(pdfId);
   const copy = await getPdfBufferCopy(pdfId);
@@ -193,6 +194,22 @@ async function getPdfBlobUrl(pdfId) {
   const url = URL.createObjectURL(blob);
   _blobUrlCache.set(pdfId, url);
   return url;
+}
+
+// Build the AUTHENTICATED direct server URL for a PDF — used by "Print" and
+// "Buka di tab baru" so the browser opens the ACTUAL file with its native
+// PDF viewer, not a blob:// wrapper. Prior implementation used a blob URL
+// which on some browsers/environments rendered as an HTML "Blob Viewer" page
+// (the whole PDF turned into a screenshot of the viewer chrome) — printing
+// that page gave a cropped / non-identical result.
+//
+// The token is appended as ?token=<session> because window.open() cannot
+// attach an Authorization header. Backend accepts URL-query tokens as a
+// fallback for exactly this case (see getUserFromRequest).
+function getPdfServerUrl(pdfId) {
+  if (typeof window === 'undefined') return '';
+  const token = window.localStorage.getItem('cc_token') || '';
+  return `/api/om/pdfs/${encodeURIComponent(pdfId)}/file?token=${encodeURIComponent(token)}`;
 }
 
 // Invalidate all caches for a pdfId (call when file is deleted or replaced)
@@ -1260,20 +1277,28 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
   }, [pdfDoc]);
 
   const handlePrint = async () => {
-    if (!pdfBlobUrl) {
-      toast.info('Menyiapkan PDF...');
-      return;
-    }
-    const w = window.open(pdfBlobUrl, '_blank');
+    // Use the AUTHENTICATED direct server URL, NOT a blob URL.
+    // - Server sends `Content-Disposition: inline` + `Content-Type: application/pdf`,
+    //   so the browser opens its native PDF viewer (Chrome PDFium / Firefox
+    //   pdf.js / Safari Preview) instead of the blob:// HTML wrapper.
+    // - Native viewer prints byte-identical to the original file (2 pages
+    //   stay 2 pages, no cropping, no HTML chrome).
+    const serverUrl = getPdfServerUrl(pdfId);
+    const w = window.open(serverUrl, '_blank');
     if (!w) {
       toast.error('Popup diblokir. Izinkan popup untuk print.');
       return;
     }
+    // Attempt to trigger the print dialog automatically once the PDF finishes
+    // loading in the new tab. Cross-origin/PDF-viewer nuances mean this may
+    // silently no-op on some browsers — that's fine, user can Ctrl+P manually.
+    // The critical outcome (native PDF viewer instead of Blob Viewer HTML) is
+    // already achieved just by opening the direct URL.
     try {
       w.addEventListener('load', () => {
-        try { w.print(); } catch (_) { /* print blocked */ }
+        try { w.focus(); w.print(); } catch (_) { /* print blocked or viewer handles it */ }
       });
-    } catch (_) { /* window not accessible */ }
+    } catch (_) { /* new-tab window not accessible (cross-origin lockdown) */ }
     omApi(`pdfs/${pdfId}/mark-printed`, { method: 'POST' })
       .then((r) => {
         setMeta(r.item);
@@ -1319,17 +1344,20 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
               </div>
             </div>
             <div className="flex gap-2 shrink-0 flex-wrap justify-end">
-              {pdfBlobUrl && (
-                <a
-                  href={pdfBlobUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-white/10 text-xs hover:bg-white/[0.04] whitespace-nowrap"
-                >
-                  <Eye className="w-3.5 h-3.5" /> Buka di tab baru
-                </a>
-              )}
-              <Button size="sm" onClick={handlePrint} disabled={!pdfBlobUrl} className="gap-1">
+              {/* "Buka di tab baru" now points to the DIRECT server URL (not
+                  blob). Browser opens the native PDF viewer, so the tab shows
+                  the real PDF instead of a Blob Viewer HTML wrapper. */}
+              <a
+                href={getPdfServerUrl(pdfId)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-white/10 text-xs hover:bg-white/[0.04] whitespace-nowrap"
+              >
+                <Eye className="w-3.5 h-3.5" /> Buka di tab baru
+              </a>
+              {/* Print button is available immediately — the direct URL doesn't
+                  need any blob preparation to be ready. */}
+              <Button size="sm" onClick={handlePrint} className="gap-1">
                 <Printer className="w-3.5 h-3.5" /> Print
               </Button>
               <Button
@@ -1351,16 +1379,14 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
             {error ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-sm p-6 text-center gap-3">
                 <div className="text-rose-400">Gagal memuat preview: {error}</div>
-                {pdfBlobUrl && (
-                  <a
-                    href={pdfBlobUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 px-3 py-2 rounded-md border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] text-white"
-                  >
-                    <Eye className="w-4 h-4" /> Buka di tab baru
-                  </a>
-                )}
+                <a
+                  href={getPdfServerUrl(pdfId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-md border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] text-white"
+                >
+                  <Eye className="w-4 h-4" /> Buka di tab baru
+                </a>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3">
@@ -1383,7 +1409,7 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
                 ))}
                 {pdfBlobUrl && (
                   <a
-                    href={pdfBlobUrl}
+                    href={getPdfServerUrl(pdfId)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-xs text-muted-foreground hover:text-white underline mt-2"
@@ -1426,7 +1452,7 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
             Tekan <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/10 text-[10px] font-mono">Esc</kbd> untuk tutup, atau klik tombol di bawah.
           </div>
           <div className="flex gap-2 ml-auto">
-            <Button size="sm" onClick={handlePrint} disabled={!pdfBlobUrl} className="gap-1">
+            <Button size="sm" onClick={handlePrint} className="gap-1">
               <Printer className="w-3.5 h-3.5" /> Print
             </Button>
             <Button

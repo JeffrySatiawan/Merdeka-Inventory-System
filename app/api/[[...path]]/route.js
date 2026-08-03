@@ -65,8 +65,22 @@ function isSessionClosed(settings) {
 }
 
 async function getUserFromRequest(req) {
+  // Primary: Authorization: Bearer <token> header (fetch/XHR calls).
   const auth = req.headers.get('authorization') || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  let token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  // Fallback: `?token=<...>` URL query param. Required for browser navigation
+  // to authenticated resources like `/api/om/pdfs/{id}/file` where the browser
+  // (new-tab / window.open / <a target=_blank>) cannot attach a request header.
+  // Tokens are opaque server-issued session UUIDs (revocable via logout /
+  // employee delete), and only ever unlock the same permissions the header
+  // would — no elevation, no bypass of role/module checks downstream.
+  if (!token) {
+    try {
+      const u = new URL(req.url);
+      const q = u.searchParams.get('token');
+      if (q) token = q;
+    } catch { /* ignore invalid url */ }
+  }
   if (!token) return null;
   const db = await getDb();
   const session = await db.collection('sessions').findOne({ token });

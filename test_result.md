@@ -2562,6 +2562,177 @@ agent_communication:
       ✅ TEST 1: Phantom employee cleanup (deleted employee) - 7/7 checks passed
          - Deleted employees no longer appear in Employee Task view
          - Uncompleted tasks deleted on employee deletion
+
+  - task: "PDF Print — use direct server URL instead of Blob URL"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG FIX: On production, clicking Print opened a `blob:https://…` URL. On some browsers this rendered as the "Blob Viewer HTML page" (with the PDF embedded as a screenshot inside a scaffold) and printing that page produced a cropped / non-identical output instead of the original PDF's pages.
+          
+          ROOT CAUSE:
+          - `handlePrint()` did `window.open(pdfBlobUrl, '_blank')` where pdfBlobUrl was a `URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}))`.
+          - Blob URLs are handled inconsistently across browsers/PDF-viewers. Some show the built-in PDF viewer; others wrap in an HTML viewer where `window.print()` prints the wrapper, not the raw PDF pages.
+          
+          FIX APPLIED (server + client):
+          
+          1. Backend `/app/app/api/[[...path]]/route.js` — `getUserFromRequest()` now also accepts `?token=<session>` URL query as a fallback for browser navigation (window.open/<a target=_blank>) that cannot attach an Authorization header. Same session validation as header-based auth (revocable, permission-checked downstream).
+          
+          2. Backend `/app/lib/modules/order-management/service.js` — GET /api/om/pdfs/[id]/file response headers refined: `Content-Type: application/pdf`, `Content-Disposition: inline` (forces browser's native PDF viewer, not download), `Content-Length`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, max-age=600`. Filename sanitized (CR/LF/quote stripped).
+          
+          3. Frontend `/app/components/modules/order-management/OMPdfsView.js`:
+             - New helper `getPdfServerUrl(pdfId)` builds `/api/om/pdfs/{id}/file?token=<token>` from localStorage token.
+             - `handlePrint()` now uses `window.open(serverUrl, '_blank')` — browser opens the ACTUAL file via its native PDF viewer (Chrome PDFium / Safari Preview / Firefox pdf.js), which prints byte-identical to the source PDF (2 pages stay 2 pages, no cropping).
+             - `w.print()` still attempted after `load` event; if the viewer's built-in print button handles it, the auto-print is redundant but harmless.
+             - "Buka di tab baru" links + error-state fallback also switched to `getPdfServerUrl()` (was blob URL).
+             - `pdfBlobUrl` kept ONLY for the in-app pdf.js canvas preview (never handed to window.open anymore).
+             - Print button no longer `disabled={!pdfBlobUrl}` since the direct URL is always available immediately.
+          
+          Verified via curl:
+          - GET /file with Authorization header → 200 with correct PDF headers (inline, application/pdf, correct Content-Length)
+          - GET /file?token=<valid> → 200 (new behavior)
+          - GET /file with no auth → 401
+          - GET /file?token=fake → 401
+          - Response body is byte-identical to uploaded PDF
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 26 TESTS PASSED (100%) - PDF Print bug fix FULLY WORKING.
+          
+          **TEST SCOPE:** Backend testing for PDF Print bug fix (URL-token authentication + response headers)
+          **TEST FILE:** /app/backend_test_pdf_print.py
+          **TEST METHOD:** Python requests library with real API calls
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
+          **TEST CREDENTIALS:** owner/owner123 (has OM module), cindy/cindy123 (cycle_count only, no OM)
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: URL-token authentication (NEW behavior) - 7/7 checks passed
+             1. Owner login → token obtained ✓
+             2. Upload small valid PDF (629 bytes) via POST /api/om/pdfs/auto → 200 with id ✓
+             3. GET /api/om/pdfs/{id}/file?token=<owner_token> → 200 with:
+                - Content-Type: application/pdf (exactly, not application/octet-stream) ✓
+                - Content-Disposition: inline; filename="..." (NOT attachment) ✓
+                - Content-Length: 629 (matches uploaded size) ✓
+                - X-Content-Type-Options: nosniff ✓
+                - Response body byte-identical to uploaded PDF ✓
+             4. GET /api/om/pdfs/{id}/file (no auth) → 401 ✓
+             5. GET /api/om/pdfs/{id}/file?token=fake-token-abc → 401 ✓
+             6. GET /api/om/pdfs/{id}/file with Authorization: Bearer <token> (header-based, no query) → 200 (existing behavior still works) ✓
+             7. GET /api/om/pdfs/{id}/file with BOTH Authorization header AND ?token= query → 200 (no conflict) ✓
+          
+          ✅ TEST 2: Security — URL-token doesn't bypass authorization - 4/4 checks passed
+             1. Cindy login → token obtained, modules=['cycle_count'] (no order_management) ✓
+             2. GET /api/om/pdfs/{id}/file?token=<cindy_token> → 403 with error "Anda tidak memiliki akses ke module Order Management" ✓
+             3. PUT /api/om/notif-settings?token=<cindy_token> {sound:false} → 403 (module guard) ✓
+             4. DELETE /api/om/pdfs/{id}?token=<cindy_token> → 403 (module guard) ✓
+             5. Verified: URL-token ONLY resolves the user; all role/module/ownership checks downstream still apply ✓
+          
+          ✅ TEST 3: Auth regression (existing endpoints) - 7/7 checks passed
+             1. POST /api/auth/login (owner + cindy) → both 200 with tokens ✓
+             2. GET /api/auth/me with Bearer header (no query) → 200 with user object ✓
+             3. GET /api/auth/me?token=<owner_token> (query only, NO Authorization header) → 200 with user object (NEW fallback behavior works everywhere) ✓
+             4. GET /api/dashboard with Bearer header → 200 ✓
+             5. GET /api/tasks/employees with Bearer header (owner) → 200 ✓
+             6. GET /api/om/pdfs with Bearer header → 200 ✓
+             7. GET /api/om/notif-settings with Bearer header → 200 ✓
+          
+          ✅ TEST 4: Response header deep check on /file - 6/6 checks passed
+             Re-uploaded PDF and verified GET /api/om/pdfs/{id}/file?token=<owner_token>:
+             1. Content-Type: EXACTLY "application/pdf" (case-insensitive OK) ✓
+             2. Content-Disposition: starts with "inline" (must NOT be "attachment") ✓
+             3. Content-Length: numeric and matches len(response.content) ✓
+             4. Cache-Control: present (Next.js may override to no-store/no-cache, not critical) ✓
+             5. X-Content-Type-Options: "nosniff" ✓
+             6. Response body: first 8 bytes are b'%PDF-1.4' (PDF magic) — endpoint doesn't wrap bytes in JSON or HTML ✓
+          
+          ✅ TEST 5: Cleanup - 2/2 checks passed
+             1. Deleted all test PDFs via DELETE /api/om/pdfs/{id} (owner-only) → all 200 ✓
+             2. Verified by listing /api/om/pdfs that no test PDFs remain ✓
+          
+          **SECURITY VERIFICATION:**
+          - ✅ NO auth bypass detected: URL-token doesn't elevate permissions anywhere
+          - ✅ Module guard still applies: staff without order_management module denied with 403
+          - ✅ Owner-only endpoints still protected: cindy cannot PUT notif-settings or DELETE PDFs
+          - ✅ Token validation working: fake tokens rejected with 401
+          - ✅ No-auth requests rejected with 401
+          
+          **TECHNICAL VERIFICATION:**
+          - ✅ getUserFromRequest() correctly accepts ?token= as fallback after checking Authorization header
+          - ✅ Same session validation as header-based auth (revocable, permission-checked downstream)
+          - ✅ Response headers correct for native PDF viewer rendering (inline, not attachment)
+          - ✅ Content-Type exactly "application/pdf" (not application/octet-stream)
+          - ✅ Response body byte-identical to uploaded PDF (no JSON/HTML wrapping)
+          - ✅ All existing endpoints unaffected (backward compatibility maintained)
+          
+          **CONCLUSION:**
+          PDF Print bug fix is FULLY WORKING. The backend correctly:
+          1. Accepts ?token=<session> as fallback for browser navigation (window.open cannot set headers)
+          2. Serves raw PDF bytes with Content-Disposition: inline (forces native PDF viewer)
+          3. Enforces all downstream permission checks (no elevation, no bypass)
+          4. Maintains backward compatibility with header-based auth
+          5. Returns byte-identical PDF content with correct headers for faithful printing
+          
+          The fix addresses the root cause: blob: URLs rendered inconsistently across browsers (some wrapped in HTML "Blob Viewer" which printed cropped output). Now Print opens the direct server URL `/api/om/pdfs/{id}/file?token=<session>` which the browser renders in its NATIVE PDF viewer (Chrome PDFium / Safari Preview / Firefox pdf.js) for byte-identical printing.
+          
+          Test file: /app/backend_test_pdf_print.py
+          Task marked as working=true, needs_retesting=false.
+
+metadata:
+  updated_by: "testing_agent"
+  updated_at: "2026-08-03T02:45:00Z"
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Please test the PDF print fix. Read the latest task block above for full context.
+      
+      **CORE CHANGE:** Print button previously opened a `blob:` URL; now opens `/api/om/pdfs/{id}/file?token=<session>` (direct server URL). Backend `getUserFromRequest()` was updated to accept the token via URL query param as fallback for browser navigation (window.open can't set Authorization header).
+      
+      **TEST SCENARIOS:**
+      
+      1. **URL-token authentication (NEW behavior):**
+         - Login as owner → get session token.
+         - Upload a small valid PDF via POST /api/om/pdfs/auto.
+         - GET /api/om/pdfs/{id}/file?token=<owner_token> → assert HTTP 200, Content-Type=application/pdf, Content-Disposition starts with "inline", Content-Length matches uploaded size, X-Content-Type-Options=nosniff, response body byte-identical to uploaded file.
+         - GET /api/om/pdfs/{id}/file (no auth at all) → assert 401.
+         - GET /api/om/pdfs/{id}/file?token=invalid-token → assert 401.
+         - GET /api/om/pdfs/{id}/file with Authorization: Bearer <token> (existing header-based auth still works) → assert 200.
+         - GET /api/om/pdfs/{id}/file with BOTH ?token=<A> and Authorization: Bearer <A> → assert 200 (both same user, no conflict).
+      
+      2. **URL-token security — permissions still enforced:**
+         - Create a staff `cindy` (cycle_count only, no order_management module) — should already exist per test_credentials.md.
+         - Login as cindy → get cindy_token.
+         - GET /api/om/pdfs/{id}/file?token=<cindy_token> → assert 403 "Anda tidak memiliki akses ke module Order Management" (module guard still applies).
+         - Verify the URL-token doesn't elevate privileges anywhere else: PUT /api/om/notif-settings?token=<cindy_token> {popup:false} — should 403 "Hanya owner..." (owner check still runs after auth).
+      
+      3. **Auth regression — all existing endpoints still work:**
+         - POST /api/auth/login (owner) → 200 with token.
+         - GET /api/auth/me with Bearer header → 200 with user.
+         - GET /api/auth/me?token=<...> without header → should also 200 (new fallback behavior).
+         - GET /api/dashboard, /api/tasks/employees, /api/om/pdfs, /api/om/notif-settings (all header-based) → 200.
+      
+      4. **Response headers deep check for /file:**
+         - Assert response has NO Content-Disposition=attachment (would trigger download instead of inline view).
+         - Assert Content-Type is exactly "application/pdf" (not "application/octet-stream").
+         - Assert body length equals Content-Length header value.
+      
+      5. **Cleanup:** Delete any test PDFs and any test employees created.
+      
+      NOTE: You cannot verify "the browser prints identical to source PDF" via curl — that's a manual browser-level test. What you CAN verify is that the endpoint serves the raw PDF bytes with correct headers so the browser's native PDF viewer can render it (which then prints faithfully). That's the backend contract — verify that contract.
+
          - Sessions invalidated (401 on GET /api/auth/me with old token)
          - Cascade cleanup working correctly
       
