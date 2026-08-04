@@ -206,10 +206,17 @@ async function getPdfBlobUrl(pdfId) {
 // The token is appended as ?token=<session> because window.open() cannot
 // attach an Authorization header. Backend accepts URL-query tokens as a
 // fallback for exactly this case (see getUserFromRequest).
+//
+// A `_ts=<now>` cache-buster is added on every call so the browser never
+// serves a stale 404 (or any cached bytes) from a previous request. This
+// matters when a pod-restart/route-shift briefly returned 404 for a PDF
+// before the DB-backed fix kicked in — the user should be able to just
+// click "Buka" again without a hard reload.
 function getPdfServerUrl(pdfId) {
   if (typeof window === 'undefined') return '';
   const token = window.localStorage.getItem('cc_token') || '';
-  return `/api/om/pdfs/${encodeURIComponent(pdfId)}/file?token=${encodeURIComponent(token)}`;
+  const ts = Date.now();
+  return `/api/om/pdfs/${encodeURIComponent(pdfId)}/file?token=${encodeURIComponent(token)}&_ts=${ts}`;
 }
 
 // Invalidate all caches for a pdfId (call when file is deleted or replaced)

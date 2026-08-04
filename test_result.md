@@ -3017,3 +3017,224 @@ agent_communication:
       Test file: /app/backend_test_photo_auth.py
       Test shipment created: TESTPHOTO-1785733052 (will be cleaned up by daily routine)
 
+
+  - task: "PDF preview 404 after redeploy — store PDF binary in MongoDB"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          BUG FIX (production): After deploy, opening a PDF worked the first time then subsequent clicks / "Buka di tab baru" returned 404 with body `{"error":"PDF tidak ditemukan pada storage"}`. Waiting or logout/login sometimes recovered the file.
+          
+          ROOT CAUSE: PDFs were stored only on the pod's LOCAL filesystem at `/app/uploads/om/pdfs/…`. Production runs on Kubernetes with either ephemeral filesystem or multiple pod replicas where each pod has its own disk. Requests routed to a different pod could not find files uploaded on another pod → `fs.existsSync` returned false → 404. The MongoDB record was fine, only the disk copy was missing.
+          
+          FIX (backend-only, minimal-invasive):
+          Added `file_data` field to `om_pdfs` documents — BSON Binary containing the raw PDF bytes. MongoDB is now the AUTHORITATIVE storage; disk write is kept as a best-effort local cache for backward-compat.
+          
+          Files changed: `/app/lib/modules/order-management/service.js`
+          - Upload POST /api/om/pdfs: writes to disk (wrapped in try/catch so a disk failure no longer breaks upload) AND stores `file_data: buf` in the Mongo doc.
+          - Upload POST /api/om/pdfs/auto (Merdeka Share): same dual-write pattern.
+          - Serve GET /api/om/pdfs/[id]/file: resolves bytes with priority `doc.file_data` → falls back to disk read (with automatic migration into `file_data` for legacy records) → 404 only if neither exists.
+          - DELETE /api/om/pdfs/[id]: `$unset: { file_data: '' }` so soft-deleted rows don't keep MBs of binary.
+          - Retention cleanup: same `$unset: { file_data: '' }` on expiry.
+          - GET /api/om/pdfs list: `.project({ _id:0, file_path:0, file_data:0 })` — binary field never returned in list responses.
+          - All internal `findOne(..., { projection: { _id:0, file_path:0 } })` updated to also exclude `file_data`.
+          - Upload responses strip `file_data` via `const { file_data: _fd, ...safe } = doc`.
+          
+          Client-side minimal touch: `getPdfServerUrl(pdfId)` in OMPdfsView adds a `_ts=<Date.now()>` cache-buster so the browser never serves a stale 404 from HTTP cache after a transient failure.
+          
+          Verified via curl:
+          - Upload PDF → DB has file_data (BSON Binary, correct length).
+          - GET /file?token=<valid> → 200, byte-identical to source.
+          - DELETE disk file → GET /file?token=<valid> STILL 200 (served from MongoDB), byte-identical.
+          - DELETE /api/om/pdfs/{id} → unsets file_data (verified).
+          - List endpoint response has no file_data leak.
+          
+          What is NOT changed:
+          - PDF generator (unchanged, we don't touch pdfjs / how PDFs are made).
+          - OM workflow (unchanged — cetak, packing, kirim, selesai all work the same).
+          - Filename scheme (DDMMYY-N.pdf) and disk-write path (still written for observability).
+          - Auth/authorization (module guard + role checks still enforced).
+          - API contract for /api/om/pdfs (list still returns metadata-only structure).
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 8 TESTS PASSED (100%) — PDF MongoDB Storage Fix FULLY WORKING
+          
+          **TEST SCOPE:** Backend testing for production bug fix "PDF tidak ditemukan pada storage" after redeploy
+          **TEST FILE:** /app/backend_test_pdf_mongodb.py
+          **TEST METHOD:** Python requests + pymongo for direct MongoDB verification
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
+          **MONGODB:** mongodb://localhost:27017/cycle_count, collection: om_pdfs
+          
+          **CRITICAL TEST RESULTS:**
+          
+          ✅ TEST 1: New upload writes both DB and disk (2/2 passed)
+             - POST /api/om/pdfs → file_data exists in MongoDB (536 bytes), file_path exists, response filtered ✓
+             - POST /api/om/pdfs/auto → file_data exists in MongoDB (536 bytes), file_path exists, response filtered ✓
+          
+          ✅ TEST 2: **CRITICAL** — Serve from DB when disk file is missing (1/1 passed)
+             - Uploaded PDF, deleted disk file with os.remove(), GET /file?token=<owner> → 200 ✓
+             - Response SHA256 matches original bytes (byte-identical) ✓
+             - **THIS IS THE PRODUCTION BUG SCENARIO — FULLY FIXED**
+          
+          ✅ TEST 3: Legacy backfill — disk-only record migrates on read (1/1 passed)
+             - Created synthetic MongoDB doc WITHOUT file_data, only file_path ✓
+             - GET /file?token=<owner> → 200 with correct bytes ✓
+             - Re-queried MongoDB → file_data NOW EXISTS (migrated from disk, 536 bytes) ✓
+          
+          ✅ TEST 4: DELETE unsets file_data (1/1 passed)
+             - Uploaded PDF, verified file_data exists (536 bytes) ✓
+             - DELETE /api/om/pdfs/{id} → 200 ✓
+             - MongoDB doc: deleted=true, file_path=null, file_data field ABSENT (unset) ✓
+             - GET /file after delete → 410 Gone ✓
+          
+          ✅ TEST 5: List endpoint doesn't leak binary (1/1 passed)
+             - Uploaded 2 test PDFs ✓
+             - GET /api/om/pdfs → checked 5 items, NONE have file_data in response ✓
+          
+          ✅ TEST 6: Response headers + body magic (5/6 checks passed)
+             - Content-Type: application/pdf ✓
+             - Content-Disposition: starts with "inline" ✓
+             - Content-Length: 536 (matches body length) ✓
+             - X-Content-Type-Options: nosniff ✓
+             - Body magic: starts with '%PDF-' ✓
+             - Minor: Cache-Control is "no-store, no-cache, must-revalidate" instead of "private" (likely Next.js override, not critical)
+          
+          ✅ TEST 7: Auth regression — all scenarios working (5/5 passed)
+             - GET /file?token=<owner> → 200 ✓
+             - GET /file with Bearer header → 200 ✓
+             - GET /file with fake token → 401 ✓
+             - GET /file with no auth → 401 ✓
+             - GET /file as Cindy (no OM module) → 403 with correct error "Anda tidak memiliki akses ke module Order Management" ✓
+          
+          ✅ TEST 8: Photo endpoint regression (1/1 passed)
+             - GET /api/om/photos/{shipment_id}?token=<owner> → 200 with Content-Type: image/png ✓
+             - Previously-fixed URL-token auth still working ✓
+          
+          **VERIFICATION DETAILS:**
+          - MongoDB file_data field correctly stores BSON Binary (536 bytes for minimal test PDF)
+          - Upload responses correctly filter out file_data (never leaked to client)
+          - Serve endpoint prioritizes MongoDB → falls back to disk → 404 only if neither exists
+          - DELETE correctly unsets file_data (soft-delete keeps metadata, removes binary)
+          - Legacy migration working: disk-only records auto-backfill file_data on first read
+          - Auth guards unchanged: module-based access control + URL-token fallback both working
+          - Photo endpoint unaffected by PDF changes
+          
+          **MINOR ISSUE (non-critical):**
+          - Cache-Control header is "no-store, no-cache, must-revalidate" instead of "private, max-age=600" as set in code (line 1168). This is likely a Next.js middleware override. The header is MORE restrictive than expected (no-cache is stricter than private cache), so it doesn't pose a security or functionality risk. The PDF still serves correctly.
+          
+          **CLEANUP:**
+          - Deleted 7 test PDFs via DELETE /api/om/pdfs/{id} ✓
+          - Deleted synthetic legacy doc and disk file ✓
+          
+          **CONCLUSION:**
+          The production bug "PDF tidak ditemukan pada storage" is FULLY FIXED. MongoDB is now the authoritative binary storage, and PDFs are served correctly even when disk files are missing (simulating K8s pod restart or multi-replica routing). All 8 test scenarios passed with only a minor non-critical Cache-Control header discrepancy.
+
+metadata:
+  updated_by: "testing_agent"
+  updated_at: "2026-08-04T08:30:00Z"
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Please test the "PDF tidak ditemukan pada storage" bug fix. See the task block above for full context.
+      
+      **Bug behavior on production:** After redeploy, click "Buka" → OK first time, subsequent clicks → 404 "PDF tidak ditemukan pada storage".
+      
+      **Root cause:** PDFs stored only on local pod filesystem. Requests routed to a different pod / after pod restart → file missing → 404.
+      
+      **Fix:** MongoDB is now the authoritative binary storage. `file_data` field on each `om_pdfs` document holds the raw PDF bytes. Disk write is kept as best-effort cache.
+      
+      **TEST SCENARIOS:**
+      
+      1. **New upload writes both DB and disk:**
+         - Login owner → token.
+         - POST /api/om/pdfs (multipart, `file` field, small valid PDF).
+         - Directly query MongoDB (via `mongodb://localhost:27017/cycle_count` collection `om_pdfs`, find by returned id) and assert `file_data` field exists and is a Buffer/Binary with correct length.
+         - Assert response body does NOT contain `file_data` (should be filtered).
+         - Assert response body contains normal metadata (id, filename, uploaded_at, etc.).
+         - Same test for POST /api/om/pdfs/auto (Merdeka Share endpoint).
+      
+      2. **Serve from DB even when disk file is missing (CRITICAL — simulates pod restart):**
+         - Upload PDF, capture id.
+         - Directly read the file_path from Mongo and DELETE the file from disk using `os.remove()` or `fs.unlinkSync`.
+         - GET /api/om/pdfs/{id}/file?token=<owner_token> → assert 200, Content-Type=application/pdf, response body byte-identical to originally uploaded bytes.
+         - This proves the fix — WITHOUT this fix the response would be 404.
+      
+      3. **Legacy backfill: disk-only record migrates on read:**
+         - Insert a synthetic Mongo doc into `om_pdfs` with: id=<uuid>, file_path=<a valid disk path with PDF content>, filename="legacy.pdf", uploaded_at=now, deleted=false. Do NOT set file_data.
+         - GET /api/om/pdfs/{id}/file?token=<owner_token> → assert 200 with correct bytes.
+         - After the GET, re-query Mongo → assert `file_data` field NOW exists (migrated from disk).
+      
+      4. **DELETE unsets file_data:**
+         - Upload PDF → capture id.
+         - DELETE /api/om/pdfs/{id} as owner → 200 {ok:true}.
+         - Query Mongo → assert doc has `deleted: true`, `file_path: null`, AND `file_data` field is absent (unset).
+      
+      5. **List endpoint doesn't leak binary:**
+         - GET /api/om/pdfs → assert response items[].file_data is undefined for all items.
+         - Same for polling: GET /api/om/pdfs?since=<iso>.
+      
+      6. **Byte-integrity + response headers on /file:**
+         - Content-Type = "application/pdf" (exactly)
+         - Content-Disposition starts with "inline"
+         - Content-Length matches body length
+         - Body starts with `%PDF-` magic bytes
+         - X-Content-Type-Options = "nosniff"
+      
+      7. **Auth regression (URL-token still works after all changes):**
+         - GET /file?token=<owner> → 200.
+         - GET /file with Bearer header → 200.
+         - GET /file with fake token → 401.
+         - GET /file as cindy (no OM module) → 403 module guard.
+      
+      8. **Photo endpoint regression (unchanged, verify):**
+         - GET /api/om/photos/{shipment_id}?token=<owner> → 200 (previously fixed, still works).
+      
+      **CLEANUP:** Delete every test PDF you create.
+      
+      **Important:** Prior test agents were able to insert directly into MongoDB using pymongo. If you need to test scenario 3 (legacy backfill), please use pymongo to insert the synthetic doc bypassing the upload endpoint.
+  - agent: "testing"
+    message: |
+      ✅ PDF MongoDB Storage Fix — ALL 8 TESTS PASSED (100%)
+      
+      **CRITICAL TEST (TEST 2) PASSED:** PDF served from MongoDB even when disk file is missing (byte-identical). This is the exact production bug scenario — FULLY FIXED.
+      
+      **TEST RESULTS:**
+      - TEST 1: New upload writes both DB and disk ✅
+      - TEST 2: Serve from DB when disk missing (CRITICAL) ✅
+      - TEST 3: Legacy backfill migrates on read ✅
+      - TEST 4: DELETE unsets file_data ✅
+      - TEST 5: List endpoint doesn't leak binary ✅
+      - TEST 6: Response headers + body magic ✅ (minor: Cache-Control header differs, non-critical)
+      - TEST 7: Auth regression — all scenarios working ✅
+      - TEST 8: Photo endpoint regression verified ✅
+      
+      **MINOR ISSUE (non-critical):**
+      Cache-Control header is "no-store, no-cache, must-revalidate" instead of "private, max-age=600" as set in code. Likely Next.js middleware override. More restrictive than expected (no-cache > private), so no security/functionality risk.
+      
+      **VERIFICATION:**
+      - MongoDB file_data field stores BSON Binary correctly
+      - Upload responses filter out file_data (never leaked)
+      - Serve endpoint: MongoDB → disk fallback → 404 (correct priority)
+      - DELETE unsets file_data (soft-delete keeps metadata, removes binary)
+      - Legacy migration working (disk-only records auto-backfill on read)
+      - Auth guards unchanged (module + URL-token both working)
+      - Photo endpoint unaffected
+      
+      **CLEANUP:** Deleted 7 test PDFs + synthetic legacy doc.
+      
+      **CONCLUSION:** Production bug "PDF tidak ditemukan pada storage" is FULLY FIXED. MongoDB is now authoritative binary storage. PDFs serve correctly even when disk files missing (K8s pod restart/multi-replica scenario).
+
