@@ -3238,3 +3238,273 @@ agent_communication:
       
       **CONCLUSION:** Production bug "PDF tidak ditemukan pada storage" is FULLY FIXED. MongoDB is now authoritative binary storage. PDFs serve correctly even when disk files missing (K8s pod restart/multi-replica scenario).
 
+
+  - task: "KETOKO per-resi checkbox + optional note + Laporan integration"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW FEATURE: KETOKO POS input is now tracked PER RESI (per tracking number) instead of per PDF file. One PDF may contain many resi; each can be independently marked as "Sudah Input" / "Belum Input" with an optional note explaining why an un-checked resi hasn't been processed.
+          
+          DATA MODEL (om_pdfs collection):
+          Added `ketoko_resi: [{...}]` array — one entry per detected tracking number:
+          - tracking_number (string)
+          - checked (bool)
+          - checked_at, checked_by_id, checked_by_name (audit)
+          - note_type: 'kosong' | 'lainnya' | null
+          - note_text: string | null (only meaningful for 'lainnya')
+          - note_updated_at
+          Legacy `ketoko_input_at/by` fields are still emitted for backward-compat; auto-computed as "all resi checked" → latest checked_at; else null.
+          
+          BACKEND (/app/lib/modules/order-management/service.js):
+          
+          1. Helper `hydrateKetokoResi(doc)` — ensures the array matches detected_tracking_numbers on every read. Adds missing entries with default state, preserves existing entries, strips stale ones. Returns `{resi, changed}`.
+          
+          2. Helper `recomputeKetokoOverall(resi, user)` — recomputes legacy overall flag. Only "all resi checked" produces a non-null ketoko_input_at.
+          
+          3. GET /api/om/pdfs — auto-hydrates each item's ketoko_resi; adds rollup fields `ketoko_checked_count` and `ketoko_total_count`. Lazy write-back if hydration changed anything.
+          
+          4. POST /api/om/pdfs/[id]/ketoko (legacy) — now mutates ALL resi via the same helpers. input:true marks all checked (clears notes); input:false unchecks all (preserves notes). Kept for backward-compat with any external caller.
+          
+          5. POST /api/om/pdfs/[id]/ketoko-resi (NEW) — per-resi update. Body: `{tracking_number, checked?, note_type?, note_text?}`. Server enforces:
+             - tracking_number must be in detected_tracking_numbers (400 otherwise).
+             - Notes only accepted when the resi is/will-be UNCHECKED. Silently rejected on already-checked resi.
+             - note_type coerced to enum {'kosong','lainnya',null}. 'kosong' forces note_text=null.
+             - Checked flip TRUE clears any existing note (business rule: notes exist to explain non-input).
+             - Checked flip FALSE preserves note.
+             - Auto-recomputes overall ketoko_input_at after mutation.
+          
+          6. GET /api/om/shipments (Laporan OM) — now bulk-joins each shipment with its PDF's ketoko_resi entry. Adds fields per shipment: `ketoko_checked`, `ketoko_checked_by_name`, `ketoko_checked_at`, `ketoko_note_type`, `ketoko_note_text`, `ketoko_pdf_id`, `ketoko_pdf_filename`. Also adds `summary.ketoko_done`, `summary.ketoko_total`, `summary.ketoko_progress` (e.g. "6/8"). One indexed query fetches all needed PDFs (no N+1).
+          
+          FRONTEND:
+          
+          1. OMPdfsView.js:
+             - Header "Input KETOKO" card now counts by RESI (ketokoResiChecked / totalDetected) instead of PDF files. Sub-label "per resi (bukan per PDF)".
+             - PdfRow: KETOKO cell replaced from a single checkbox to a BUTTON showing "X/Y resi" progress. Clicking triggers the (unchanged) dynamic PIN verification. On correct PIN → opens KetokoResiPanel; on incorrect PIN → regenerates + shakes (unchanged behavior).
+             - Row visual states: green when all resi checked, amber-partial when some checked, dim when 0 detected.
+          
+          2. KetokoResiPanel (NEW component) — modal that shows list of resi:
+             - Each row: checkbox + tracking number + status badge.
+             - Un-checked rows: dropdown (Barang Kosong / Lainnya) + free-text field revealed for "Lainnya".
+             - Checked rows: note controls hidden; shows "oleh {name} · {timestamp}" caption.
+             - Auto-save on every change (per-field POST). No explicit save button.
+             - Progress bar in header. Esc to close.
+          
+          3. OrderManagementModule.js (Laporan OM view):
+             - Summary grid: added 5th StatCard "POS KETOKO" showing "done/total" (e.g. "6/8") with emerald/amber tone based on completion.
+             - Table: added "KETOKO" column between Status and Packing showing:
+               - ✓ Sudah + operator name if checked
+               - Belum badge + note (if any) if not checked
+               - "—" placeholder if no PDF backs this resi
+          
+          Constraints honored:
+          - PIN Dinamis flow UNCHANGED (same generatePin, same PIN panel UI, same PIN verify submitPin).
+          - Merdeka Share UNCHANGED (share target still works; PDFs uploaded via /share still land in om_pdfs the same way and the new ketoko_resi hydrates automatically on first read).
+          - OMS workflow (cetak → packing → kirim → selesai) UNCHANGED.
+          - PDF storage UNCHANGED (still uses the MongoDB-embedded file_data from the previous fix).
+          
+          Verified via curl (see agent chat log): hydrate → check → note → note-on-checked-rejected → all-checked-triggers-overall → uncheck-preserves → cleanup, all pass.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 9 TESTS PASSED (100%) — KETOKO per-resi feature fully working.
+          
+          **TEST SCOPE:** Comprehensive backend testing for KETOKO per-resi feature
+          **TEST FILE:** /app/backend_test_ketoko_per_resi.py
+          **TEST METHOD:** Python requests + pymongo for direct DB manipulation
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
+          **CREDENTIALS:** owner/owner123, cindy/cindy123 (no OM module)
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1 — Hydrate on GET /api/om/pdfs (5/5 checks passed):
+             - Uploaded PDF, injected detected_tracking_numbers=['SPX1','JNT2','JNE3'] via pymongo
+             - GET /api/om/pdfs auto-hydrated ketoko_resi array with 3 entries
+             - Each entry has correct default state: checked=False, note_type=None
+             - Rollup fields correct: ketoko_checked_count=0, ketoko_total_count=3
+          
+          ✅ TEST 2 — Per-resi check (7/7 checks passed):
+             - POST /ketoko-resi checked SPX1 → resi.checked=True, checked_by_name='Owner', checked_at set
+             - Counts correct: ketoko_checked_count=1, ketoko_total_count=3
+             - Overall ketoko_input_at is NULL (only 1/3 checked) ✓ CRITICAL BUSINESS RULE
+             - Idempotent check works (count still 1 after re-check)
+             - Checked JNT2 and JNE3 → all 3 checked
+             - Overall ketoko_input_at NOW SET (all resi checked) ✓ CRITICAL BUSINESS RULE
+          
+          ✅ TEST 3 — Notes on unchecked resi (4/4 checks passed):
+             - Unchecked SPX1 → resi.checked=False
+             - Added note_type='kosong' → note_text forced to null ✓
+             - Added note_type='lainnya' with text='Menunggu supplier' → both fields set correctly
+             - Max length enforcement: 600-char text truncated to 500 chars ✓
+          
+          ✅ TEST 4 — Note rejected on checked resi (2/2 checks passed):
+             - Checked SPX1 → note cleared (note_type=None, note_text=None) ✓ BUSINESS RULE
+             - Tried to add note while checked → silently rejected (note_type still None) ✓
+          
+          ✅ TEST 5 — Invalid tracking number (2/2 checks passed):
+             - Invalid tracking number 'NOTINTHISPDF' → 400 with error "tracking_number tidak terdeteksi pada PDF ini"
+             - Empty tracking number → 400 with error "tracking_number wajib diisi"
+          
+          ✅ TEST 6 — Legacy /ketoko bulk endpoint (2/2 checks passed):
+             - POST /ketoko {input:true} → all 3 resi checked, ketoko_input_at set ✓ BACKWARD COMPAT
+             - POST /ketoko {input:false} → all 3 resi unchecked, ketoko_input_at null ✓
+          
+          ✅ TEST 7 — GET /api/om/shipments annotates per-shipment KETOKO status (7/7 checks passed):
+             - Created shipment for SPX1 via scan/print
+             - Checked SPX1 in PDF
+             - GET /api/om/shipments → shipment has ketoko_checked=true, checked_by='Owner', pdf_id matches
+             - Unchecked SPX1 and added note_type='lainnya', note_text='test'
+             - GET /api/om/shipments again → shipment has ketoko_checked=false, note_type='lainnya', note_text='test'
+             - Summary fields present: ketoko_done=0, ketoko_total=2, ketoko_progress='0/2' ✓
+          
+          ✅ TEST 8 — Auth/module regression (3/3 checks passed):
+             - Cindy (no OM module) POST /ketoko-resi → 403 with error "Anda tidak memiliki akses ke module Order Management" ✓
+             - Bearer auth still works (GET /api/om/pdfs → 200) ✓
+             - URL token auth still works (GET /api/om/pdfs?token=... → 200) ✓ NO REGRESSION
+          
+          ✅ TEST 9 — Hydration re-scan safety (5/5 checks passed):
+             - Changed detected_tracking_numbers to ['SPX1','NEWONE'] via pymongo (removed JNT2, JNE3)
+             - GET /api/om/pdfs → ketoko_resi array has exactly 2 entries
+             - SPX1 entry preserved with existing state (checked=false, note_type='lainnya') ✓ CRITICAL
+             - NEWONE entry added with default state (checked=false, note_type=None) ✓
+             - Removed entries (JNT2, JNE3) are gone from ketoko_resi ✓
+          
+          **CRITICAL BUSINESS RULES VERIFIED:**
+          1. ✅ Overall ketoko_input_at is NULL when not all resi checked (TEST 2)
+          2. ✅ Overall ketoko_input_at is SET only when ALL resi checked (TEST 2)
+          3. ✅ Notes only exist on unchecked resi (TEST 4)
+          4. ✅ Checking a resi clears its note (TEST 4)
+          5. ✅ Hydration preserves existing state during re-scan (TEST 9)
+          
+          **BACKWARD COMPATIBILITY VERIFIED:**
+          - ✅ Legacy POST /ketoko bulk endpoint still works (TEST 6)
+          - ✅ Bearer auth unchanged (TEST 8)
+          - ✅ URL token auth unchanged (TEST 8)
+          - ✅ Module-based access control unchanged (TEST 8)
+          
+          **LAPORAN INTEGRATION VERIFIED:**
+          - ✅ GET /api/om/shipments annotates each shipment with KETOKO status (TEST 7)
+          - ✅ Summary fields ketoko_done, ketoko_total, ketoko_progress present (TEST 7)
+          - ✅ Per-shipment fields: ketoko_checked, ketoko_checked_by_name, ketoko_note_type, ketoko_note_text, ketoko_pdf_id (TEST 7)
+          
+          **CLEANUP:** Deleted 1 test PDF and 1 test shipment. Owner/cindy accounts untouched.
+  - agent: "testing"
+    message: |
+      ✅ KETOKO PER-RESI TESTING COMPLETE — ALL 9 TESTS PASSED (100%)
+      
+      Executed comprehensive backend testing covering:
+      - Hydration logic (auto-sync ketoko_resi with detected_tracking_numbers)
+      - Per-resi check/uncheck with audit trail
+      - Notes on unchecked resi (kosong/lainnya with max length enforcement)
+      - Business rule: notes rejected on checked resi
+      - Validation: invalid tracking numbers rejected
+      - Legacy bulk endpoint backward compatibility
+      - Laporan integration (GET /api/om/shipments with KETOKO annotation)
+      - Auth/module regression (Bearer + URL token)
+      - Hydration re-scan safety (preserves state, adds/removes entries)
+      
+      **CRITICAL BUSINESS RULES VERIFIED:**
+      - Overall ketoko_input_at is NULL when not all resi checked ✓
+      - Overall ketoko_input_at is SET only when ALL resi checked ✓
+      - Notes only exist on unchecked resi ✓
+      - Checking a resi clears its note ✓
+      - Hydration preserves existing state during re-scan ✓
+      
+      **NO REGRESSIONS:** Legacy /ketoko endpoint, Bearer auth, URL token auth, module guards all working.
+      
+      Test file: /app/backend_test_ketoko_per_resi.py
+      Cleanup: Deleted 1 test PDF and 1 test shipment. Owner/cindy accounts untouched.
+
+          
+          **CONCLUSION:** KETOKO per-resi feature is FULLY WORKING. All 9 tests passed with zero failures. All critical business rules, backward compatibility, and Laporan integration verified.
+
+metadata:
+  updated_by: "main_agent"
+  updated_at: "2026-08-04T03:00:00Z"
+
+test_plan:
+  current_focus:
+    - "KETOKO per-resi checkbox + optional note + Laporan integration"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Please test the KETOKO per-resi feature. Read the task block above for full context.
+      
+      **Base URL** from /app/.env: NEXT_PUBLIC_BASE_URL. Owner: owner/owner123. Cindy: cindy/cindy123 (no OM module).
+      **MongoDB**: mongodb://localhost:27017/cycle_count (use pymongo for direct verification/injection).
+      
+      ## TESTS
+      
+      ### TEST 1 — Hydrate on GET /api/om/pdfs
+      1. As owner, POST /api/om/pdfs (upload valid PDF).
+      2. Directly inject `detected_tracking_numbers = ['SPX1','JNT2','JNE3']` via pymongo `om_pdfs.update_one(...)`.
+      3. GET /api/om/pdfs — find the item. Assert:
+         - item.ketoko_resi length == 3
+         - each entry has {tracking_number, checked=False, note_type=None, ...}
+         - item.ketoko_checked_count == 0
+         - item.ketoko_total_count == 3
+      
+      ### TEST 2 — Per-resi check
+      1. POST /api/om/pdfs/{id}/ketoko-resi `{"tracking_number":"SPX1","checked":true}`.
+         - Assert 200; response.resi.checked==True; checked_by_name=='Owner' (or whoever); checked_at is ISO.
+         - response.item.ketoko_checked_count == 1, .ketoko_total_count == 3.
+         - response.item.ketoko_input_at is NULL (only 1/3 checked).
+      2. POST same tracking with `{"checked":true}` again — idempotent (no error, count still 1).
+      3. Check the remaining 2. Assert response.item.ketoko_input_at IS SET after the 3rd check (all resi checked → overall flag set to latest checked_at).
+      
+      ### TEST 3 — Notes on unchecked resi
+      1. Uncheck SPX1 via `{"checked":false}`. Assert response.resi.checked==False; note preserved (should be null since we haven't set any).
+      2. POST `{"tracking_number":"SPX1","note_type":"kosong"}`. Assert response.resi.note_type=='kosong', note_text is null (forced null for 'kosong').
+      3. POST `{"tracking_number":"SPX1","note_type":"lainnya","note_text":"Menunggu supplier"}`. Assert note_type=='lainnya', note_text=='Menunggu supplier'.
+      4. POST `{"tracking_number":"SPX1","note_type":"lainnya","note_text":"a".repeat(600)}` — assert note_text is truncated to 500 chars (server-side max).
+      
+      ### TEST 4 — Note rejected on checked resi
+      1. POST `{"tracking_number":"SPX1","checked":true}` — should clear the note as a side effect (business rule).
+      2. Assert response.resi.checked==True AND note_type==None AND note_text==None.
+      3. Try POST `{"tracking_number":"SPX1","note_type":"kosong"}` while still checked. Assert 200 (no error) BUT response.resi.note_type IS STILL NULL (silently rejected).
+      
+      ### TEST 5 — Invalid tracking number
+      1. POST `{"tracking_number":"NOTINTHISPDF","checked":true}`. Assert 400 with error containing "tracking_number tidak terdeteksi".
+      2. POST `{}` (no tracking_number). Assert 400 "tracking_number wajib diisi".
+      
+      ### TEST 6 — Legacy /ketoko bulk endpoint
+      1. POST /api/om/pdfs/{id}/ketoko `{"input":true}`. Assert all 3 resi are now checked; ketoko_input_at set.
+      2. POST /api/om/pdfs/{id}/ketoko `{"input":false}`. Assert all 3 now unchecked; overall ketoko_input_at is null. Notes preserved for resi that had notes (but since all were checked then unchecked, notes were cleared during the previous check-all step — this is expected).
+      
+      ### TEST 7 — GET /api/om/shipments annotates per-shipment KETOKO status
+      1. Setup: create a shipment tied to one of the tracking numbers.
+         - Simplest: POST /api/om/scan/print `{"tracking_number":"SPX1"}` to create a shipment with tracking_number=SPX1.
+         - Or find an existing shipment.
+      2. Ensure the PDF containing SPX1 exists. Check SPX1 via /ketoko-resi.
+      3. GET /api/om/shipments. Find the shipment for SPX1.
+         - Assert `ketoko_checked == true`.
+         - Assert `ketoko_checked_by_name` populated.
+         - Assert `ketoko_pdf_id` matches the PDF's id.
+      4. Uncheck SPX1 and add note_type=lainnya, note_text='test'. GET /api/om/shipments again:
+         - Assert `ketoko_checked == false`, `ketoko_note_type=='lainnya'`, `ketoko_note_text=='test'`.
+      5. Assert summary contains `ketoko_done`, `ketoko_total`, `ketoko_progress` fields.
+      
+      ### TEST 8 — Auth/module regression
+      - Cindy (no OM module) POST /ketoko-resi → 403 module guard.
+      - Header-based Bearer auth still works.
+      - URL ?token= still works (from earlier fixes).
+      
+      ### TEST 9 — Hydration re-scan safety
+      1. Directly change detected_tracking_numbers via pymongo to `['SPX1','NEWONE']` (removing 2, adding 1).
+      2. GET /api/om/pdfs — hydrated array should have exactly 2 entries: SPX1 (with existing state preserved) + NEWONE (default unchecked).
+      3. Ensure the "removed" entries are dropped from ketoko_resi.
+      
+      **CLEANUP:** Delete every test PDF and shipment created. Do NOT touch owner/cindy accounts.
+      
+      Report clearly PASS/FAIL per test and highlight any regression on legacy /ketoko or auth.
+

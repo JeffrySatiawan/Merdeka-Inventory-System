@@ -495,8 +495,18 @@ export default function OMPdfsView({ user }) {
     [items]
   );
   const printedCount = useMemo(() => items.filter((x) => x.printed_at).length, [items]);
-  const ketokoCount = useMemo(() => items.filter((x) => x.ketoko_input_at).length, [items]);
+  // KETOKO progress is now counted by RESI (tracking numbers), NOT by PDF files.
+  // Each PDF may contain multiple resi; each can be checked independently.
+  // The header card denominator is `totalDetected` (total resi across all PDFs).
+  const ketokoResiChecked = useMemo(
+    () => items.reduce((s, x) => s + (x.ketoko_checked_count || 0), 0),
+    [items]
+  );
   const isOwner = user?.role === 'owner';
+
+  // Item currently open in the per-resi KETOKO panel. Set after PIN is verified
+  // (see PdfRow.submitPin), cleared when the panel is closed.
+  const [ketokoResiTarget, setKetokoResiTarget] = useState(null);
 
   async function toggleKetoko(item, next) {
     // Optimistic update
@@ -713,7 +723,10 @@ export default function OMPdfsView({ user }) {
               <Store className="w-3 h-3" /> Input KETOKO
             </div>
             <div className="text-2xl font-bold mt-1 text-amber-400">
-              {ketokoCount}<span className="text-sm text-muted-foreground">/{items.length}</span>
+              {ketokoResiChecked}<span className="text-sm text-muted-foreground">/{totalDetected}</span>
+            </div>
+            <div className="text-[10px] text-amber-300/70 mt-0.5">
+              per resi (bukan per PDF)
             </div>
           </CardContent>
         </Card>
@@ -747,7 +760,7 @@ export default function OMPdfsView({ user }) {
                   isNew={newlyAddedIds.has(it.id)}
                   onOpen={() => openPdf(it)}
                   onDelete={() => del(it.id, it.filename)}
-                  onToggleKetoko={(next) => toggleKetoko(it, next)}
+                  onOpenKetokoPanel={() => setKetokoResiTarget(it)}
                   onRescan={() => runAutoScan(it.id)}
                 />
               ))}
@@ -765,54 +778,72 @@ export default function OMPdfsView({ user }) {
           onChanged={load}
         />
       )}
+
+      {/* KETOKO per-resi panel — opens after PIN verified on a row */}
+      {ketokoResiTarget && (
+        <KetokoResiPanel
+          initialItem={ketokoResiTarget}
+          user={user}
+          onClose={() => setKetokoResiTarget(null)}
+          onChanged={(updated) => {
+            // Merge server response into local list — do NOT close the panel
+            // (operator may check several resi in sequence).
+            setItems((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+            setKetokoResiTarget(updated);
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // ---------- Row (with inline detected tracking numbers on the right) ----------
-function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onToggleKetoko, onRescan }) {
+function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKetokoPanel, onRescan }) {
   const detected = item.detected_tracking_numbers || [];
   const hasScan = !!item.scanned_at;
   const printed = !!item.printed_at;
-  const ketokoChecked = !!item.ketoko_input_at;
+  // Per-resi KETOKO progress (new). ketokoChecked (overall) is true only when
+  // every resi in this PDF is checked — used for the row-level styling badge.
+  const resiChecked = item.ketoko_checked_count || 0;
+  const resiTotal = item.ketoko_total_count || detected.length || 0;
+  const ketokoChecked = resiTotal > 0 && resiChecked >= resiTotal;
+  const ketokoPartial = resiChecked > 0 && !ketokoChecked;
 
   // ------ Dynamic PIN verification (inline, no modal) ------
   // pin === null → panel closed; string → panel open with that PIN.
+  // After PIN is verified, we OPEN THE KETOKO RESI PANEL — we do NOT toggle
+  // the flag directly. The panel lets the operator check each resi one by
+  // one and add notes for the unchecked ones.
   const [pin, setPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
-  const [pendingChecked, setPendingChecked] = useState(null);
   const [shake, setShake] = useState(false);
   const pinInputRef = useRef(null);
 
   const focusPinInput = () => {
-    // Delay so element is mounted after state change.
     setTimeout(() => {
       pinInputRef.current?.focus();
       pinInputRef.current?.select?.();
     }, 30);
   };
 
-  const openPinPanel = (nextChecked) => {
+  const openPinPanel = () => {
     setPin(generatePin());
     setPinInput('');
-    setPendingChecked(nextChecked);
     focusPinInput();
   };
 
   const closePinPanel = () => {
     setPin(null);
     setPinInput('');
-    setPendingChecked(null);
     setShake(false);
   };
 
   const submitPin = () => {
     if (!pin) return;
     if (pinInput === pin) {
-      // Correct — run the underlying toggle then close panel.
-      const next = pendingChecked;
+      // Correct — close PIN panel then open the KETOKO resi panel.
       closePinPanel();
-      onToggleKetoko(next);
+      onOpenKetokoPanel();
     } else {
       // Wrong — regenerate PIN, clear input, keep panel open, refocus.
       setPin(generatePin());
@@ -950,40 +981,47 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onToggleKe
           </div>
         </div>
 
-        {/* KETOKO POS input checkbox — with inline PIN verification */}
-        <label
-          className={`flex items-center gap-2 px-3 py-2 rounded-md border cursor-pointer transition-colors shrink-0 select-none ${
+        {/* KETOKO POS input — button opens PIN, then resi panel.
+            The old single-checkbox has been replaced with a progress button
+            (e.g. "3/8") so the operator sees at a glance how many resi in
+            this PDF have already been input to KETOKO. Clicking triggers
+            the (unchanged) dynamic PIN verification. On correct PIN, the
+            KetokoResiPanel opens with the resi list. */}
+        <button
+          type="button"
+          onClick={() => { if (pin === null) openPinPanel(); }}
+          disabled={pin !== null || resiTotal === 0}
+          className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors shrink-0 select-none text-left ${
             pin !== null
-              ? 'border-amber-400/60 bg-amber-500/15 text-amber-200'
+              ? 'border-amber-400/60 bg-amber-500/15 text-amber-200 cursor-wait'
               : ketokoChecked
-                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-                : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground'
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
+                : ketokoPartial
+                  ? 'border-amber-500/30 bg-amber-500/5 text-amber-300/90 hover:bg-amber-500/10'
+                  : resiTotal === 0
+                    ? 'border-white/10 text-muted-foreground/50 cursor-not-allowed'
+                    : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground hover:text-white'
           }`}
-          title={ketokoChecked ? `Diinput oleh ${item.ketoko_input_by_name} · ${fmtDate(item.ketoko_input_at)}` : 'Klik jika sudah input ke POS KETOKO'}
+          title={
+            resiTotal === 0
+              ? 'Belum ada resi terdeteksi di PDF ini'
+              : ketokoChecked
+                ? `Semua ${resiTotal} resi sudah diinput ke KETOKO`
+                : 'Klik untuk buka daftar resi + input ke KETOKO'
+          }
         >
-          <input
-            type="checkbox"
-            checked={ketokoChecked}
-            disabled={pin !== null}
-            onChange={(e) => {
-              // Do NOT run POS KETOKO immediately — open PIN panel first.
-              if (pin !== null) return; // already verifying
-              openPinPanel(e.target.checked);
-            }}
-            className="w-4 h-4 accent-amber-500 cursor-pointer"
-          />
           <Store className="w-3.5 h-3.5" />
           <div className="text-xs leading-tight">
             <div className="font-medium">POS KETOKO</div>
-            {ketokoChecked ? (
-              <div className="text-[10px] opacity-80 truncate max-w-[130px]" title={item.ketoko_input_by_name}>
-                {item.ketoko_input_by_name} · {fmtDate(item.ketoko_input_at)}
-              </div>
+            {resiTotal === 0 ? (
+              <div className="text-[10px] opacity-70">— resi belum terdeteksi</div>
             ) : (
-              <div className="text-[10px] opacity-70">belum diinput</div>
+              <div className="text-[10px] opacity-80 tabular-nums">
+                {resiChecked}/{resiTotal} resi{ketokoChecked ? ' ✓' : ''}
+              </div>
             )}
           </div>
-        </label>
+        </button>
 
         {/* Inline PIN verification panel — appears right below the KETOKO button (basis-full = wraps to new line inside the same flex row) */}
         {pin !== null && (
@@ -1471,6 +1509,230 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
               <ArrowLeft className="w-3.5 h-3.5" /> Kembali ke Daftar
             </Button>
           </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+// ============================================================
+// KETOKO Resi Panel — modal with per-resi checkbox + note
+// ============================================================
+// Shown after PIN verified on a PDF row. Lists each detected tracking number
+// as a checkbox row. Unchecked rows can carry an optional note (dropdown:
+// "Barang Kosong" / "Lainnya"; "Lainnya" reveals a free-text field).
+//
+// Notes are AUTO-SAVED on change (per-field POST /pdfs/:id/ketoko-resi). No
+// "Save" button — the operator can close whenever they want.
+//
+// Business rules (also enforced server-side):
+//   • checked=true clears any note on that resi.
+//   • notes only editable/visible while checked=false.
+//   • one PDF may be processed partially — checked resi finalize immediately,
+//     don't block other resi in the same PDF or other PDFs.
+function KetokoResiPanel({ initialItem, user, onClose, onChanged }) {
+  const [item, setItem] = useState(initialItem);
+  const [savingTn, setSavingTn] = useState(null); // tracking number currently syncing
+  // Draft state for free-text "Lainnya" notes. Persist keystroke buffer here so
+  // typing doesn't fight the server response. On blur or dropdown-change we
+  // flush the draft to the server.
+  const [draftText, setDraftText] = useState({}); // { tn: text }
+
+  // Keep local item in sync with any external merges (parent may pass a fresh
+  // copy after other actions).
+  useEffect(() => {
+    setItem(initialItem);
+  }, [initialItem]);
+
+  // Close on Esc
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const resi = useMemo(
+    () => (Array.isArray(item?.ketoko_resi) ? item.ketoko_resi : []),
+    [item]
+  );
+  const checkedCount = resi.filter((r) => r.checked).length;
+  const totalCount = resi.length;
+  const progressPct = totalCount === 0 ? 0 : Math.round((checkedCount / totalCount) * 100);
+
+  async function updateResi(tn, patch) {
+    setSavingTn(tn);
+    try {
+      const r = await omApi(`pdfs/${item.id}/ketoko-resi`, {
+        method: 'POST',
+        body: JSON.stringify({ tracking_number: tn, ...patch }),
+      });
+      // r.item is the fresh doc. Merge into local + propagate up.
+      setItem(r.item);
+      onChanged?.(r.item);
+    } catch (e) {
+      toast.error(e.message || 'Gagal update resi KETOKO');
+    } finally {
+      setSavingTn(null);
+    }
+  }
+
+  return (
+    <Dialog open={true} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[92vh] p-0 gap-0 flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="p-4 border-b border-white/10 bg-gradient-to-br from-amber-500/10 to-transparent">
+          <DialogTitle className="text-base flex items-center gap-2">
+            <Store className="w-4 h-4 text-amber-400" />
+            Input POS KETOKO
+          </DialogTitle>
+          <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
+            <span className="font-mono truncate max-w-[200px]" title={item.filename}>{item.filename}</span>
+            <span>·</span>
+            <span className="text-amber-300 tabular-nums font-semibold">{checkedCount}/{totalCount} resi</span>
+            <span>·</span>
+            <span>{progressPct}%</span>
+          </div>
+          {/* Progress bar */}
+          <div className="h-1.5 w-full rounded-full bg-white/[0.05] mt-2 overflow-hidden">
+            <div
+              className="h-full bg-amber-500 transition-all"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Resi list */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {resi.length === 0 ? (
+            <div className="text-center py-10 text-sm text-muted-foreground">
+              Belum ada resi terdeteksi. Coba klik scan ulang pada halaman daftar.
+            </div>
+          ) : (
+            resi.map((r) => {
+              const isSaving = savingTn === r.tracking_number;
+              const draftKey = r.tracking_number;
+              const currentText = draftText[draftKey] !== undefined
+                ? draftText[draftKey]
+                : (r.note_text || '');
+              return (
+                <div
+                  key={r.tracking_number}
+                  className={`p-3 rounded-md border transition-colors ${
+                    r.checked
+                      ? 'border-emerald-500/30 bg-emerald-500/[0.05]'
+                      : 'border-white/10 bg-white/[0.02]'
+                  } ${isSaving ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={r.checked}
+                      disabled={isSaving}
+                      onChange={(e) => updateResi(r.tracking_number, { checked: e.target.checked })}
+                      className="w-5 h-5 accent-emerald-500 cursor-pointer mt-0.5 shrink-0"
+                      title={r.checked ? 'Sudah input KETOKO' : 'Belum input KETOKO'}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="font-mono text-sm truncate">{r.tracking_number}</div>
+                        {r.checked ? (
+                          <Badge variant="outline" className="border-emerald-500/40 text-emerald-400 text-[9px]">
+                            ✓ Sudah Input
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-amber-500/30 text-amber-300/80 text-[9px]">
+                            Belum Input
+                          </Badge>
+                        )}
+                        {isSaving && (
+                          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                        )}
+                      </div>
+                      {r.checked && r.checked_by_name && (
+                        <div className="text-[10px] text-muted-foreground mt-0.5">
+                          oleh {r.checked_by_name} · {fmtDate(r.checked_at)}
+                        </div>
+                      )}
+
+                      {/* Note controls — only when UNCHECKED */}
+                      {!r.checked && (
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <select
+                            value={r.note_type || ''}
+                            disabled={isSaving}
+                            onChange={(e) => {
+                              const nt = e.target.value || null;
+                              // Clear the draft text if switching away from 'lainnya'
+                              if (nt !== 'lainnya') {
+                                setDraftText((d) => ({ ...d, [draftKey]: '' }));
+                              }
+                              updateResi(r.tracking_number, {
+                                note_type: nt,
+                                note_text: nt === 'lainnya' ? (draftText[draftKey] || r.note_text || '') : null,
+                              });
+                            }}
+                            className="h-8 px-2 rounded-md bg-black/30 border border-white/10 text-xs focus:border-amber-400 focus:outline-none"
+                          >
+                            <option value="">— Catatan (opsional) —</option>
+                            <option value="kosong">Barang Kosong</option>
+                            <option value="lainnya">Lainnya</option>
+                          </select>
+                          {r.note_type === 'lainnya' && (
+                            <input
+                              type="text"
+                              value={currentText}
+                              disabled={isSaving}
+                              placeholder="Ketik catatan…"
+                              maxLength={500}
+                              onChange={(e) =>
+                                setDraftText((d) => ({ ...d, [draftKey]: e.target.value }))
+                              }
+                              onBlur={() => {
+                                const txt = draftText[draftKey];
+                                if (txt !== undefined && txt !== (r.note_text || '')) {
+                                  updateResi(r.tracking_number, {
+                                    note_type: 'lainnya',
+                                    note_text: txt,
+                                  });
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') e.currentTarget.blur();
+                              }}
+                              className="h-8 flex-1 min-w-[160px] px-2 rounded-md bg-black/30 border border-white/10 text-xs focus:border-amber-400 focus:outline-none"
+                            />
+                          )}
+                          {r.note_type && r.note_type !== 'lainnya' && (
+                            <span className="text-[10px] text-amber-300/70">
+                              {r.note_type === 'kosong' ? 'Ditandai: Barang Kosong' : ''}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-white/10 p-3 flex items-center justify-between gap-2 bg-neutral-950/60">
+          <div className="text-[11px] text-muted-foreground hidden sm:block">
+            Perubahan tersimpan otomatis. Tekan <kbd className="px-1 py-0.5 rounded bg-white/[0.06] border border-white/10 text-[10px] font-mono">Esc</kbd> untuk tutup.
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onClose}
+            className="ml-auto gap-1.5 border-white/20 hover:bg-white/10"
+          >
+            Tutup
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

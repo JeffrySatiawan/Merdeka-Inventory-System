@@ -1809,11 +1809,20 @@ function OMReportsView({ user }) {
 
       {/* Summary */}
       {data?.summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <StatCard label="Total Dipacking" value={data.summary.packed} tone="blue" />
           <StatCard label="Diserahkan" value={data.summary.delivered} tone="emerald" />
           <StatCard label="Selisih" value={data.summary.difference} tone={data.summary.difference > 0 ? 'rose' : 'emerald'} />
           <StatCard label="Success Rate" value={`${data.summary.success_rate}%`} tone={data.summary.success_rate === 100 ? 'emerald' : 'amber'} />
+          <StatCard
+            label="POS KETOKO"
+            value={data.summary.ketoko_progress || `${data.summary.ketoko_done || 0}/${data.summary.ketoko_total || 0}`}
+            tone={
+              (data.summary.ketoko_done || 0) === (data.summary.ketoko_total || 0) && (data.summary.ketoko_total || 0) > 0
+                ? 'emerald'
+                : 'amber'
+            }
+          />
         </div>
       )}
 
@@ -1834,6 +1843,7 @@ function OMReportsView({ user }) {
                     <th className="py-2 pr-3">Operator</th>
                     <th className="py-2 pr-3 text-right">SKU/Item</th>
                     <th className="py-2 pr-3">Status</th>
+                    <th className="py-2 pr-3">KETOKO</th>
                     <th className="py-2 pr-3">Packing</th>
                     <th className="py-2 pr-3">Serah Terima</th>
                     <th className="py-2 pr-3">Foto</th>
@@ -1851,6 +1861,39 @@ function OMReportsView({ user }) {
                           <Badge variant="outline" className="border-emerald-500/40 text-emerald-400 text-[9px]">Diserahkan</Badge>
                         ) : (
                           <Badge variant="outline" className="border-amber-500/40 text-amber-400 text-[9px]">Menunggu Pickup</Badge>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 whitespace-nowrap">
+                        {/* KETOKO status: shown when the resi is linked to an uploaded PDF.
+                            ketoko_pdf_id === null means no PDF contains this resi (or the
+                            PDF was deleted) — show a subtle "— tidak ada PDF" hint. */}
+                        {x.ketoko_pdf_id ? (
+                          x.ketoko_checked ? (
+                            <div className="flex items-center gap-1">
+                              <Badge variant="outline" className="border-emerald-500/40 text-emerald-400 text-[9px]">✓ Sudah</Badge>
+                              {x.ketoko_checked_by_name && (
+                                <span className="text-[9px] text-muted-foreground truncate max-w-[80px]" title={x.ketoko_checked_by_name}>
+                                  {x.ketoko_checked_by_name}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex flex-col gap-0.5">
+                              <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[9px]">Belum</Badge>
+                              {x.ketoko_note_type && (
+                                <span
+                                  className="text-[9px] text-amber-300/80 truncate max-w-[120px]"
+                                  title={x.ketoko_note_type === 'lainnya' ? x.ketoko_note_text || '' : 'Barang Kosong'}
+                                >
+                                  {x.ketoko_note_type === 'kosong'
+                                    ? '· Barang Kosong'
+                                    : `· ${x.ketoko_note_text || 'Lainnya'}`}
+                                </span>
+                              )}
+                            </div>
+                          )
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground/50">—</span>
                         )}
                       </td>
                       <td className="py-2 pr-3 text-muted-foreground">{new Date(x.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}</td>
