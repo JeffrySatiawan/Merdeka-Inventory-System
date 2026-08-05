@@ -940,9 +940,25 @@ function OMScanPrintView({ user }) {
 // VIEW: Scan Mulai Packing (Phase 2) — STEP-BY-STEP WIZARD
 // SCAN → SKU → ITEM → FOTO → SIMPAN (sequential, auto-focus)
 // ============================================================
-function OMScanPackView({ user }) {
+// VIEW: Scan Packing (dua mode reuse — patch minimal split)
+// mode='serah_terima' → Menu "Serah Terima Barang": SCAN → SKU → ITEM → SIMPAN
+// mode='dokumentasi'  → Menu "Dokumentasi Packing": SCAN → FOTO → SIMPAN
+// mode='full' (legacy) → SCAN → SKU → ITEM → FOTO → SIMPAN (backward-compat)
+// ============================================================
+function OMScanPackView({ user, mode = 'serah_terima' }) {
+  // Step sequence depends on mode. Reuses ALL existing lookup/save/camera
+  // logic — we only skip the steps that aren't relevant for the mode.
+  const stepFlow =
+    mode === 'dokumentasi' ? ['photo', 'ready']
+    : mode === 'full' ? ['sku', 'item', 'photo', 'ready']
+    : /* serah_terima */ ['sku', 'item', 'ready'];
+  const firstStep = stepFlow[0];
+  const pageName =
+    mode === 'dokumentasi' ? 'Dokumentasi Packing'
+    : mode === 'full' ? 'Scan Mulai Packing'
+    : 'Serah Terima Barang';
   const [pending, setPending] = useState(null); // { shipment }
-  const [step, setStep] = useState('sku'); // sku | item | photo | ready
+  const [step, setStep] = useState(firstStep);
   const [form, setForm] = useState({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
   const [compressing, setCompressing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -1021,7 +1037,7 @@ function OMScanPackView({ user }) {
         feedback('ok');
         setPending({ shipment: s });
         setForm({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
-        setStep('sku'); // start wizard at SKU input
+        setStep(firstStep); // start wizard at mode's first step
       }
     } catch (e) {
       feedback('err');
@@ -1031,15 +1047,22 @@ function OMScanPackView({ user }) {
     }
   }
 
+  // Advance to the next step in the mode's flow (helper — keeps step
+  // transitions declarative so future mode changes are trivial).
+  function stepAfter(current) {
+    const idx = stepFlow.indexOf(current);
+    if (idx < 0 || idx === stepFlow.length - 1) return 'ready';
+    return stepFlow[idx + 1];
+  }
   function nextFromSku() {
     const n = Number(form.sku_count);
     if (!Number.isFinite(n) || n < 1) { feedback('warn'); return; }
-    setStep('item');
+    setStep(stepAfter('sku'));
   }
   function nextFromItem() {
     const n = Number(form.item_count);
     if (!Number.isFinite(n) || n < 1) { feedback('warn'); return; }
-    setStep('photo'); // will auto-open camera
+    setStep(stepAfter('item')); // may be 'photo' (full) or 'ready' (serah_terima)
   }
 
   async function onPhotoSelected(e) {
@@ -1068,20 +1091,30 @@ function OMScanPackView({ user }) {
     const s = pending.shipment;
     setSaving(true);
     try {
+      // Payload depends on mode — Menu 2 (dokumentasi) omits sku/item so
+      // the backend stores them as null. Menu 1 (serah_terima) omits photo.
+      // Backend `POST /api/om/scan/pack` accepts either combination now.
+      const payload = { tracking_number: s.tracking_number };
+      if (mode !== 'dokumentasi') {
+        payload.sku_count = Number(form.sku_count);
+        payload.item_count = Number(form.item_count);
+      }
+      if (mode !== 'serah_terima') {
+        payload.photo_data_url = form.photo_data_url;
+      }
       const resp = await omApi('scan/pack', {
         method: 'POST',
-        body: JSON.stringify({
-          tracking_number: s.tracking_number,
-          sku_count: Number(form.sku_count),
-          item_count: Number(form.item_count),
-          photo_data_url: form.photo_data_url,
-        }),
+        body: JSON.stringify(payload),
       });
       feedback('ok');
-      addQueue({ type: 'ok', tracking: s.tracking_number, message: `Packing selesai · ${resp.shipment.expedition_name}` });
+      const doneLabel =
+        mode === 'dokumentasi' ? 'Dokumentasi tersimpan'
+        : mode === 'serah_terima' ? 'Serah terima tersimpan'
+        : 'Packing selesai';
+      addQueue({ type: 'ok', tracking: s.tracking_number, message: `${doneLabel} · ${resp.shipment.expedition_name}` });
       setStats((st) => ({ ...st, packed: (st.packed || 0) + 1 }));
       setPending(null);
-      setStep('sku');
+      setStep(firstStep);
     } catch (e) {
       feedback('err');
       addQueue({ type: 'err', tracking: s.tracking_number, message: e.message || 'Error' });
@@ -1092,7 +1125,7 @@ function OMScanPackView({ user }) {
 
   function cancel() {
     setPending(null);
-    setStep('sku');
+    setStep(firstStep);
     setForm({ sku_count: '', item_count: '', photo_data_url: null, photo_size: 0 });
   }
 
