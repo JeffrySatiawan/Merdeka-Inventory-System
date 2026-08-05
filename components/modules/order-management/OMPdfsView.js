@@ -12,6 +12,7 @@ import {
   Printer,
   Loader2,
   QrCode,
+  Barcode,
   CheckCircle2,
   RefreshCw,
   Eye,
@@ -231,16 +232,17 @@ function invalidatePdfCache(pdfId) {
 }
 
 // Scan codes from a PDF (given pre-loaded pdf document instance)
-// Returns { trackingNumbers: string[], pagesCount: number }
+// Returns { trackingNumbers: string[], pagesCount: number, detectedVia: 'qr'|'barcode'|null }
 //
 // READ ORDER (spec — sequential, QR wins):
 //   1) Full pass over every page trying QR_CODE only. If ANY QR is found
-//      across the whole PDF, return those results immediately.
+//      across the whole PDF, return those results immediately with
+//      detectedVia='qr'.
 //   2) Only if pass 1 returned zero QR codes: full pass over every page
 //      trying common 1D barcodes (Code128, Code39, EAN, UPC, ITF, Codabar).
-//      This handles labels like Grab Instant which print only a 1D barcode.
-//   3) If both passes find nothing, return empty (existing "belum
-//      terdeteksi" flow kicks in on the server side).
+//      Returns detectedVia='barcode' when anything is found.
+//   3) If both passes find nothing, return empty + detectedVia=null (existing
+//      "belum terdeteksi" flow kicks in on the server side).
 //
 // The QR-only first pass preserves 100% backward compatibility: PDFs that
 // already worked continue to produce identical results, and the barcode
@@ -282,7 +284,11 @@ async function scanQrFromPdfDoc(pdfDoc) {
     }
   }
   if (foundQr.size > 0) {
-    return { trackingNumbers: Array.from(foundQr), pagesCount: pdfDoc.numPages };
+    return {
+      trackingNumbers: Array.from(foundQr),
+      pagesCount: pdfDoc.numPages,
+      detectedVia: 'qr',
+    };
   }
 
   // ---- PASS 2: 1D BARCODE fallback (only fires when NO QR was found) ----
@@ -326,6 +332,7 @@ async function scanQrFromPdfDoc(pdfDoc) {
   return {
     trackingNumbers: Array.from(foundBarcode),
     pagesCount: pdfDoc.numPages,
+    detectedVia: foundBarcode.size > 0 ? 'barcode' : null,
   };
 }
 
@@ -333,10 +340,18 @@ async function scanQrFromPdfDoc(pdfDoc) {
 // Returns the updated pdf item from server. Uses cached pdfDoc.
 async function autoScanPdfById(pdfId) {
   const pdfDoc = await getPdfDoc(pdfId);
-  const { trackingNumbers, pagesCount } = await scanQrFromPdfDoc(pdfDoc);
+  const { trackingNumbers, pagesCount, detectedVia } = await scanQrFromPdfDoc(pdfDoc);
   const updated = await omApi(`pdfs/${pdfId}/scan-result`, {
     method: 'POST',
-    body: JSON.stringify({ tracking_numbers: trackingNumbers, pages_count: pagesCount }),
+    // detected_via is an OPTIONAL additive field — servers that ignore it
+    // still work exactly as before. When present, it lets the list UI show
+    // "NOMOR QR TERDETEKSI" vs "NOMOR BARCODE TERDETEKSI" so operators know
+    // which parser pass produced the reading.
+    body: JSON.stringify({
+      tracking_numbers: trackingNumbers,
+      pages_count: pagesCount,
+      detected_via: detectedVia,
+    }),
   });
   return updated.item;
 }
@@ -1260,8 +1275,25 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
         <div className="px-3 pb-3 pt-0 border-t border-white/5 mt-1">
           <div className="flex items-center justify-between mb-1.5">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground/80 flex items-center gap-1.5">
-              <QrCode className="w-3 h-3 text-emerald-400" />
-              Nomor Resi Terdeteksi
+              {/* Label follows the parser result: QR → "Nomor QR Terdeteksi",
+                  1D fallback → "Nomor Barcode Terdeteksi". Legacy PDFs (scanned
+                  before detected_via existed) keep the generic label. */}
+              {item.detected_via === 'barcode' ? (
+                <>
+                  <Barcode className="w-3 h-3 text-emerald-400" />
+                  Nomor Barcode Terdeteksi
+                </>
+              ) : item.detected_via === 'qr' ? (
+                <>
+                  <QrCode className="w-3 h-3 text-emerald-400" />
+                  Nomor QR Terdeteksi
+                </>
+              ) : (
+                <>
+                  <QrCode className="w-3 h-3 text-emerald-400" />
+                  Nomor Resi Terdeteksi
+                </>
+              )}
             </div>
             {detected.length > 0 && (
               <button
@@ -1275,11 +1307,11 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
           </div>
           {isScanning && detected.length === 0 ? (
             <div className="text-xs text-amber-300/80 flex items-center gap-2 py-1">
-              <Loader2 className="w-3 h-3 animate-spin" /> Membaca QR pada tiap halaman...
+              <Loader2 className="w-3 h-3 animate-spin" /> Membaca QR / Barcode pada tiap halaman...
             </div>
           ) : detected.length === 0 ? (
             <div className="text-xs text-muted-foreground/70 py-1">
-              Tidak ada QR code terbaca. Pastikan PDF berisi label resi dengan barcode/QR.
+              Tidak ada QR code maupun barcode terbaca. Pastikan PDF berisi label resi yang jelas.
             </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
@@ -1289,7 +1321,11 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
                   className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-mono"
                   title={tn}
                 >
-                  <QrCode className="w-3 h-3 opacity-70" />
+                  {item.detected_via === 'barcode' ? (
+                    <Barcode className="w-3 h-3 opacity-70" />
+                  ) : (
+                    <QrCode className="w-3 h-3 opacity-70" />
+                  )}
                   {tn}
                 </span>
               ))}
