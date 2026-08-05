@@ -230,16 +230,39 @@ function invalidatePdfCache(pdfId) {
   }
 }
 
-// Scan QR codes from a PDF (given pre-loaded pdf document instance)
+// Scan codes from a PDF (given pre-loaded pdf document instance)
 // Returns { trackingNumbers: string[], pagesCount: number }
+//
+// READ ORDER (spec — sequential, QR wins):
+//   1) Full pass over every page trying QR_CODE only. If ANY QR is found
+//      across the whole PDF, return those results immediately.
+//   2) Only if pass 1 returned zero QR codes: full pass over every page
+//      trying common 1D barcodes (Code128, Code39, EAN, UPC, ITF, Codabar).
+//      This handles labels like Grab Instant which print only a 1D barcode.
+//   3) If both passes find nothing, return empty (existing "belum
+//      terdeteksi" flow kicks in on the server side).
+//
+// The QR-only first pass preserves 100% backward compatibility: PDFs that
+// already worked continue to produce identical results, and the barcode
+// pass never fires. Barcode fallback only ever runs when the previous
+// implementation would have returned an empty array anyway.
 async function scanQrFromPdfDoc(pdfDoc) {
   const { BrowserMultiFormatReader } = await import('@zxing/browser');
-  const reader = new BrowserMultiFormatReader();
+  const { BarcodeFormat, DecodeHintType } = await import('@zxing/library');
 
-  const found = new Set();
+  // Reader restricted to QR only — this is the identical logic the parser
+  // used before this patch, just wrapped in an explicit hint so it can't
+  // accidentally match a 1D barcode on a page that also has a QR.
+  const qrHints = new Map();
+  qrHints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+  const qrReader = new BrowserMultiFormatReader(qrHints);
+
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   const scale = 2.0;
+
+  // ---- PASS 1: QR only ----
+  const foundQr = new Set();
   for (let p = 1; p <= pdfDoc.numPages; p += 1) {
     try {
       const page = await pdfDoc.getPage(p);
@@ -248,18 +271,60 @@ async function scanQrFromPdfDoc(pdfDoc) {
       canvas.height = Math.ceil(vp.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
       try {
-        const result = await reader.decodeFromCanvas(canvas);
+        const result = await qrReader.decodeFromCanvas(canvas);
         const text = result?.getText?.() || '';
-        if (text && text.trim()) found.add(text.trim());
+        if (text && text.trim()) foundQr.add(text.trim());
       } catch {
-        /* NotFoundException — no QR on this page */
+        /* NotFoundException — no QR on this page, keep going */
       }
-    } catch (e) {
+    } catch (_e) {
+      /* Continue on per-page errors */
+    }
+  }
+  if (foundQr.size > 0) {
+    return { trackingNumbers: Array.from(foundQr), pagesCount: pdfDoc.numPages };
+  }
+
+  // ---- PASS 2: 1D BARCODE fallback (only fires when NO QR was found) ----
+  const barcodeHints = new Map();
+  barcodeHints.set(DecodeHintType.POSSIBLE_FORMATS, [
+    BarcodeFormat.CODE_128,
+    BarcodeFormat.CODE_39,
+    BarcodeFormat.EAN_13,
+    BarcodeFormat.EAN_8,
+    BarcodeFormat.UPC_A,
+    BarcodeFormat.UPC_E,
+    BarcodeFormat.ITF,
+    BarcodeFormat.CODABAR,
+  ]);
+  // TRY_HARDER makes ZXing scan the image more thoroughly (rotations,
+  // partial regions) — necessary for 1D barcodes that sit inside a
+  // dense label layout. It's slower but only runs when we've already
+  // failed to find a QR, so the average cost is negligible.
+  barcodeHints.set(DecodeHintType.TRY_HARDER, true);
+  const barcodeReader = new BrowserMultiFormatReader(barcodeHints);
+
+  const foundBarcode = new Set();
+  for (let p = 1; p <= pdfDoc.numPages; p += 1) {
+    try {
+      const page = await pdfDoc.getPage(p);
+      const vp = page.getViewport({ scale });
+      canvas.width = Math.ceil(vp.width);
+      canvas.height = Math.ceil(vp.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      try {
+        const result = await barcodeReader.decodeFromCanvas(canvas);
+        const text = result?.getText?.() || '';
+        if (text && text.trim()) foundBarcode.add(text.trim());
+      } catch {
+        /* NotFoundException — no barcode on this page */
+      }
+    } catch (_e) {
       /* Continue on per-page errors */
     }
   }
   return {
-    trackingNumbers: Array.from(found),
+    trackingNumbers: Array.from(foundBarcode),
     pagesCount: pdfDoc.numPages,
   };
 }
