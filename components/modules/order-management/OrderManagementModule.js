@@ -1134,7 +1134,7 @@ function OMScanPackView({ user, mode = 'serah_terima' }) {
   return (
     <ScannerShell
       moduleName="Order Management"
-      pageName="Scan Mulai Packing"
+      pageName={pageName}
       user={user}
       stats={[
         { label: 'Cetak', value: stats.printed || 0, tone: 'default' },
@@ -2327,7 +2327,8 @@ export default function OrderManagementModule({ view, user }) {
   switch (view) {
     case 'om:dashboard': return <OMDashboardView />;
     case 'om:scan_print': return <OMScanPrintView user={user} />;
-    case 'om:scan_pack': return <OMScanPackView user={user} />;
+    case 'om:scan_pack_flow1': return <OMScanPackView user={user} mode="serah_terima" />;
+    case 'om:scan_pack_flow2': return <OMScanPackView user={user} mode="dokumentasi" />;
     case 'om:scan_deliver': return <OMScanDeliveryView user={user} />;
     case 'om:completed': return <OMCompletedView user={user} />;
     case 'om:reports': return <OMReportsView user={user} />;
