@@ -261,6 +261,10 @@ async function scanQrFromPdfDoc(pdfDoc) {
 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
+  // Turn off canvas image smoothing so barcode bars stay crisp when
+  // scaled — anti-aliasing turns thin black bars into gray gradient which
+  // ZXing struggles to threshold correctly on Code128 labels.
+  if (ctx && 'imageSmoothingEnabled' in ctx) ctx.imageSmoothingEnabled = false;
   const scale = 2.0;
 
   // ---- PASS 1: QR only ----
@@ -291,7 +295,57 @@ async function scanQrFromPdfDoc(pdfDoc) {
     };
   }
 
-  // ---- PASS 2: 1D BARCODE fallback (only fires when NO QR was found) ----
+  // ---- PASS 2a: PDF TEXT EXTRACTION (fast, high-precision fallback) ----
+  //
+  // Most shipping labels print the tracking number as SELECTABLE TEXT next
+  // to the barcode (e.g. "No. Pesanan: 260805H9PWBVJ2" on Grab Instant,
+  // "Nomor Resi:" on JNE etc.). pdf.js exposes this via getTextContent()
+  // without any image processing — much more reliable than trying to
+  // decode a possibly-antialiased raster barcode.
+  //
+  // Strategy: pull every text item on every page, look for lines that
+  // start with one of the well-known Indonesian label keywords, then take
+  // the alphanumeric identifier that follows. Labeled as barcode source
+  // (`detectedVia = 'barcode'`) so the UI still says "NOMOR BARCODE
+  // TERDETEKSI" — from the operator's perspective this IS the barcode
+  // number, just captured from the embedded text stream instead of by
+  // decoding the raster bars.
+  const TRACKING_LABEL_RX = /(?:no\.?\s*pesanan|nomor?\s*(?:resi|pesanan|awb)|no\.?\s*resi|awb|tracking\s*number|order\s*(?:id|no|number)|shipping\s*id|receipt\s*no)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{6,29})/gi;
+  const CANDIDATE_RX = /^[A-Z0-9][A-Z0-9\-]{7,29}$/;
+  const foundText = new Set();
+  for (let p = 1; p <= pdfDoc.numPages; p += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await pdfDoc.getPage(p);
+      // eslint-disable-next-line no-await-in-loop
+      const tc = await page.getTextContent();
+      // Concatenate text items into a single string per page for regex search.
+      const text = (tc?.items || [])
+        .map((it) => (typeof it?.str === 'string' ? it.str : ''))
+        .join(' ')
+        .replace(/\s+/g, ' ');
+      // Match labeled tracking numbers
+      let m;
+      TRACKING_LABEL_RX.lastIndex = 0;
+      while ((m = TRACKING_LABEL_RX.exec(text)) !== null) {
+        const candidate = String(m[1] || '').trim().toUpperCase();
+        if (candidate && CANDIDATE_RX.test(candidate)) foundText.add(candidate);
+      }
+    } catch (_e) {
+      /* per-page text extraction failure — continue */
+    }
+  }
+  if (foundText.size > 0) {
+    return {
+      trackingNumbers: Array.from(foundText),
+      pagesCount: pdfDoc.numPages,
+      detectedVia: 'barcode',
+    };
+  }
+
+  // ---- PASS 2b: 1D BARCODE image decode (fires when text extraction
+  //               didn't find anything either — labels with no embedded
+  //               text or where text uses different keywords).
   const barcodeHints = new Map();
   barcodeHints.set(DecodeHintType.POSSIBLE_FORMATS, [
     BarcodeFormat.CODE_128,
