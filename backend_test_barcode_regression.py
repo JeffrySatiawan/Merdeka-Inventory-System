@@ -1,631 +1,340 @@
 #!/usr/bin/env python3
 """
-REGRESSION TEST for OM Parser — Barcode 1D fallback patch.
-NO backend code was modified. This test verifies all backend endpoints still work.
+Backend Regression Test for Barcode Pass 2 Parser Frontend Patch
+=================================================================
+Frontend-only change: strengthened barcode parser in OMPdfsView.js scanQrFromPdfDoc()
+NO backend code changed.
+
+This test confirms ZERO backend regression by verifying all PDF Resi + KETOKO endpoints
+still work correctly after the frontend patch.
+
+Test Plan (from review request):
+1. Login owner → token
+2. POST /api/om/pdfs upload a valid PDF. Capture id.
+3. POST /api/om/pdfs/{id}/scan-result with barcode data — assert 200, response.item.detected_via === "barcode", detected_tracking_numbers === ["BC-STRONG-1"]
+4. GET /api/om/pdfs → item has ketoko_resi hydrated with 1 entry, ketoko_total_count === 1
+5. POST /api/om/pdfs/{id}/ketoko-resi with checked:true — assert 200, response.item.ketoko_checked_count === 1, ketoko_input_at is set
+6. GET /api/om/shipments — should still work (200), summary.ketoko_progress present
+7. POST /api/om/pdfs upload another PDF, then POST scan-result with multiple tracking numbers — assert 200. GET /api/om/pdfs → item.ketoko_resi has 3 entries, all checked=false
+8. All previously-fixed URL-token & Bearer auth paths still 200/401/403 correctly
+9. Cleanup — DELETE every test PDF
+
+Expected: 100% PASS. Report any regression as CRITICAL.
 """
+
 import requests
-import json
-import time
+import sys
+import io
 from datetime import datetime
 
+# Base URL from /app/.env
 BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+API_BASE = f"{BASE_URL}/api"
 
 # Test credentials
-OWNER_USER = "owner"
-OWNER_PASS = "owner123"
-CINDY_USER = "cindy"
-CINDY_PASS = "cindy123"
+OWNER_USERNAME = "owner"
+OWNER_PASSWORD = "owner123"
 
-# Global state
-owner_token = None
-cindy_token = None
-test_pdf_ids = []
+# Minimal valid PDF (7 bytes - smallest valid PDF structure)
+MINIMAL_PDF = b"%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<<>>>>endobj\nxref\n0 4\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n210\n%%EOF"
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-def login(username, password):
-    """Login and return token"""
-    log(f"Logging in as {username}...")
-    resp = requests.post(f"{BASE_URL}/api/auth/login", json={"username": username, "password": password})
-    if resp.status_code != 200:
-        log(f"❌ Login failed: {resp.status_code} {resp.text}")
-        return None
+def test_login():
+    """TEST 1: Owner login"""
+    log("TEST 1: Owner login")
+    resp = requests.post(f"{API_BASE}/auth/login", json={
+        "username": OWNER_USERNAME,
+        "password": OWNER_PASSWORD
+    })
+    assert resp.status_code == 200, f"Login failed: {resp.status_code} {resp.text}"
     data = resp.json()
-    log(f"✅ Login successful: {data['user']['name']} (role={data['user']['role']})")
-    return data['token']
+    assert "token" in data, "No token in login response"
+    assert "user" in data, "No user in login response"
+    assert data["user"]["role"] == "owner", f"Expected owner role, got {data['user']['role']}"
+    log(f"✅ Owner login successful, token: {data['token'][:20]}...")
+    return data["token"]
 
-def create_minimal_pdf():
-    """Create a minimal valid PDF (smallest possible)"""
-    # Minimal PDF structure (681 bytes)
-    pdf_content = b"""%PDF-1.4
-1 0 obj
-<<
-/Type /Catalog
-/Pages 2 0 R
->>
-endobj
-2 0 obj
-<<
-/Type /Pages
-/Kids [3 0 R]
-/Count 1
->>
-endobj
-3 0 obj
-<<
-/Type /Page
-/Parent 2 0 R
-/MediaBox [0 0 612 792]
-/Contents 4 0 R
-/Resources <<
-/Font <<
-/F1 <<
-/Type /Font
-/Subtype /Type1
-/BaseFont /Helvetica
->>
->>
->>
->>
-endobj
-4 0 obj
-<<
-/Length 44
->>
-stream
-BT
-/F1 12 Tf
-100 700 Td
-(Test PDF) Tj
-ET
-endstream
-endobj
-xref
-0 5
-0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000317 00000 n 
-trailer
-<<
-/Size 5
-/Root 1 0 R
->>
-startxref
-410
-%%EOF
-"""
-    return pdf_content
+def test_upload_pdf(token):
+    """TEST 2: Upload a valid PDF"""
+    log("TEST 2: Upload PDF via POST /api/om/pdfs")
+    headers = {"Authorization": f"Bearer {token}"}
+    files = {"file": ("test-barcode-1.pdf", io.BytesIO(MINIMAL_PDF), "application/pdf")}
+    resp = requests.post(f"{API_BASE}/om/pdfs", headers=headers, files=files)
+    assert resp.status_code == 200, f"Upload failed: {resp.status_code} {resp.text}"
+    data = resp.json()
+    assert "item" in data, "No item in upload response"
+    assert "id" in data["item"], "No id in uploaded item"
+    pdf_id = data["item"]["id"]
+    log(f"✅ PDF uploaded successfully, id: {pdf_id}")
+    return pdf_id
 
-def test_1_scan_result_contract():
-    """TEST 1 — POST /api/om/pdfs/{id}/scan-result contract"""
-    log("\n=== TEST 1: POST /api/om/pdfs/{id}/scan-result contract ===")
+def test_scan_result_barcode(token, pdf_id):
+    """TEST 3: POST scan-result with barcode data"""
+    log(f"TEST 3: POST /api/om/pdfs/{pdf_id}/scan-result with barcode data")
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {
+        "tracking_numbers": ["BC-STRONG-1"],
+        "pages_count": 1,
+        "detected_via": "barcode"
+    }
+    resp = requests.post(f"{API_BASE}/om/pdfs/{pdf_id}/scan-result", headers=headers, json=body)
+    assert resp.status_code == 200, f"Scan-result failed: {resp.status_code} {resp.text}"
+    data = resp.json()
+    assert "item" in data, "No item in scan-result response"
+    item = data["item"]
     
-    # 1. Login owner
-    global owner_token
-    owner_token = login(OWNER_USER, OWNER_PASS)
-    if not owner_token:
-        return False
+    # Verify detected_via
+    assert item.get("detected_via") == "barcode", f"Expected detected_via='barcode', got {item.get('detected_via')}"
     
-    headers = {"Authorization": f"Bearer {owner_token}"}
+    # Verify detected_tracking_numbers
+    assert item.get("detected_tracking_numbers") == ["BC-STRONG-1"], \
+        f"Expected detected_tracking_numbers=['BC-STRONG-1'], got {item.get('detected_tracking_numbers')}"
     
-    # 2. Upload a PDF
-    log("Uploading test PDF...")
-    pdf_bytes = create_minimal_pdf()
-    files = {"file": ("test_scan_result.pdf", pdf_bytes, "application/pdf")}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs", headers=headers, files=files)
-    if resp.status_code != 200:
-        log(f"❌ PDF upload failed: {resp.status_code} {resp.text}")
-        return False
+    # Verify pages_count
+    assert item.get("pages_count") == 1, f"Expected pages_count=1, got {item.get('pages_count')}"
+    
+    log(f"✅ Scan-result saved: detected_via={item['detected_via']}, tracking_numbers={item['detected_tracking_numbers']}")
+    return item
+
+def test_list_pdfs_ketoko_hydration(token, pdf_id):
+    """TEST 4: GET /api/om/pdfs → verify ketoko_resi hydrated"""
+    log(f"TEST 4: GET /api/om/pdfs → verify ketoko_resi hydrated for {pdf_id}")
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{API_BASE}/om/pdfs", headers=headers)
+    assert resp.status_code == 200, f"List PDFs failed: {resp.status_code} {resp.text}"
+    data = resp.json()
+    assert "items" in data, "No items in list response"
+    
+    # Find our PDF
+    pdf = next((p for p in data["items"] if p["id"] == pdf_id), None)
+    assert pdf is not None, f"PDF {pdf_id} not found in list"
+    
+    # Verify ketoko_resi hydrated
+    assert "ketoko_resi" in pdf, "ketoko_resi not present"
+    assert isinstance(pdf["ketoko_resi"], list), "ketoko_resi is not a list"
+    assert len(pdf["ketoko_resi"]) == 1, f"Expected 1 ketoko_resi entry, got {len(pdf['ketoko_resi'])}"
+    
+    resi = pdf["ketoko_resi"][0]
+    assert resi["tracking_number"] == "BC-STRONG-1", f"Expected tracking_number='BC-STRONG-1', got {resi['tracking_number']}"
+    assert resi["checked"] == False, f"Expected checked=False initially, got {resi['checked']}"
+    
+    # Verify rollup counts
+    assert pdf.get("ketoko_total_count") == 1, f"Expected ketoko_total_count=1, got {pdf.get('ketoko_total_count')}"
+    assert pdf.get("ketoko_checked_count") == 0, f"Expected ketoko_checked_count=0, got {pdf.get('ketoko_checked_count')}"
+    
+    log(f"✅ ketoko_resi hydrated correctly: 1 entry (BC-STRONG-1), checked=False, total_count=1")
+    return pdf
+
+def test_ketoko_resi_check(token, pdf_id):
+    """TEST 5: POST /api/om/pdfs/{id}/ketoko-resi with checked:true"""
+    log(f"TEST 5: POST /api/om/pdfs/{pdf_id}/ketoko-resi with checked:true")
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {
+        "tracking_number": "BC-STRONG-1",
+        "checked": True
+    }
+    resp = requests.post(f"{API_BASE}/om/pdfs/{pdf_id}/ketoko-resi", headers=headers, json=body)
+    assert resp.status_code == 200, f"ketoko-resi check failed: {resp.status_code} {resp.text}"
+    data = resp.json()
+    assert "item" in data, "No item in ketoko-resi response"
+    item = data["item"]
+    
+    # Verify ketoko_checked_count
+    assert item.get("ketoko_checked_count") == 1, \
+        f"Expected ketoko_checked_count=1, got {item.get('ketoko_checked_count')}"
+    
+    # Verify ketoko_input_at is set (overall flag when all checked)
+    assert item.get("ketoko_input_at") is not None, "ketoko_input_at should be set when all resi checked"
+    
+    # Verify the resi entry itself
+    assert "resi" in data, "No resi in response"
+    resi = data["resi"]
+    assert resi["checked"] == True, f"Expected resi.checked=True, got {resi['checked']}"
+    assert resi["checked_at"] is not None, "checked_at should be set"
+    assert resi["checked_by_id"] is not None, "checked_by_id should be set"
+    assert resi["checked_by_name"] is not None, "checked_by_name should be set"
+    
+    log(f"✅ ketoko-resi checked: ketoko_checked_count=1, ketoko_input_at={item['ketoko_input_at']}")
+    return item
+
+def test_shipments_endpoint(token):
+    """TEST 6: GET /api/om/shipments → verify summary.ketoko_progress present"""
+    log("TEST 6: GET /api/om/shipments → verify summary.ketoko_progress present")
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{API_BASE}/om/shipments", headers=headers)
+    assert resp.status_code == 200, f"Shipments endpoint failed: {resp.status_code} {resp.text}"
+    data = resp.json()
+    assert "summary" in data, "No summary in shipments response"
+    summary = data["summary"]
+    
+    # Verify ketoko_progress field exists
+    assert "ketoko_progress" in summary, "ketoko_progress not in summary"
+    assert isinstance(summary["ketoko_progress"], str), "ketoko_progress should be a string"
+    
+    log(f"✅ Shipments endpoint working: summary.ketoko_progress={summary['ketoko_progress']}")
+    return summary
+
+def test_multi_tracking_pdf(token):
+    """TEST 7: Upload another PDF with multiple tracking numbers"""
+    log("TEST 7: Upload PDF with multiple tracking numbers")
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Upload second PDF
+    files = {"file": ("test-barcode-2.pdf", io.BytesIO(MINIMAL_PDF), "application/pdf")}
+    resp = requests.post(f"{API_BASE}/om/pdfs", headers=headers, files=files)
+    assert resp.status_code == 200, f"Upload failed: {resp.status_code} {resp.text}"
     pdf_id = resp.json()["item"]["id"]
-    test_pdf_ids.append(pdf_id)
-    log(f"✅ PDF uploaded: {pdf_id}")
+    log(f"✅ Second PDF uploaded, id: {pdf_id}")
     
-    # 3. POST scan-result with tracking numbers
-    log("Posting scan-result with tracking numbers...")
-    scan_data = {"tracking_numbers": ["ABC123", "DEF456"], "pages_count": 2}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs/{pdf_id}/scan-result", headers=headers, json=scan_data)
-    if resp.status_code != 200:
-        log(f"❌ scan-result POST failed: {resp.status_code} {resp.text}")
-        return False
-    log("✅ scan-result POST successful")
+    # POST scan-result with 3 tracking numbers
+    body = {
+        "tracking_numbers": ["MULTI-1", "MULTI-2", "MULTI-3"],
+        "pages_count": 2,
+        "detected_via": "barcode"
+    }
+    resp = requests.post(f"{API_BASE}/om/pdfs/{pdf_id}/scan-result", headers=headers, json=body)
+    assert resp.status_code == 200, f"Scan-result failed: {resp.status_code} {resp.text}"
+    item = resp.json()["item"]
+    assert item["detected_via"] == "barcode", f"Expected detected_via='barcode', got {item['detected_via']}"
+    assert len(item["detected_tracking_numbers"]) == 3, \
+        f"Expected 3 tracking numbers, got {len(item['detected_tracking_numbers'])}"
+    log(f"✅ Scan-result saved with 3 tracking numbers: {item['detected_tracking_numbers']}")
     
-    # 4. GET /api/om/pdfs and verify
-    log("Verifying scan-result in PDF list...")
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=headers)
-    if resp.status_code != 200:
-        log(f"❌ GET /api/om/pdfs failed: {resp.status_code}")
-        return False
-    items = resp.json()["items"]
-    pdf_item = next((p for p in items if p["id"] == pdf_id), None)
-    if not pdf_item:
-        log(f"❌ PDF {pdf_id} not found in list")
-        return False
+    # GET /api/om/pdfs → verify ketoko_resi has 3 entries, all checked=false
+    resp = requests.get(f"{API_BASE}/om/pdfs", headers=headers)
+    assert resp.status_code == 200, f"List PDFs failed: {resp.status_code} {resp.text}"
+    pdf = next((p for p in resp.json()["items"] if p["id"] == pdf_id), None)
+    assert pdf is not None, f"PDF {pdf_id} not found in list"
     
-    if pdf_item["detected_tracking_numbers"] != ["ABC123", "DEF456"]:
-        log(f"❌ detected_tracking_numbers mismatch: {pdf_item['detected_tracking_numbers']}")
-        return False
-    if pdf_item["pages_count"] != 2:
-        log(f"❌ pages_count mismatch: {pdf_item['pages_count']}")
-        return False
-    if not pdf_item["scanned_at"]:
-        log(f"❌ scanned_at is null")
-        return False
-    log(f"✅ Verified: detected_tracking_numbers={pdf_item['detected_tracking_numbers']}, pages_count={pdf_item['pages_count']}, scanned_at={pdf_item['scanned_at']}")
+    assert len(pdf["ketoko_resi"]) == 3, f"Expected 3 ketoko_resi entries, got {len(pdf['ketoko_resi'])}"
+    for resi in pdf["ketoko_resi"]:
+        assert resi["checked"] == False, f"Expected all resi checked=False, got {resi['checked']} for {resi['tracking_number']}"
     
-    # 5. POST scan-result with empty tracking_numbers
-    log("Posting scan-result with empty tracking_numbers...")
-    scan_data = {"tracking_numbers": [], "pages_count": 2}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs/{pdf_id}/scan-result", headers=headers, json=scan_data)
-    if resp.status_code != 200:
-        log(f"❌ scan-result POST (empty) failed: {resp.status_code} {resp.text}")
-        return False
-    log("✅ scan-result POST (empty) successful")
+    assert pdf["ketoko_total_count"] == 3, f"Expected ketoko_total_count=3, got {pdf['ketoko_total_count']}"
+    assert pdf["ketoko_checked_count"] == 0, f"Expected ketoko_checked_count=0, got {pdf['ketoko_checked_count']}"
     
-    # 6. GET /api/om/pdfs and verify empty
-    log("Verifying empty scan-result...")
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=headers)
-    if resp.status_code != 200:
-        log(f"❌ GET /api/om/pdfs failed: {resp.status_code}")
-        return False
-    items = resp.json()["items"]
-    pdf_item = next((p for p in items if p["id"] == pdf_id), None)
-    if not pdf_item:
-        log(f"❌ PDF {pdf_id} not found in list")
-        return False
-    
-    if pdf_item["detected_tracking_numbers"] != []:
-        log(f"❌ detected_tracking_numbers should be empty: {pdf_item['detected_tracking_numbers']}")
-        return False
-    log(f"✅ Verified: detected_tracking_numbers is empty")
-    
-    log("✅ TEST 1 PASSED")
-    return True
+    log(f"✅ Multi-tracking PDF verified: 3 entries in ketoko_resi, all checked=False")
+    return pdf_id
 
-def test_2_empty_to_nonempty_hydration():
-    """TEST 2 — Empty→Non-empty scan-result triggers hydration"""
-    log("\n=== TEST 2: Empty→Non-empty scan-result triggers hydration ===")
+def test_auth_regression(token):
+    """TEST 8: Verify URL-token & Bearer auth paths still work correctly"""
+    log("TEST 8: Auth regression tests (URL-token & Bearer)")
     
-    headers = {"Authorization": f"Bearer {owner_token}"}
+    # 8a. Bearer auth on /api/om/pdfs → 200
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(f"{API_BASE}/om/pdfs", headers=headers)
+    assert resp.status_code == 200, f"Bearer auth failed on /api/om/pdfs: {resp.status_code}"
+    log("✅ 8a. Bearer auth on /api/om/pdfs → 200")
     
-    # 1. Upload a new PDF
-    log("Uploading test PDF...")
-    pdf_bytes = create_minimal_pdf()
-    files = {"file": ("test_hydration.pdf", pdf_bytes, "application/pdf")}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs", headers=headers, files=files)
-    if resp.status_code != 200:
-        log(f"❌ PDF upload failed: {resp.status_code} {resp.text}")
-        return False
-    pdf_id = resp.json()["item"]["id"]
-    test_pdf_ids.append(pdf_id)
-    log(f"✅ PDF uploaded: {pdf_id}")
+    # 8b. No auth on /api/om/pdfs → 401
+    resp = requests.get(f"{API_BASE}/om/pdfs")
+    assert resp.status_code == 401, f"Expected 401 without auth, got {resp.status_code}"
+    log("✅ 8b. No auth on /api/om/pdfs → 401")
     
-    # 2. POST scan-result with empty tracking_numbers
-    log("Posting scan-result with empty tracking_numbers...")
-    scan_data = {"tracking_numbers": [], "pages_count": 1}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs/{pdf_id}/scan-result", headers=headers, json=scan_data)
-    if resp.status_code != 200:
-        log(f"❌ scan-result POST failed: {resp.status_code} {resp.text}")
-        return False
-    log("✅ scan-result POST (empty) successful")
+    # 8c. URL-token on /api/auth/me → 200
+    resp = requests.get(f"{API_BASE}/auth/me?token={token}")
+    assert resp.status_code == 200, f"URL-token auth failed on /api/auth/me: {resp.status_code}"
+    data = resp.json()
+    assert "user" in data, "No user in /api/auth/me response"
+    log("✅ 8c. URL-token on /api/auth/me → 200")
     
-    # GET and verify ketoko_resi is empty
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=headers)
-    if resp.status_code != 200:
-        log(f"❌ GET /api/om/pdfs failed: {resp.status_code}")
-        return False
-    items = resp.json()["items"]
-    pdf_item = next((p for p in items if p["id"] == pdf_id), None)
-    if not pdf_item:
-        log(f"❌ PDF {pdf_id} not found in list")
-        return False
+    # 8d. Bearer auth on /api/om/notif-settings → 200
+    resp = requests.get(f"{API_BASE}/om/notif-settings", headers=headers)
+    assert resp.status_code == 200, f"Bearer auth failed on /api/om/notif-settings: {resp.status_code}"
+    log("✅ 8d. Bearer auth on /api/om/notif-settings → 200")
     
-    if pdf_item.get("ketoko_resi", []) != []:
-        log(f"❌ ketoko_resi should be empty: {pdf_item.get('ketoko_resi')}")
-        return False
-    if pdf_item.get("ketoko_total_count", 0) != 0:
-        log(f"❌ ketoko_total_count should be 0: {pdf_item.get('ketoko_total_count')}")
-        return False
-    if pdf_item.get("ketoko_checked_count", 0) != 0:
-        log(f"❌ ketoko_checked_count should be 0: {pdf_item.get('ketoko_checked_count')}")
-        return False
-    log(f"✅ Verified: ketoko_resi=[], ketoko_total_count=0, ketoko_checked_count=0")
+    # 8e. URL-token on /api/om/notif-settings → 200
+    resp = requests.get(f"{API_BASE}/om/notif-settings?token={token}")
+    assert resp.status_code == 200, f"URL-token auth failed on /api/om/notif-settings: {resp.status_code}"
+    log("✅ 8e. URL-token on /api/om/notif-settings → 200")
     
-    # 3. POST scan-result with tracking_numbers
-    log("Posting scan-result with tracking_numbers (simulating barcode fallback)...")
-    scan_data = {"tracking_numbers": ["TN-A", "TN-B"], "pages_count": 1}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs/{pdf_id}/scan-result", headers=headers, json=scan_data)
-    if resp.status_code != 200:
-        log(f"❌ scan-result POST failed: {resp.status_code} {resp.text}")
-        return False
-    log("✅ scan-result POST (with tracking) successful")
+    # 8f. Invalid token → 401
+    resp = requests.get(f"{API_BASE}/om/pdfs?token=invalid-token-xyz")
+    assert resp.status_code == 401, f"Expected 401 with invalid token, got {resp.status_code}"
+    log("✅ 8f. Invalid token → 401")
     
-    # 4. GET and verify ketoko_resi has 2 entries
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=headers)
-    if resp.status_code != 200:
-        log(f"❌ GET /api/om/pdfs failed: {resp.status_code}")
-        return False
-    items = resp.json()["items"]
-    pdf_item = next((p for p in items if p["id"] == pdf_id), None)
-    if not pdf_item:
-        log(f"❌ PDF {pdf_id} not found in list")
-        return False
-    
-    ketoko_resi = pdf_item.get("ketoko_resi", [])
-    if len(ketoko_resi) != 2:
-        log(f"❌ ketoko_resi should have 2 entries: {ketoko_resi}")
-        return False
-    
-    # Verify all unchecked, no notes
-    for resi in ketoko_resi:
-        if resi["checked"]:
-            log(f"❌ resi {resi['tracking_number']} should be unchecked")
-            return False
-        if resi["note_type"] is not None:
-            log(f"❌ resi {resi['tracking_number']} should have no note_type")
-            return False
-    
-    if pdf_item.get("ketoko_total_count", 0) != 2:
-        log(f"❌ ketoko_total_count should be 2: {pdf_item.get('ketoko_total_count')}")
-        return False
-    if pdf_item.get("ketoko_checked_count", 0) != 0:
-        log(f"❌ ketoko_checked_count should be 0: {pdf_item.get('ketoko_checked_count')}")
-        return False
-    
-    log(f"✅ Verified: ketoko_resi has 2 entries (all unchecked, no notes), ketoko_total_count=2")
-    
-    log("✅ TEST 2 PASSED")
-    return True
+    log("✅ All auth regression tests passed")
 
-def test_3_full_om_regression():
-    """TEST 3 — Full OM endpoint regression"""
-    log("\n=== TEST 3: Full OM endpoint regression ===")
-    
-    headers_owner = {"Authorization": f"Bearer {owner_token}"}
-    
-    # Login cindy
-    global cindy_token
-    cindy_token = login(CINDY_USER, CINDY_PASS)
-    if not cindy_token:
-        return False
-    headers_cindy = {"Authorization": f"Bearer {cindy_token}"}
-    
-    tests_passed = 0
-    tests_total = 0
-    
-    # POST /api/auth/login (owner + cindy)
-    tests_total += 1
-    log("Testing POST /api/auth/login (owner)...")
-    resp = requests.post(f"{BASE_URL}/api/auth/login", json={"username": OWNER_USER, "password": OWNER_PASS})
-    if resp.status_code == 200:
-        log("✅ Owner login: 200")
-        tests_passed += 1
-    else:
-        log(f"❌ Owner login failed: {resp.status_code}")
-    
-    tests_total += 1
-    log("Testing POST /api/auth/login (cindy)...")
-    resp = requests.post(f"{BASE_URL}/api/auth/login", json={"username": CINDY_USER, "password": CINDY_PASS})
-    if resp.status_code == 200:
-        log("✅ Cindy login: 200")
-        tests_passed += 1
-    else:
-        log(f"❌ Cindy login failed: {resp.status_code}")
-    
-    # GET /api/auth/me (Bearer + ?token=)
-    tests_total += 1
-    log("Testing GET /api/auth/me (Bearer)...")
-    resp = requests.get(f"{BASE_URL}/api/auth/me", headers=headers_owner)
-    if resp.status_code == 200:
-        log("✅ GET /api/auth/me (Bearer): 200")
-        tests_passed += 1
-    else:
-        log(f"❌ GET /api/auth/me (Bearer) failed: {resp.status_code}")
-    
-    tests_total += 1
-    log("Testing GET /api/auth/me (?token=)...")
-    resp = requests.get(f"{BASE_URL}/api/auth/me?token={owner_token}")
-    if resp.status_code == 200:
-        log("✅ GET /api/auth/me (?token=): 200")
-        tests_passed += 1
-    else:
-        log(f"❌ GET /api/auth/me (?token=) failed: {resp.status_code}")
-    
-    # GET /api/dashboard
-    tests_total += 1
-    log("Testing GET /api/dashboard...")
-    resp = requests.get(f"{BASE_URL}/api/dashboard", headers=headers_owner)
-    if resp.status_code == 200:
-        log("✅ GET /api/dashboard: 200")
-        tests_passed += 1
-    else:
-        log(f"❌ GET /api/dashboard failed: {resp.status_code}")
-    
-    # GET /api/om/dashboard
-    tests_total += 1
-    log("Testing GET /api/om/dashboard...")
-    resp = requests.get(f"{BASE_URL}/api/om/dashboard", headers=headers_owner)
-    if resp.status_code == 200:
-        log("✅ GET /api/om/dashboard: 200")
-        tests_passed += 1
-    else:
-        log(f"❌ GET /api/om/dashboard failed: {resp.status_code}")
-    
-    # POST /api/om/pdfs (upload PDF)
-    tests_total += 1
-    log("Testing POST /api/om/pdfs (upload)...")
-    pdf_bytes = create_minimal_pdf()
-    files = {"file": ("test_regression.pdf", pdf_bytes, "application/pdf")}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs", headers=headers_owner, files=files)
-    if resp.status_code == 200:
-        pdf_id = resp.json()["item"]["id"]
-        test_pdf_ids.append(pdf_id)
-        log(f"✅ POST /api/om/pdfs: 200 (id={pdf_id})")
-        tests_passed += 1
-    else:
-        log(f"❌ POST /api/om/pdfs failed: {resp.status_code}")
-        pdf_id = None
-    
-    # POST /api/om/pdfs/auto (Merdeka Share)
-    tests_total += 1
-    log("Testing POST /api/om/pdfs/auto (Merdeka Share)...")
-    pdf_bytes = create_minimal_pdf()
-    files = {"file": ("test_auto.pdf", pdf_bytes, "application/pdf")}
-    resp = requests.post(f"{BASE_URL}/api/om/pdfs/auto", headers=headers_owner, files=files)
-    if resp.status_code == 200:
-        auto_pdf_id = resp.json()["item"]["id"]
-        test_pdf_ids.append(auto_pdf_id)
-        log(f"✅ POST /api/om/pdfs/auto: 200 (id={auto_pdf_id})")
-        tests_passed += 1
-    else:
-        log(f"❌ POST /api/om/pdfs/auto failed: {resp.status_code}")
-        auto_pdf_id = None
-    
-    # GET /api/om/pdfs
-    tests_total += 1
-    log("Testing GET /api/om/pdfs...")
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=headers_owner)
-    if resp.status_code == 200:
-        data = resp.json()
-        if "items" in data and "server_time" in data:
-            log(f"✅ GET /api/om/pdfs: 200 (items={len(data['items'])}, server_time={data['server_time']})")
-            tests_passed += 1
-        else:
-            log(f"❌ GET /api/om/pdfs missing fields: {data.keys()}")
-    else:
-        log(f"❌ GET /api/om/pdfs failed: {resp.status_code}")
-    
-    # GET /api/om/pdfs/{id}/file?token=<owner>
-    if pdf_id:
-        tests_total += 1
-        log("Testing GET /api/om/pdfs/{id}/file?token=...")
-        resp = requests.get(f"{BASE_URL}/api/om/pdfs/{pdf_id}/file?token={owner_token}")
-        if resp.status_code == 200 and resp.headers.get("Content-Type") == "application/pdf":
-            log(f"✅ GET /api/om/pdfs/{pdf_id}/file?token=: 200 application/pdf")
-            tests_passed += 1
-        else:
-            log(f"❌ GET /api/om/pdfs/{pdf_id}/file?token= failed: {resp.status_code}")
-    
-    # GET /api/om/pdfs/{id}/file with Bearer header
-    if pdf_id:
-        tests_total += 1
-        log("Testing GET /api/om/pdfs/{id}/file (Bearer)...")
-        resp = requests.get(f"{BASE_URL}/api/om/pdfs/{pdf_id}/file", headers=headers_owner)
-        if resp.status_code == 200 and resp.headers.get("Content-Type") == "application/pdf":
-            log(f"✅ GET /api/om/pdfs/{pdf_id}/file (Bearer): 200 application/pdf")
-            tests_passed += 1
-        else:
-            log(f"❌ GET /api/om/pdfs/{pdf_id}/file (Bearer) failed: {resp.status_code}")
-    
-    # POST /api/om/pdfs/{id}/mark-printed
-    if pdf_id:
-        tests_total += 1
-        log("Testing POST /api/om/pdfs/{id}/mark-printed...")
-        resp = requests.post(f"{BASE_URL}/api/om/pdfs/{pdf_id}/mark-printed", headers=headers_owner)
+def test_cleanup(token, pdf_ids):
+    """TEST 9: Cleanup - DELETE all test PDFs"""
+    log(f"TEST 9: Cleanup - DELETE {len(pdf_ids)} test PDFs")
+    headers = {"Authorization": f"Bearer {token}"}
+    deleted_count = 0
+    for pdf_id in pdf_ids:
+        resp = requests.delete(f"{API_BASE}/om/pdfs/{pdf_id}", headers=headers)
         if resp.status_code == 200:
-            log(f"✅ POST /api/om/pdfs/{pdf_id}/mark-printed: 200")
-            tests_passed += 1
+            deleted_count += 1
+            log(f"✅ Deleted PDF {pdf_id}")
         else:
-            log(f"❌ POST /api/om/pdfs/{pdf_id}/mark-printed failed: {resp.status_code}")
+            log(f"⚠️ Failed to delete PDF {pdf_id}: {resp.status_code} {resp.text}")
     
-    # POST /api/om/pdfs/{id}/ketoko (legacy bulk)
-    if pdf_id:
-        tests_total += 1
-        log("Testing POST /api/om/pdfs/{id}/ketoko (legacy bulk)...")
-        resp = requests.post(f"{BASE_URL}/api/om/pdfs/{pdf_id}/ketoko", headers=headers_owner, json={"input": True})
-        if resp.status_code == 200:
-            log(f"✅ POST /api/om/pdfs/{pdf_id}/ketoko: 200")
-            tests_passed += 1
-        else:
-            log(f"❌ POST /api/om/pdfs/{pdf_id}/ketoko failed: {resp.status_code}")
-    
-    # POST /api/om/pdfs/{id}/ketoko-resi (new per-resi)
-    if auto_pdf_id:
-        # First, add some tracking numbers
-        scan_data = {"tracking_numbers": ["TN-TEST"], "pages_count": 1}
-        requests.post(f"{BASE_URL}/api/om/pdfs/{auto_pdf_id}/scan-result", headers=headers_owner, json=scan_data)
-        
-        tests_total += 1
-        log("Testing POST /api/om/pdfs/{id}/ketoko-resi (per-resi)...")
-        resp = requests.post(f"{BASE_URL}/api/om/pdfs/{auto_pdf_id}/ketoko-resi", headers=headers_owner, json={"tracking_number": "TN-TEST", "checked": True})
-        if resp.status_code == 200:
-            log(f"✅ POST /api/om/pdfs/{auto_pdf_id}/ketoko-resi: 200")
-            tests_passed += 1
-        else:
-            log(f"❌ POST /api/om/pdfs/{auto_pdf_id}/ketoko-resi failed: {resp.status_code}")
-    
-    # GET /api/om/shipments
-    tests_total += 1
-    log("Testing GET /api/om/shipments...")
-    resp = requests.get(f"{BASE_URL}/api/om/shipments", headers=headers_owner)
-    if resp.status_code == 200:
-        data = resp.json()
-        if "summary" in data and "ketoko_progress" in data["summary"]:
-            log(f"✅ GET /api/om/shipments: 200 (summary.ketoko_progress={data['summary']['ketoko_progress']})")
-            tests_passed += 1
-        else:
-            log(f"❌ GET /api/om/shipments missing summary.ketoko_progress")
-    else:
-        log(f"❌ GET /api/om/shipments failed: {resp.status_code}")
-    
-    # GET /api/om/notif-settings
-    tests_total += 1
-    log("Testing GET /api/om/notif-settings...")
-    resp = requests.get(f"{BASE_URL}/api/om/notif-settings", headers=headers_owner)
-    if resp.status_code == 200:
-        log(f"✅ GET /api/om/notif-settings: 200")
-        tests_passed += 1
-    else:
-        log(f"❌ GET /api/om/notif-settings failed: {resp.status_code}")
-    
-    # PUT /api/om/notif-settings as cindy (should be 403)
-    tests_total += 1
-    log("Testing PUT /api/om/notif-settings as cindy (should be 403)...")
-    resp = requests.put(f"{BASE_URL}/api/om/notif-settings", headers=headers_cindy, json={"popup": False})
-    if resp.status_code == 403:
-        log(f"✅ PUT /api/om/notif-settings as cindy: 403 (correctly denied)")
-        tests_passed += 1
-    else:
-        log(f"❌ PUT /api/om/notif-settings as cindy should be 403, got: {resp.status_code}")
-    
-    # DELETE /api/om/pdfs/{id} as owner
-    if pdf_id:
-        tests_total += 1
-        log("Testing DELETE /api/om/pdfs/{id} as owner...")
-        resp = requests.delete(f"{BASE_URL}/api/om/pdfs/{pdf_id}", headers=headers_owner)
-        if resp.status_code == 200:
-            log(f"✅ DELETE /api/om/pdfs/{pdf_id}: 200")
-            tests_passed += 1
-            test_pdf_ids.remove(pdf_id)
-        else:
-            log(f"❌ DELETE /api/om/pdfs/{pdf_id} failed: {resp.status_code}")
-    
-    log(f"\n✅ TEST 3: {tests_passed}/{tests_total} endpoint tests passed")
-    return tests_passed == tests_total
-
-def test_4_auth_regression():
-    """TEST 4 — Auth regression"""
-    log("\n=== TEST 4: Auth regression ===")
-    
-    headers_owner = {"Authorization": f"Bearer {owner_token}"}
-    headers_cindy = {"Authorization": f"Bearer {cindy_token}"}
-    
-    tests_passed = 0
-    tests_total = 0
-    
-    # URL-token still works for /pdfs/{id}/file
-    if test_pdf_ids:
-        pdf_id = test_pdf_ids[0]
-        tests_total += 1
-        log(f"Testing URL-token for /pdfs/{pdf_id}/file...")
-        resp = requests.get(f"{BASE_URL}/api/om/pdfs/{pdf_id}/file?token={owner_token}")
-        if resp.status_code == 200:
-            log(f"✅ URL-token works for /pdfs/{pdf_id}/file: 200")
-            tests_passed += 1
-        else:
-            log(f"❌ URL-token failed for /pdfs/{pdf_id}/file: {resp.status_code}")
-    
-    # Fake token still 401
-    tests_total += 1
-    log("Testing fake token (should be 401)...")
-    fake_headers = {"Authorization": "Bearer fake-token-12345"}
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=fake_headers)
-    if resp.status_code == 401:
-        log(f"✅ Fake token correctly returns 401")
-        tests_passed += 1
-    else:
-        log(f"❌ Fake token should return 401, got: {resp.status_code}")
-    
-    # No token + no header still 401
-    tests_total += 1
-    log("Testing no token (should be 401)...")
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs")
-    if resp.status_code == 401:
-        log(f"✅ No token correctly returns 401")
-        tests_passed += 1
-    else:
-        log(f"❌ No token should return 401, got: {resp.status_code}")
-    
-    # Cindy still 403 on all /api/om/* endpoints
-    tests_total += 1
-    log("Testing cindy access to /api/om/pdfs (should be 403)...")
-    resp = requests.get(f"{BASE_URL}/api/om/pdfs", headers=headers_cindy)
-    if resp.status_code == 403:
-        log(f"✅ Cindy correctly denied with 403")
-        tests_passed += 1
-    else:
-        log(f"❌ Cindy should be denied with 403, got: {resp.status_code}")
-    
-    tests_total += 1
-    log("Testing cindy access to /api/om/dashboard (should be 403)...")
-    resp = requests.get(f"{BASE_URL}/api/om/dashboard", headers=headers_cindy)
-    if resp.status_code == 403:
-        log(f"✅ Cindy correctly denied with 403")
-        tests_passed += 1
-    else:
-        log(f"❌ Cindy should be denied with 403, got: {resp.status_code}")
-    
-    log(f"\n✅ TEST 4: {tests_passed}/{tests_total} auth tests passed")
-    return tests_passed == tests_total
-
-def cleanup():
-    """Delete all test PDFs"""
-    log("\n=== CLEANUP ===")
-    if not owner_token:
-        log("⚠️ No owner token, skipping cleanup")
-        return
-    
-    headers = {"Authorization": f"Bearer {owner_token}"}
-    for pdf_id in test_pdf_ids:
-        log(f"Deleting test PDF {pdf_id}...")
-        resp = requests.delete(f"{BASE_URL}/api/om/pdfs/{pdf_id}", headers=headers)
-        if resp.status_code == 200:
-            log(f"✅ Deleted {pdf_id}")
-        else:
-            log(f"⚠️ Failed to delete {pdf_id}: {resp.status_code}")
-    
-    log("✅ Cleanup complete")
+    assert deleted_count == len(pdf_ids), f"Expected to delete {len(pdf_ids)} PDFs, deleted {deleted_count}"
+    log(f"✅ Cleanup complete: {deleted_count} PDFs deleted")
 
 def main():
-    log("=" * 80)
-    log("REGRESSION TEST: OM Parser — Barcode 1D fallback patch")
-    log("NO backend code was modified. Testing all backend endpoints.")
-    log("=" * 80)
+    print("=" * 80)
+    print("BACKEND REGRESSION TEST: Barcode Pass 2 Parser Frontend Patch")
+    print("=" * 80)
+    print(f"Base URL: {BASE_URL}")
+    print(f"Owner: {OWNER_USERNAME}")
+    print("=" * 80)
     
-    results = []
+    pdf_ids = []
     
-    # Run tests
-    results.append(("TEST 1: scan-result contract", test_1_scan_result_contract()))
-    results.append(("TEST 2: Empty→Non-empty hydration", test_2_empty_to_nonempty_hydration()))
-    results.append(("TEST 3: Full OM regression", test_3_full_om_regression()))
-    results.append(("TEST 4: Auth regression", test_4_auth_regression()))
-    
-    # Cleanup
-    cleanup()
-    
-    # Summary
-    log("\n" + "=" * 80)
-    log("SUMMARY")
-    log("=" * 80)
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-    for name, result in results:
-        status = "✅ PASS" if result else "❌ FAIL"
-        log(f"{status} - {name}")
-    
-    log("=" * 80)
-    if passed == total:
-        log(f"✅ ALL TESTS PASSED ({passed}/{total})")
-        log("✅ NO REGRESSIONS DETECTED - Backend is stable after client-side patch")
-    else:
-        log(f"❌ SOME TESTS FAILED ({passed}/{total})")
-        log("❌ CRITICAL: Backend regression detected!")
-    log("=" * 80)
-    
-    return passed == total
+    try:
+        # TEST 1: Login
+        token = test_login()
+        
+        # TEST 2: Upload PDF
+        pdf_id_1 = test_upload_pdf(token)
+        pdf_ids.append(pdf_id_1)
+        
+        # TEST 3: Scan-result with barcode
+        test_scan_result_barcode(token, pdf_id_1)
+        
+        # TEST 4: List PDFs → verify ketoko_resi hydration
+        test_list_pdfs_ketoko_hydration(token, pdf_id_1)
+        
+        # TEST 5: Check ketoko-resi
+        test_ketoko_resi_check(token, pdf_id_1)
+        
+        # TEST 6: Shipments endpoint
+        test_shipments_endpoint(token)
+        
+        # TEST 7: Multi-tracking PDF
+        pdf_id_2 = test_multi_tracking_pdf(token)
+        pdf_ids.append(pdf_id_2)
+        
+        # TEST 8: Auth regression
+        test_auth_regression(token)
+        
+        # TEST 9: Cleanup
+        test_cleanup(token, pdf_ids)
+        
+        print("=" * 80)
+        print("✅ ALL TESTS PASSED (100%)")
+        print("=" * 80)
+        print("RESULT: ZERO BACKEND REGRESSION DETECTED")
+        print("Frontend barcode parser patch did not break any backend functionality.")
+        print("=" * 80)
+        return 0
+        
+    except AssertionError as e:
+        print("=" * 80)
+        print(f"❌ TEST FAILED: {e}")
+        print("=" * 80)
+        print("RESULT: CRITICAL REGRESSION DETECTED")
+        print("=" * 80)
+        return 1
+    except Exception as e:
+        print("=" * 80)
+        print(f"❌ UNEXPECTED ERROR: {e}")
+        print("=" * 80)
+        import traceback
+        traceback.print_exc()
+        return 1
 
 if __name__ == "__main__":
-    success = main()
-    exit(0 if success else 1)
+    sys.exit(main())

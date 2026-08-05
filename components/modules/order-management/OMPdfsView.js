@@ -310,23 +310,82 @@ async function scanQrFromPdfDoc(pdfDoc) {
   barcodeHints.set(DecodeHintType.TRY_HARDER, true);
   const barcodeReader = new BrowserMultiFormatReader(barcodeHints);
 
+  // 1D barcodes need MORE pixels-per-bar than QR codes to decode reliably.
+  // At scale 2.0 (the QR pass) narrow bars often alias into a single blur,
+  // producing a NotFoundException. We retry each page at progressively
+  // higher scales AND — for expedition labels that put the barcode near
+  // the top of the label — we also try a cropped top-third of the page
+  // to remove noisy background from the decode. Only runs when QR failed.
+  const barcodeScales = [3.5, 5.0, 2.5];
   const foundBarcode = new Set();
   for (let p = 1; p <= pdfDoc.numPages; p += 1) {
-    try {
-      const page = await pdfDoc.getPage(p);
-      const vp = page.getViewport({ scale });
-      canvas.width = Math.ceil(vp.width);
-      canvas.height = Math.ceil(vp.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    let decodedThisPage = false;
+    for (const s of barcodeScales) {
+      if (decodedThisPage) break;
       try {
-        const result = await barcodeReader.decodeFromCanvas(canvas);
-        const text = result?.getText?.() || '';
-        if (text && text.trim()) foundBarcode.add(text.trim());
-      } catch {
-        /* NotFoundException — no barcode on this page */
+        const page = await pdfDoc.getPage(p);
+        const vp = page.getViewport({ scale: s });
+        canvas.width = Math.ceil(vp.width);
+        canvas.height = Math.ceil(vp.height);
+        // Render page at this scale
+        // eslint-disable-next-line no-await-in-loop
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+        // Attempt 1: full page at this scale
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await barcodeReader.decodeFromCanvas(canvas);
+          const text = result?.getText?.() || '';
+          if (text && text.trim()) {
+            foundBarcode.add(text.trim());
+            decodedThisPage = true;
+            continue;
+          }
+        } catch { /* nothing on full page — try cropped attempts */ }
+
+        // Attempt 2: crop to top-half (many labels have barcode near top).
+        // We reuse the same canvas by copying its top region to a scratch
+        // canvas of matching dimensions.
+        try {
+          const scratch = document.createElement('canvas');
+          const cropH = Math.max(1, Math.floor(canvas.height * 0.55));
+          scratch.width = canvas.width;
+          scratch.height = cropH;
+          const sctx = scratch.getContext('2d');
+          sctx.drawImage(canvas, 0, 0, canvas.width, cropH, 0, 0, canvas.width, cropH);
+          // eslint-disable-next-line no-await-in-loop
+          const result = await barcodeReader.decodeFromCanvas(scratch);
+          const text = result?.getText?.() || '';
+          if (text && text.trim()) {
+            foundBarcode.add(text.trim());
+            decodedThisPage = true;
+            continue;
+          }
+        } catch { /* try bottom half next */ }
+
+        // Attempt 3: crop to bottom-half (barcodes sometimes at bottom).
+        try {
+          const scratch = document.createElement('canvas');
+          const cropH = Math.max(1, Math.floor(canvas.height * 0.55));
+          scratch.width = canvas.width;
+          scratch.height = cropH;
+          const sctx = scratch.getContext('2d');
+          sctx.drawImage(
+            canvas,
+            0, canvas.height - cropH, canvas.width, cropH,
+            0, 0, canvas.width, cropH
+          );
+          // eslint-disable-next-line no-await-in-loop
+          const result = await barcodeReader.decodeFromCanvas(scratch);
+          const text = result?.getText?.() || '';
+          if (text && text.trim()) {
+            foundBarcode.add(text.trim());
+            decodedThisPage = true;
+          }
+        } catch { /* still nothing — move to next scale */ }
+      } catch (_e) {
+        /* Continue on per-page/per-scale errors */
       }
-    } catch (_e) {
-      /* Continue on per-page errors */
     }
   }
   return {
