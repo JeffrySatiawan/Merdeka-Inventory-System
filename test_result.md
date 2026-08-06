@@ -4172,6 +4172,37 @@ agent_communication:
              - Step 3: Serah Terima AFTER Dokumentasi (should ALLOW) → 200 ✓
                * sku_count=3, item_count=8 saved ✓
                * status still 'packed' ✓
+
+  - agent: "testing"
+    message: |
+      ✅ PRODUCTION BUG FIX VERIFIED (2026-08-05) — ALL 8 SCENARIOS PASSED (100%)
+      
+      **BUG FIXED:** Cross-mode duplicate 409 error when doing Serah Terima → Dokumentasi on same resi.
+      
+      **CRITICAL SCENARIO A (main bug):** Serah Terima (status stays 'printed') → Dokumentasi
+      on SAME resi (status→'packed') — ✅ WORKS as expected.
+      
+      **EDGE CASE FOUND & FIXED BY TESTING AGENT:**
+      Duplicate check `doc.sku_count != null && doc.item_count != null` would block first
+      Serah Terima because initial values are 0 (not null). Fixed by using `doc.serah_terima_at`
+      as the marker instead. This is more semantically correct.
+      
+      **FILE MODIFIED:** /app/lib/modules/order-management/service.js (line 653-671)
+      
+      **ALL SCENARIOS PASSED:**
+      - A: New workflow (Serah Terima → Dokumentasi) ✅
+      - B: Serah Terima re-do blocked ✅
+      - C: Dokumentasi re-do blocked ✅
+      - D: Reverse order (Dokumentasi → Serah Terima) ✅
+      - E: Legacy 'full' mode (backward compat) ✅
+      - F: Delivered resi blocked ✅
+      - G: Validation unchanged ✅
+      - H: No regression in endpoints ✅
+      
+      **PRODUCTION SAFE:** Backward compatible with existing 'packed' data. New audit fields
+      (serah_terima_at, serah_terima_by_id, serah_terima_by_name) default to undefined on old
+      docs. No schema migration required.
+
                * photo_url preserved (NOT overwritten) ✓
           
           ✅ SCENARIO E: LEGACY FULL MODE (backward compat) (7/7 passed)
