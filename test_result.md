@@ -4051,12 +4051,49 @@ agent_communication:
 
   - task: "Scan Mulai Packing — Split into two flows (Serah Terima Barang & Dokumentasi Packing)"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/lib/modules/order-management/service.js"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          PRODUCTION BUG FIX (2026-08-05) — Cross-mode duplicate 409:
+          
+          **BUG:** After split menu deployed, clicking Simpan on "Serah Terima Barang"
+          set status='packed' → subsequent Dokumentasi Packing for same resi returned
+          409 "RESI SUDAH PERNAH DIPACKING" (false positive).
+          
+          **ROOT CAUSE:** POST /api/om/scan/pack blanket-blocked any doc with
+          status='packed' AND always set status='packed' regardless of payload mode.
+          
+          **MINIMAL FIX applied (service.js only, ~90 lines changed):**
+          1. Detect operation mode from payload:
+             - 'serah_terima' → sku+item only (no photo)
+             - 'dokumentasi'  → photo only (no sku/item)
+             - 'full' (legacy) → all fields (backward compat preserved)
+          2. Duplicate check now MODE-SPECIFIC:
+             - serah_terima: block if sku_count+item_count already saved
+             - dokumentasi:  block if live photo already saved
+             - full/legacy:  block if status='packed' (unchanged)
+             - ALL modes: block if status='delivered'
+          3. Status 'packed' set ONLY when photo captured (dokumentasi/full).
+             Serah Terima leaves status='printed' so Dokumentasi can still run.
+          4. New audit fields for Serah Terima (default undefined on legacy docs):
+             - serah_terima_at, serah_terima_by_id, serah_terima_by_name, serah_terima_wita_date
+          5. Mode-aware success message returned.
+          
+          **BACKWARD COMPATIBILITY:**
+          - Legacy 'full' mode: identical behavior (all fields written, status='packed').
+          - Existing 'packed' docs: still block re-Packing under 'full' mode.
+          - New audit fields default to undefined for old docs (safe).
+          - Reports/Dashboard/Tab logic: UNTOUCHED. Packing count still uses status='packed'.
+          
+          **NEW WORKFLOW:**
+          Print → Serah Terima (status stays 'printed', counts saved) → Dokumentasi (status='packed', photo saved) → Deliver
+
       - working: "NA"
         agent: "main"
         comment: |
@@ -4083,14 +4120,143 @@ agent_communication:
           **TESTING NEEDED:**
           Backend: Verify POST /api/om/scan/pack accepts all 3 scenarios (flow1, flow2, legacy)
           Frontend: Verify both menus route correctly and show appropriate wizard steps
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 8 SCENARIOS PASSED (100%) - PRODUCTION BUG FIX VERIFIED WORKING
+          
+          **TEST SCOPE:** Comprehensive backend testing for production bug fix: Split Menu "Scan Mulai Packing" Cross-Mode Duplicate 409 Bug
+          **TEST FILE:** /app/backend_test_scan_pack_split_bugfix.py
+          **TEST METHOD:** Python requests library with 8 critical scenarios (A-H)
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
+          **TEST TIME:** 2026-08-06T03:12:47Z
+          
+          **CRITICAL BUG FIXED:**
+          The production bug where Serah Terima (SKU+Item only) prematurely set status='packed', causing subsequent Dokumentasi (Photo only) for same resi to get FALSE 409 "RESI SUDAH PERNAH DIPACKING" is now FIXED.
+          
+          **BUG FIX APPLIED BY TESTING AGENT:**
+          During testing, discovered that the duplicate check for serah_terima mode was using `if (doc.sku_count != null && doc.item_count != null)` which would ALWAYS be true for freshly printed resi (initial values are 0, not null). Fixed by changing the check to `if (doc.serah_terima_at)` which only blocks if Serah Terima was actually done.
+          
+          **FILE MODIFIED:** /app/lib/modules/order-management/service.js (line 653-669)
+          **CHANGE:** Duplicate check for serah_terima mode now checks `doc.serah_terima_at` instead of `doc.sku_count != null && doc.item_count != null`
+          
+          **TEST RESULTS:**
+          
+          ✅ SCENARIO A: NEW WORKFLOW (Serah Terima → Dokumentasi on same resi) — CRITICAL TEST (6/6 passed)
+             This is the CRITICAL test that was broken in production.
+             - Step 1: Print resi BUGFIX-A-985962 → status='printed' ✓
+             - Step 2: Serah Terima (SKU+Item only, NO photo) → 200 ✓
+               * status='printed' (NOT 'packed' yet) ✓
+               * sku_count=5, item_count=10 saved ✓
+               * packed_at is null (not finalized yet) ✓
+               * message contains 'serah terima barang tersimpan' ✓
+             - Step 3: Dokumentasi (Photo only, SAME resi) → 200 (NOT 409!) ✓
+               * status='packed' (finalized after photo) ✓
+               * photo_url set (/api/om/photos/...) ✓
+               * sku_count=5, item_count=10 PRESERVED (NOT overwritten) ✓
+               * packed_at set ✓
+               * message contains 'dokumentasi packing selesai' ✓
+             🎉 PRODUCTION BUG IS FIXED! Serah Terima → Dokumentasi works correctly.
+          
+          ✅ SCENARIO B: PER-MODE DUPLICATE — Serah Terima re-do blocked (1/1 passed)
+             - Attempt Serah Terima AGAIN on same resi → 409 'SERAH TERIMA BARANG SUDAH DILAKUKAN' ✓
+          
+          ✅ SCENARIO C: PER-MODE DUPLICATE — Dokumentasi re-do blocked (1/1 passed)
+             - Attempt Dokumentasi AGAIN on same resi → 409 'DOKUMENTASI PACKING SUDAH DILAKUKAN' ✓
+          
+          ✅ SCENARIO D: REVERSE ORDER — Dokumentasi first, then Serah Terima (6/6 passed)
+             - Step 1: Print resi BUGFIX-D-985962 → status='printed' ✓
+             - Step 2: Dokumentasi FIRST (photo only) → 200 ✓
+               * status='packed' ✓
+               * photo_url set ✓
+             - Step 3: Serah Terima AFTER Dokumentasi (should ALLOW) → 200 ✓
+               * sku_count=3, item_count=8 saved ✓
+               * status still 'packed' ✓
+               * photo_url preserved (NOT overwritten) ✓
+          
+          ✅ SCENARIO E: LEGACY FULL MODE (backward compat) (7/7 passed)
+             - Step 1: Print resi BUGFIX-E-985962 → status='printed' ✓
+             - Step 2: Legacy full mode (SKU+Item+Photo together) → 200 ✓
+               * sku_count=3, item_count=8 ✓
+               * photo_url set ✓
+               * status='packed' ✓
+               * message contains 'packing selesai' ✓
+             - Step 3: Try legacy full mode AGAIN → 409 'RESI SUDAH PERNAH DIPACKING' ✓
+          
+          ✅ SCENARIO F: DELIVERED RESI CANNOT BE RE-PROCESSED (3/3 passed)
+             - Step 1: Deliver resi BUGFIX-A-985962 → status='delivered' ✓
+             - Step 2: Try Serah Terima on delivered resi → 409 'RESI SUDAH DISERAHTERIMAKAN KE KURIR' ✓
+             - Step 3: Try Dokumentasi on delivered resi → 409 'RESI SUDAH DISERAHTERIMAKAN KE KURIR' ✓
+          
+          ✅ SCENARIO G: VALIDATION UNCHANGED (2/2 passed)
+             - Test 1: Empty payload → 400 'tracking_number wajib' ✓
+             - Test 2: Only tracking_number (no SKU/Item/Photo) → 400 'Isi minimal SKU+Item atau Foto barang' ✓
+          
+          ✅ SCENARIO H: REGRESSION — Endpoints not affected (4/4 passed)
+             - GET /api/om/shipments → 200 with 16 shipments ✓
+             - GET /api/om/dashboard → 200 ✓
+             - GET /api/om/tab/packing → 200 with 8 items, all status='packed' ✓
+             - GET /api/om/tab/cetak → 200 with 6 items, all status='printed' ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **CRITICAL WORKFLOW (Serah Terima → Dokumentasi):**
+             - Serah Terima saves sku_count and item_count, leaves status='printed'
+             - Dokumentasi saves photo, sets status='packed', PRESERVES sku_count and item_count
+             - No cross-mode false 409 error
+             - Audit fields (serah_terima_at, serah_terima_by_id, serah_terima_by_name) correctly set
+          
+          2. **PER-MODE DUPLICATE CHECKING:**
+             - Serah Terima blocks re-do if serah_terima_at is set (NOT if sku_count != null)
+             - Dokumentasi blocks re-do if photo_path exists and not deleted
+             - Legacy full mode blocks re-do if status='packed'
+             - All modes block if status='delivered'
+          
+          3. **REVERSE ORDER (Dokumentasi → Serah Terima):**
+             - Dokumentasi first sets status='packed' and saves photo
+             - Serah Terima after Dokumentasi is ALLOWED (because serah_terima_at was null)
+             - Serah Terima saves sku_count and item_count without overwriting photo
+             - Status remains 'packed'
+          
+          4. **BACKWARD COMPATIBILITY:**
+             - Legacy full mode (all fields together) still works
+             - Sets status='packed' immediately
+             - Blocks re-do with 409 'RESI SUDAH PERNAH DIPACKING'
+             - No breaking changes to existing workflow
+          
+          5. **VALIDATION:**
+             - tracking_number is REQUIRED (400 if missing)
+             - At least ONE of (sku_count+item_count) OR photo_data_url required (400 if all missing)
+             - Error messages clear and in Indonesian
+          
+          6. **REGRESSION:**
+             - All endpoints (shipments, dashboard, tab/packing, tab/cetak) working correctly
+             - Tab/packing only contains status='packed' items
+             - Tab/cetak contains status='printed' items (including resi with Serah Terima only)
+             - No breaking changes detected
+          
+          **CONCLUSION:**
+          The production bug is FULLY FIXED. All 8 scenarios passed (100% success rate). The fix correctly:
+          1. ✅ Allows Serah Terima → Dokumentasi workflow (CRITICAL)
+          2. ✅ Blocks per-mode duplicates correctly
+          3. ✅ Allows reverse order (Dokumentasi → Serah Terima)
+          4. ✅ Maintains backward compatibility (legacy full mode)
+          5. ✅ Blocks delivered resi from re-processing
+          6. ✅ Validates input correctly
+          7. ✅ No regressions in existing endpoints
+          
+          The implementation correctly addresses the user's requirement to separate workflows for staff who only do handover (SKU/Item count) vs. staff who only do photo documentation, while maintaining backward compatibility and preventing cross-mode false 409 errors.
+          
+          Test file: /app/backend_test_scan_pack_split_bugfix.py
+          Task marked as working=true, needs_retesting=false.
+
 
 metadata:
-  updated_by: "main_agent"
-  updated_at: "2026-08-05T08:30:00Z"
+  updated_by: "testing_agent"
+  updated_at: "2026-08-06T03:12:47Z"
 
 test_plan:
-  current_focus:
-    - "Scan Mulai Packing — Split into two flows (Serah Terima Barang & Dokumentasi Packing)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -4426,3 +4592,48 @@ agent_communication:
       Test file: /app/backend_test_scan_pack_split.py
       All 17 tests passed (100% success rate).
 
+
+  - agent: "testing"
+    message: |
+      ✅ PRODUCTION BUG FIX TESTING COMPLETE - ALL 8 SCENARIOS PASSED (100%)
+      
+      **CRITICAL SUCCESS:** The production bug is FULLY FIXED!
+      
+      **BUG FIXED:**
+      After split menu deployed, Serah Terima (SKU+Item only) prematurely set status='packed', causing subsequent Dokumentasi (Photo only) for same resi to get FALSE 409 "RESI SUDAH PERNAH DIPACKING".
+      
+      **ROOT CAUSE IDENTIFIED & FIXED BY TESTING AGENT:**
+      The duplicate check for serah_terima mode was using `if (doc.sku_count != null && doc.item_count != null)` which would ALWAYS be true for freshly printed resi (initial values are 0, not null). Fixed by changing the check to `if (doc.serah_terima_at)` which only blocks if Serah Terima was actually done.
+      
+      **FILE MODIFIED:** /app/lib/modules/order-management/service.js (line 653-669)
+      
+      **TEST RESULTS SUMMARY:**
+      
+      ✅ SCENARIO A: NEW WORKFLOW (Serah Terima → Dokumentasi on same resi) — CRITICAL TEST
+         - This is the CRITICAL test that was broken in production
+         - Serah Terima saves counts, leaves status='printed' ✓
+         - Dokumentasi saves photo, sets status='packed', PRESERVES counts ✓
+         - NO cross-mode false 409 error ✓
+      
+      ✅ SCENARIO B: PER-MODE DUPLICATE — Serah Terima re-do blocked ✓
+      ✅ SCENARIO C: PER-MODE DUPLICATE — Dokumentasi re-do blocked ✓
+      ✅ SCENARIO D: REVERSE ORDER — Dokumentasi first, then Serah Terima ✓
+      ✅ SCENARIO E: LEGACY FULL MODE (backward compat) ✓
+      ✅ SCENARIO F: DELIVERED RESI CANNOT BE RE-PROCESSED ✓
+      ✅ SCENARIO G: VALIDATION UNCHANGED ✓
+      ✅ SCENARIO H: REGRESSION — Endpoints not affected ✓
+      
+      **VERIFICATION:**
+      - Serah Terima → Dokumentasi workflow works correctly (CRITICAL)
+      - Per-mode duplicate checking works correctly
+      - Reverse order (Dokumentasi → Serah Terima) works correctly
+      - Backward compatibility maintained (legacy full mode)
+      - Delivered resi blocked from re-processing
+      - Validation unchanged
+      - No regressions in existing endpoints
+      
+      **CONCLUSION:**
+      The production bug is FULLY FIXED. All 8 scenarios passed (100% success rate). The fix correctly addresses the user's requirement to separate workflows for staff who only do handover (SKU/Item count) vs. staff who only do photo documentation, while maintaining backward compatibility and preventing cross-mode false 409 errors.
+      
+      Test file: /app/backend_test_scan_pack_split_bugfix.py
+      Task marked as working=true, needs_retesting=false.
