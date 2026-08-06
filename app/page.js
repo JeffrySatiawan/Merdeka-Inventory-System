@@ -227,6 +227,7 @@ function buildNav(user) {
           module: 'order_management',
           children: [
             { key: 'om:dashboard', label: 'Dashboard' },
+            { key: 'om:productivity', label: 'Produktivitas Packing' },
             { key: 'om:pdfs', label: 'PDF Resi' },
             { key: 'om:scan_print', label: 'Scan Cetak Resi' },
             { key: 'om:scan_pack_flow1', label: 'Serah Terima Barang' },
@@ -513,6 +514,7 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
     'cc:history': 'Riwayat SKU',
     'mod:order_management': 'Order Management',
     'om:dashboard': 'OM Dashboard',
+    'om:productivity': 'Produktivitas Packing',
     'om:scan_print': 'Scan Cetak Resi',
     'om:scan_pack_flow1': 'Serah Terima Barang',
     'om:scan_pack_flow2': 'Dokumentasi Packing',
@@ -682,6 +684,7 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'cc:history': 'Cycle Count · Riwayat',
     'mod:order_management': 'Order Management',
     'om:dashboard': 'OM · Dashboard',
+    'om:productivity': 'OM · Produktivitas Packing',
     'om:scan_pack_flow1': 'OM · Serah Terima Barang',
     'om:scan_pack_flow2': 'OM · Dokumentasi Packing',
     'om:scan_deliver': 'OM · Serah Terima',

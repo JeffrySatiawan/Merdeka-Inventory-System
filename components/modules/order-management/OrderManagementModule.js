@@ -35,6 +35,9 @@ import {
   X,
   ImageOff,
   Users,
+  Trophy,
+  Timer,
+  Medal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -2317,6 +2320,203 @@ function OMCompletedView({ user }) {
 import OMPdfsView from './OMPdfsView';
 import { useOMPdfNotifications } from './useOMPdfNotifications';
 
+// ============================================================
+// VIEW: Produktivitas Packing (real-time productivity dashboard)
+// Read-only aggregate — reuses packed_at + packed_by_* fields.
+// Owner sees full period totals + ranking; staff only sees ranking.
+// ============================================================
+function OMProductivityView({ user }) {
+  const isOwner = user?.role === 'owner';
+  const [period, setPeriod] = useState('today');
+  const [data, setData] = useState({ users: [], as_of: null, today: '', period: 'today' });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function load(silent = false) {
+    try {
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
+      const d = await omApi(`packing-productivity?period=${encodeURIComponent(period)}`);
+      setData(d);
+    } catch (e) {
+      if (!silent) toast.error(e.message || 'Gagal memuat produktivitas');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    load(false);
+    // Real-time polling every 15s
+    const t = setInterval(() => load(true), 15000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [period]);
+
+  const fmtInterval = (sec) => {
+    if (sec == null) return '—';
+    if (sec < 60) return `${sec} dtk`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m < 60) return s > 0 ? `${m} mnt ${s} dtk` : `${m} mnt`;
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return mm > 0 ? `${h} jam ${mm} mnt` : `${h} jam`;
+  };
+
+  const asOfLabel = data.as_of
+    ? new Date(data.as_of).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    : '—';
+
+  const rankBadge = (rank) => {
+    if (rank === 1) return <Medal className="w-4 h-4 text-yellow-400" />;
+    if (rank === 2) return <Medal className="w-4 h-4 text-slate-300" />;
+    if (rank === 3) return <Medal className="w-4 h-4 text-amber-600" />;
+    return null;
+  };
+
+  return (
+    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h2 className="text-xl md:text-2xl font-bold flex items-center gap-2">
+            <Trophy className="w-6 h-6 text-amber-400" />
+            Produktivitas Packing
+          </h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Real-time · Tanggal {data.today || '—'} · Update {asOfLabel}
+            {refreshing ? <span className="ml-2 text-amber-400">refreshing…</span> : null}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={period} onValueChange={setPeriod}>
+            <SelectTrigger className="w-40 h-9">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="today">Hari Ini</SelectItem>
+              <SelectItem value="7d">7 Hari Terakhir</SelectItem>
+              <SelectItem value="30d">30 Hari Terakhir</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={() => load(false)} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <Card className="bg-card/50 border-white/5">
+          <CardContent className="p-4">
+            <div className="text-[10px] uppercase text-muted-foreground tracking-wider">User Packing Aktif</div>
+            <div className="text-2xl font-bold mt-1">{data.users?.length || 0}</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50 border-white/5">
+          <CardContent className="p-4">
+            <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Total Packing Hari Ini</div>
+            <div className="text-2xl font-bold mt-1 text-emerald-300">
+              {(data.users || []).reduce((s, u) => s + (u.today_count || 0), 0)}
+            </div>
+          </CardContent>
+        </Card>
+        {isOwner ? (
+          <Card className="bg-card/50 border-white/5">
+            <CardContent className="p-4">
+              <div className="text-[10px] uppercase text-muted-foreground tracking-wider">
+                Total Packing Periode ({period === 'today' ? 'Hari Ini' : period === '7d' ? '7 Hari' : '30 Hari'})
+              </div>
+              <div className="text-2xl font-bold mt-1 text-amber-300">
+                {(data.users || []).reduce((s, u) => s + (u.period_count || 0), 0)}
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+      </div>
+
+      {/* Ranking table */}
+      <Card className="bg-card/50 border-white/5">
+        <CardContent className="p-0">
+          {loading ? (
+            <div className="p-8 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" /> Memuat produktivitas…
+            </div>
+          ) : (data.users || []).length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">
+              Belum ada Dokumentasi Packing pada periode ini.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-white/5 text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="text-left px-4 py-3 w-16">Rank</th>
+                    <th className="text-left px-4 py-3">Nama</th>
+                    <th className="text-right px-4 py-3">Total Hari Ini</th>
+                    <th className="text-right px-4 py-3 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1"><Timer className="w-3 h-3" /> Rata-rata Interval</span>
+                    </th>
+                    {isOwner ? (
+                      <th className="text-right px-4 py-3 whitespace-nowrap">Total Periode</th>
+                    ) : null}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.users.map((u) => {
+                    const isSelf = u.user_id === user?.id;
+                    return (
+                      <tr
+                        key={u.user_id}
+                        className={`border-t border-white/5 ${isSelf ? 'bg-amber-500/5' : ''} hover:bg-white/5`}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold tabular-nums">#{u.rank}</span>
+                            {rankBadge(u.rank)}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">
+                            {u.name}
+                            {isSelf ? (
+                              <Badge variant="outline" className="ml-2 text-[9px] py-0 px-1.5">Anda</Badge>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums font-semibold text-emerald-300">
+                          {u.today_count || 0}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                          {fmtInterval(u.avg_interval_seconds)}
+                        </td>
+                        {isOwner ? (
+                          <td className="px-4 py-3 text-right tabular-nums font-semibold text-amber-300">
+                            {u.period_count || 0}
+                          </td>
+                        ) : null}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Footer note */}
+      <div className="text-[10px] text-muted-foreground leading-relaxed">
+        Data dihitung dari <b>Dokumentasi Packing</b> yang berhasil disimpan (1 dokumentasi = 1 packing selesai).
+        Rata-rata interval dihitung dari selisih waktu antar Dokumentasi Packing berturut-turut oleh user yang sama pada hari ini (reset tiap ganti hari).
+        {!isOwner ? ' Total Packing Periode hanya ditampilkan untuk Owner.' : ''}
+      </div>
+    </div>
+  );
+}
+
 export default function OrderManagementModule({ view, user }) {
   const isOwner = user?.role === 'owner';
   // Global PDF Resi notification watcher — runs for ANY user with OM access.
@@ -2326,6 +2526,7 @@ export default function OrderManagementModule({ view, user }) {
   useOMPdfNotifications({ enabled: !!user });
   switch (view) {
     case 'om:dashboard': return <OMDashboardView />;
+    case 'om:productivity': return <OMProductivityView user={user} />;
     case 'om:scan_print': return <OMScanPrintView user={user} />;
     case 'om:scan_pack_flow1': return <OMScanPackView user={user} mode="serah_terima" />;
     case 'om:scan_pack_flow2': return <OMScanPackView user={user} mode="dokumentasi" />;
