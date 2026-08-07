@@ -26,6 +26,9 @@ import {
   Volume2,
   VolumeX,
   MonitorSmartphone,
+  ZoomIn,
+  ZoomOut,
+  Lock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -967,6 +970,7 @@ export default function OMPdfsView({ user }) {
         <PdfPreviewModal
           pdfId={previewItem.id}
           initialMeta={previewItem}
+          user={user}
           onClose={() => setPreviewItem(null)}
           onChanged={load}
         />
@@ -1451,7 +1455,7 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
 }
 
 // ---------- Preview Modal (renders PDF pages to canvas via pdf.js + Print) ----------
-function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
+function PdfPreviewModal({ pdfId, initialMeta, user, onClose, onChanged }) {
   const [meta, setMeta] = useState(initialMeta || null);
   const [pdfDoc, setPdfDoc] = useState(null);
   const [numPages, setNumPages] = useState(initialMeta?.pages_count || 0);
@@ -1459,6 +1463,20 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
   const [error, setError] = useState(null);
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null); // for print / open-in-new-tab
   const canvasesRef = useRef([]);
+  // Zoom control lives OUTSIDE the PDF renderer — it only applies a CSS
+  // transform to the pages container, so pdf.js render logic is untouched.
+  const [zoom, setZoom] = useState(1);
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 2.5;
+  const ZOOM_STEP = 0.25;
+
+  // Role-aware toolbar rules (staff = non-owner):
+  //  - Staff can Print ONLY ONCE per PDF (backend enforces + frontend disables)
+  //  - Staff has no "Buka di tab baru" (interpreted as Download/Save/Share)
+  //  - Owner: unlimited print, sees all controls (unchanged)
+  const isOwner = user?.role === 'owner';
+  const alreadyPrinted = !!meta?.printed_at;
+  const printLocked = !isOwner && alreadyPrinted;
 
   // Open pdf doc (uses module-level cache — instant if already scanned)
   useEffect(() => {
@@ -1536,6 +1554,13 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
   }, [pdfDoc]);
 
   const handlePrint = async () => {
+    // Staff (non-owner): once printed, block subsequent print attempts even
+    // if the button is somehow clicked (defense against stale UI). Owner
+    // remains unlimited — no change.
+    if (printLocked) {
+      toast.error('PDF ini sudah pernah dicetak. Karyawan hanya boleh cetak satu kali.');
+      return;
+    }
     // Use the AUTHENTICATED direct server URL, NOT a blob URL.
     // - Server sends `Content-Disposition: inline` + `Content-Type: application/pdf`,
     //   so the browser opens its native PDF viewer (Chrome PDFium / Firefox
@@ -1563,7 +1588,17 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
         setMeta(r.item);
         onChanged?.();
       })
-      .catch(() => {});
+      .catch((e) => {
+        // Backend returns 403 if staff already printed (defense in depth).
+        // Sync local meta by refetching + surface friendly message.
+        const msg = e?.message || String(e || '');
+        if (msg.includes('sudah pernah dicetak') || msg.includes('403')) {
+          toast.error('PDF ini sudah pernah dicetak. Karyawan hanya boleh cetak satu kali.');
+          // Optimistic local lock — mark printed so button disables immediately.
+          setMeta((m) => (m && !m.printed_at ? { ...m, printed_at: new Date().toISOString() } : m));
+          onChanged?.();
+        }
+      });
   };
 
   const detectedList = meta?.detected_tracking_numbers || [];
@@ -1603,30 +1638,63 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
               </div>
             </div>
             <div className="flex gap-2 shrink-0 flex-wrap justify-end">
-              {/* "Buka di tab baru" now points to the DIRECT server URL (not
-                  blob). Browser opens the native PDF viewer, so the tab shows
-                  the real PDF instead of a Blob Viewer HTML wrapper. */}
-              <a
-                href={getPdfServerUrl(pdfId)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-white/10 text-xs hover:bg-white/[0.04] whitespace-nowrap"
+              {/* Zoom controls (kontrol di SEKITAR viewer — tidak menyentuh
+                  pdf.js render logic; hanya CSS transform pada wrapper). */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2)))}
+                disabled={zoom <= ZOOM_MIN}
+                className="gap-1 border-white/20 hover:bg-white/10"
+                title="Zoom out"
               >
-                <Eye className="w-3.5 h-3.5" /> Buka di tab baru
-              </a>
-              {/* Print button is available immediately — the direct URL doesn't
-                  need any blob preparation to be ready. */}
-              <Button size="sm" onClick={handlePrint} className="gap-1">
-                <Printer className="w-3.5 h-3.5" /> Print
+                <ZoomOut className="w-3.5 h-3.5" />
+              </Button>
+              <div className="inline-flex items-center px-2 text-xs tabular-nums text-muted-foreground min-w-[3rem] justify-center">
+                {Math.round(zoom * 100)}%
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2)))}
+                disabled={zoom >= ZOOM_MAX}
+                className="gap-1 border-white/20 hover:bg-white/10"
+                title="Zoom in"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </Button>
+
+              {/* "Buka di tab baru" hanya untuk owner. Untuk karyawan disembunyikan
+                  karena membuka di tab baru memungkinkan Download/Save/Share via browser. */}
+              {isOwner && (
+                <a
+                  href={getPdfServerUrl(pdfId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-white/10 text-xs hover:bg-white/[0.04] whitespace-nowrap"
+                >
+                  <Eye className="w-3.5 h-3.5" /> Buka di tab baru
+                </a>
+              )}
+              {/* Print button — locked for karyawan after first successful print. */}
+              <Button
+                size="sm"
+                onClick={handlePrint}
+                disabled={printLocked}
+                className="gap-1"
+                title={printLocked ? 'PDF sudah dicetak. Karyawan hanya boleh cetak satu kali.' : 'Print PDF'}
+              >
+                {printLocked ? <Lock className="w-3.5 h-3.5" /> : <Printer className="w-3.5 h-3.5" />}
+                {printLocked ? 'Sudah Dicetak' : 'Print'}
               </Button>
               <Button
                 size="sm"
                 variant="outline"
                 onClick={onClose}
                 className="gap-1 border-white/20 hover:bg-white/10"
-                title="Tutup preview (Esc)"
+                title="Kembali ke daftar (Esc)"
               >
-                <X className="w-3.5 h-3.5" /> Tutup
+                <ArrowLeft className="w-3.5 h-3.5" /> Back
               </Button>
             </div>
           </div>
@@ -1648,7 +1716,17 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
                 </a>
               </div>
             ) : (
-              <div className="flex flex-col items-center gap-3">
+              <div
+                className="flex flex-col items-center gap-3"
+                style={{
+                  // CSS-only zoom applied to wrapper — pdf.js render logic
+                  // is untouched. transformOrigin keeps the top edge fixed so
+                  // scroll behavior remains predictable.
+                  transform: `scale(${zoom})`,
+                  transformOrigin: 'top center',
+                  width: zoom < 1 ? `${100 / zoom}%` : '100%',
+                }}
+              >
                 {Array.from({ length: skeletonCount }).map((_, i) => (
                   <div key={i} className="relative w-full flex justify-center">
                     <canvas
@@ -1666,7 +1744,7 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
                     )}
                   </div>
                 ))}
-                {pdfBlobUrl && (
+                {pdfBlobUrl && isOwner && (
                   <a
                     href={getPdfServerUrl(pdfId)}
                     target="_blank"
@@ -1711,8 +1789,15 @@ function PdfPreviewModal({ pdfId, initialMeta, onClose, onChanged }) {
             Tekan <kbd className="px-1.5 py-0.5 rounded bg-white/[0.06] border border-white/10 text-[10px] font-mono">Esc</kbd> untuk tutup, atau klik tombol di bawah.
           </div>
           <div className="flex gap-2 ml-auto">
-            <Button size="sm" onClick={handlePrint} className="gap-1">
-              <Printer className="w-3.5 h-3.5" /> Print
+            <Button
+              size="sm"
+              onClick={handlePrint}
+              disabled={printLocked}
+              className="gap-1"
+              title={printLocked ? 'PDF sudah dicetak. Karyawan hanya boleh cetak satu kali.' : 'Print PDF'}
+            >
+              {printLocked ? <Lock className="w-3.5 h-3.5" /> : <Printer className="w-3.5 h-3.5" />}
+              {printLocked ? 'Sudah Dicetak' : 'Print'}
             </Button>
             <Button
               size="sm"

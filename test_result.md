@@ -457,6 +457,173 @@ backend:
           **CONCLUSION:**
           PDF open tracking endpoint is FULLY WORKING. All field initialization, increment logic, timestamp tracking, and access control are correctly implemented and tested.
 
+  - task: "OM PDF Resi — print protection (one-time print for karyawan)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          PATCH — PDF Resi Print Protection (additive, no schema changes):
+          Modified endpoint POST /api/om/pdfs/[id]/mark-printed to enforce one-time print restriction for karyawan (non-owner staff).
+          
+          **BUSINESS RULES:**
+          - Karyawan (user.role !== 'owner'): can print each PDF only ONCE. Second attempt returns 403 with error message "PDF sudah pernah dicetak. Karyawan hanya boleh mencetak satu kali per PDF." and includes already_printed field with printed_at and printed_by_name.
+          - Owner (user.role === 'owner'): unlimited prints (unchanged behavior).
+          
+          **IMPLEMENTATION:**
+          - Lines 1692-1708 in service.js: Added check `if (!isOwnerRole && doc.printed_at)` before allowing print.
+          - Uses existing printed_at field (no new fields added).
+          - Returns 403 with detailed error response including already_printed metadata.
+          - Owner bypass: check skipped when user.role === 'owner'.
+          
+          **NO BREAKING CHANGES:**
+          - Owner workflow unchanged (unlimited prints).
+          - All other OM PDF endpoints unaffected.
+          - No database schema changes.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 40 TESTS PASSED (100%) - PDF Print Protection patch FULLY WORKING.
+          
+          **TEST SCOPE:** Full backend regression testing for PDF Resi print protection patch
+          **TEST FILE:** /app/backend_test_pdf_print_protection.py
+          **TEST METHOD:** Python requests library with comprehensive backend API testing
+          **BASE URL:** https://pdf-notify-sound.preview.emergentagent.com
+          **TEST DATE:** 2026-08-07T15:13:38Z
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: OWNER UNLIMITED PRINT (6/6 tests passed)
+             - Upload PDF as owner → 200 ✓
+             - Owner first print → 200, printed_at set ✓
+             - Owner second print → 200, printed_at updated (unlimited) ✓
+             - Owner third print → 200 (unlimited) ✓
+             - Verified printed_at updates on each print ✓
+          
+          ✅ TEST 2: STAFF FIRST PRINT ALLOWED (2/2 tests passed)
+             - Upload new PDF as owner → 200 ✓
+             - Cindy (staff with OM module) first print → 200 ✓
+             - printed_by_name = 'Cindy' ✓
+          
+          ✅ TEST 3: STAFF SECOND PRINT BLOCKED (CRITICAL) (4/4 tests passed)
+             - Same PDF as TEST 2, Cindy tries to print again → 403 (BLOCKED) ✓
+             - Error message contains "sudah pernah dicetak" ✓
+             - Response has 'already_printed' field with printed_at and printed_by_name ✓
+             - already_printed.printed_by_name = 'Cindy' ✓
+             - **CRITICAL SUCCESS:** Staff cannot print same PDF twice ✓
+          
+          ✅ TEST 4: STAFF BLOCKED WHEN DIFFERENT USER ALREADY PRINTED (3/3 tests passed)
+             - Upload new PDF as owner → 200 ✓
+             - Owner prints first → 200 ✓
+             - Cindy tries to print → 403 (BLOCKED) ✓
+             - Error message correct: "PDF sudah pernah dicetak" ✓
+             - **CRITICAL SUCCESS:** Staff blocked even when different user printed ✓
+          
+          ✅ TEST 5: OWNER CAN STILL PRINT AFTER STAFF PRINTED (3/3 tests passed)
+             - Upload new PDF → 200 ✓
+             - Cindy prints first → 200 ✓
+             - Owner prints same PDF → 200 (owner unrestricted) ✓
+             - **CRITICAL SUCCESS:** Owner bypass working correctly ✓
+          
+          ✅ TEST 6: REGRESSION TESTS (6/6 tests passed)
+             - GET /api/om/pdfs → 200 ✓
+             - POST /api/om/pdfs/{id}/open → 200 ✓
+             - POST /api/om/pdfs/{id}/scan-result → 200 ✓
+             - GET /api/om/pdfs/{id}/file → 200 (PDF) ✓
+             - POST /api/om/pdfs/{id}/ketoko → 200 ✓
+             - POST /api/om/pdfs/{id}/ketoko-resi → 200 ✓
+             - **NO REGRESSIONS DETECTED** ✓
+          
+          ✅ TEST 7: 404 FOR NONEXISTENT PDF (2/2 tests passed)
+             - POST /api/om/pdfs/nonexistent-id/mark-printed → 404 ✓
+             - Error message: "PDF tidak ditemukan" ✓
+          
+          ✅ TEST 8: AUTH CHECKS (5/5 tests passed)
+             - POST without token → 401 ✓
+             - Remove OM module from Cindy → 200 ✓
+             - POST as Cindy (no OM module) → 403 ✓
+             - Error message: "Anda tidak memiliki akses ke module Order Management" ✓
+             - Module guard working correctly ✓
+          
+          ✅ TEST 9: CLEANUP (2/2 tests passed)
+             - Deleted all 4 test PDFs → 200 ✓
+             - Restored Cindy's modules to ['cycle_count', 'order_management'] → 200 ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Owner Unlimited Print (VERIFIED):**
+             - Owner can print same PDF multiple times (3 prints tested)
+             - printed_at updates on each print
+             - No 403 errors for owner
+             - Backward compatibility maintained
+          
+          2. **Staff One-Time Print Restriction (VERIFIED):**
+             - Staff first print → 200 (allowed)
+             - Staff second print → 403 (blocked)
+             - Error message clear and in Indonesian
+             - already_printed field includes printed_at and printed_by_name
+          
+          3. **Cross-User Print Blocking (VERIFIED):**
+             - If ANY user (owner or staff) has printed a PDF, staff cannot print it
+             - printed_at field is the authoritative flag (not user-specific)
+             - This prevents staff from printing PDFs that were already printed by anyone
+          
+          4. **Owner Bypass (VERIFIED):**
+             - Owner can print PDFs that staff have already printed
+             - Owner role check: `user.role === 'owner'` bypasses restriction
+             - Owner workflow completely unchanged
+          
+          5. **Module-Based Access Control (VERIFIED):**
+             - No token → 401 (unauthorized)
+             - Staff without order_management module → 403 (module guard)
+             - Staff with order_management module → allowed (subject to print restriction)
+          
+          6. **Regression Testing (VERIFIED):**
+             - All other OM PDF endpoints working correctly
+             - GET /api/om/pdfs (list) ✓
+             - POST /api/om/pdfs/{id}/open (tracking) ✓
+             - POST /api/om/pdfs/{id}/scan-result (QR scan) ✓
+             - GET /api/om/pdfs/{id}/file (download) ✓
+             - POST /api/om/pdfs/{id}/ketoko (bulk toggle) ✓
+             - POST /api/om/pdfs/{id}/ketoko-resi (per-resi update) ✓
+             - No breaking changes detected
+          
+          7. **Error Handling (VERIFIED):**
+             - 404 for nonexistent PDF ID
+             - 401 for missing authentication
+             - 403 for missing module access
+             - 403 for print restriction violation
+             - All error messages in Indonesian
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Staff can print each PDF only ONCE (403 on second attempt)
+          ✅ Owner can print unlimited times (unchanged behavior)
+          ✅ Error response includes already_printed metadata
+          ✅ No schema changes (uses existing printed_at field)
+          ✅ No regressions in other endpoints
+          ✅ Module-based access control working
+          ✅ Error messages clear and in Indonesian
+          
+          **CONCLUSION:**
+          The PDF Resi Print Protection patch is FULLY WORKING. All requirements met:
+          1. Karyawan (non-owner staff) can print each PDF only once
+          2. Second print attempt by staff returns 403 with clear error message
+          3. Error response includes already_printed field with metadata
+          4. Owner can print unlimited times (unchanged)
+          5. Owner can print PDFs that staff have already printed
+          6. All other OM PDF endpoints working correctly (no regressions)
+          7. Module-based access control enforced
+          8. No database schema changes (additive patch)
+          
+          Test file: /app/backend_test_pdf_print_protection.py
+          Task marked as working=true, needs_retesting=false.
+
+
 frontend:
   - task: "Login screen + demo quick-pick"
     implemented: true
@@ -4329,6 +4496,64 @@ agent_communication:
          - Verify avg_interval_seconds is calculated (>0 when 2+ packings today)
          - Verify rank ordering (owner rank=1, staff rank=2)
       4. Login as test staff, GET /api/om/packing-productivity
+
+  - agent: "main"
+    message: |
+      PRODUCTION MAINTENANCE PATCH (2026-08-06) — PDF Resi: Print Protection + Toolbar Simplification
+      
+      **SCOPE:** PDF Resi page ONLY. PDF Viewer itself is FROZEN — untouched.
+      
+      **BACKEND CHANGE (defense in depth):**
+      POST /api/om/pdfs/[id]/mark-printed now enforces:
+        - If user.role !== 'owner' AND doc.printed_at is set → return 403 with error
+          "PDF sudah pernah dicetak. Karyawan hanya boleh mencetak satu kali per PDF."
+        - Owner: unlimited print (unchanged behavior).
+      
+      **FRONTEND CHANGE (kontrol di sekitar viewer only):**
+      /app/components/modules/order-management/OMPdfsView.js
+        - PdfPreviewModal now receives `user` prop (passed from OMPdfsView parent).
+        - `printLocked = !isOwner && !!meta?.printed_at` — computed rule.
+        - Print button (2 tempat: header + footer) disabled when printLocked;
+          text changes to "Sudah Dicetak" with lock icon.
+        - handlePrint short-circuits if printLocked; also handles 403 from backend
+          gracefully by locking local state.
+        - "Buka di tab baru" links (header + inline) now hidden for staff
+          (interpreted as Save/Share risk).
+        - Header "Tutup" button renamed to "Back" with ArrowLeft icon.
+        - NEW Zoom In / Zoom Out controls in header + zoom % indicator.
+          Zoom implemented as CSS `transform: scale()` on wrapper container —
+          PDF.js render logic 100% untouched. Range 0.5x – 2.5x, step 0.25x.
+      
+      **PDF VIEWER (FROZEN):**
+      - pdf.js render loop: untouched
+      - canvas rendering: untouched
+      - blob URL generation: untouched
+      - getPdfDoc / getPdfBlobUrl / getPdfServerUrl helpers: untouched
+      - render effect (line ~1499): untouched
+      
+      **BACK BUTTON:**
+      - Reuses existing `onClose = () => setPreviewItem(null)` prop.
+      - Does NOT trigger list reload on close (only close if no print action).
+      - Preserves list scroll/filter state (list state lives in parent).
+      
+      **BACKWARD COMPATIBILITY:**
+      - PDFs with `printed_at` already set: staff can NOT print again after patch
+        (this is the intended behavior).
+      - PDFs without `printed_at`: staff can print once, then locked.
+      - Owner: unlimited printing preserved.
+      - No database schema change. No migration. No new endpoints.
+      - Uses existing `printed_at`, `printed_by_id`, `printed_by_name` fields.
+      
+      **TESTING NEEDED:**
+      1. Backend: POST /api/om/pdfs/{id}/mark-printed
+         a. As owner, print twice on same PDF → both 200.
+         b. As staff with OM module, print once on fresh PDF → 200.
+            Print again on same PDF → 403 with expected error message.
+         c. As staff, print on a PDF with pre-existing printed_at → 403.
+      2. Regression: GET /api/om/pdfs, POST /api/om/pdfs, DELETE /api/om/pdfs/{id}
+         all still work.
+      3. No impact on ketoko / scan-result / open endpoints.
+
          - Verify SAME rank + name + today_count + avg_interval visible
          - Verify `period_count` is MISSING from user objects (redacted for non-owner)
          - Verify viewer_role === 'staff' (or similar non-owner)
