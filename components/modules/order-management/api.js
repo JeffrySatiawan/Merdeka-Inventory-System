@@ -140,5 +140,29 @@ export async function compressToWebp(fileOrBlob, opts = {}) {
   }
   // ============================================================
 
+  // ============================================================
+  // FINAL JPEG FALLBACK (added 2026-08-08) — iPhone XR / iOS 18 fix
+  // ============================================================
+  // Trigger: WebP encoder was used AND output still > backend 500KB cap.
+  // Diagnostic on iPhone XR (iOS 18.7.9) confirmed the iOS WebP encoder
+  // silently ignores the `quality` parameter, producing near-lossless
+  // output (~4 bytes/pixel) that no amount of dimension downscale can
+  // shrink under the cap in reasonable iterations.
+  //
+  // JPEG encoder on iOS ALWAYS honors quality — reliable universal path.
+  //
+  // ZERO IMPACT on working devices:
+  //  - Android / iPhone 12 / iPhone 14 / iPhone 17 Pro Max exit prior
+  //    loops with bytes ≤ HARD_CAP_BYTES → condition FALSE → skipped.
+  //  - Devices where probe already fell back to JPEG at the top of the
+  //    function have encMime === 'image/jpeg' → condition FALSE → skipped.
+  //
+  // Only executes on devices where WebP encoder is broken (iPhone XR iOS 18).
+  if (bytes > HARD_CAP_BYTES && encMime === 'image/webp') {
+    out = canvas.toDataURL('image/jpeg', 0.5);
+    bytes = Math.ceil((out.length * 3) / 4);
+  }
+  // ============================================================
+
   return { dataUrl: out, sizeBytes: bytes };
 }
