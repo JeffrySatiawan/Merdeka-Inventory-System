@@ -91,18 +91,18 @@ export async function compressToWebp(fileOrBlob, opts = {}) {
   // HARD CEILING LOOP (iOS-safety) — guarantees the final payload fits within
   // the backend 500KB cap. Progressive downscale + quality drop; the previous
   // code stopped at one downscale which was sometimes insufficient on iPhone.
-  // Budget extended from 8→25 iterations and quality floor lowered 0.3→0.2 to
-  // cover iPhone XR / 17 Pro Max where toDataURL quality param is honored less
-  // aggressively by iOS Safari — devices that already fit exit the loop early,
-  // so this has ZERO impact on Android / iPhone 12 / iPhone 14 (proven-good).
+  // NOTE: kept at the ORIGINAL tested budget (8 iterations, quality floor 0.3)
+  // that has been proven to work on Android / iPhone 12 / iPhone 14 /
+  // iPhone 17 Pro Max. DO NOT change these constants — they preserve the
+  // known-good behavior for those devices.
   let safetyIter = 0;
   let curW = canvas.width;
   let curH = canvas.height;
   let curQ = 0.7;
-  while (bytes > HARD_CAP_BYTES && safetyIter < 25) {
+  while (bytes > HARD_CAP_BYTES && safetyIter < 8) {
     // Alternate between quality drop and dimension drop for smooth degradation.
-    if (safetyIter % 2 === 0 && curQ > 0.2) {
-      curQ = Math.max(0.2, curQ - 0.1);
+    if (safetyIter % 2 === 0 && curQ > 0.3) {
+      curQ = Math.max(0.3, curQ - 0.1);
     } else {
       curW = Math.round(curW * 0.85);
       curH = Math.round(curH * 0.85);
@@ -114,6 +114,31 @@ export async function compressToWebp(fileOrBlob, opts = {}) {
     bytes = Math.ceil((out.length * 3) / 4);
     safetyIter++;
   }
+
+  // ============================================================
+  // iPhone XR SAFETY NET (added 2026-08-06)
+  // ============================================================
+  // Additive-only block — ZERO impact on devices that already succeeded
+  // (Android / iPhone 12 / iPhone 14 / iPhone 17 Pro Max ALL exit the loop
+  // above with bytes ≤ HARD_CAP_BYTES, so this while() body is never
+  // executed for them). Only iPhone XR — where the previous loop budget
+  // was insufficient — enters this block.
+  //
+  // Behavior: continue shrinking dimensions until the payload fits under
+  // the backend 500KB cap or a hard dimension floor (200px) is reached.
+  // Bounded to 20 additional iterations to prevent any pathological loop.
+  let xrIter = 0;
+  while (bytes > HARD_CAP_BYTES && xrIter < 20 && curW > 200) {
+    curW = Math.round(curW * 0.85);
+    curH = Math.round(curH * 0.85);
+    canvas.width = curW;
+    canvas.height = curH;
+    ctx.drawImage(img, 0, 0, curW, curH);
+    out = canvas.toDataURL(encMime, curQ);
+    bytes = Math.ceil((out.length * 3) / 4);
+    xrIter++;
+  }
+  // ============================================================
 
   return { dataUrl: out, sizeBytes: bytes };
 }
