@@ -91,14 +91,18 @@ export async function compressToWebp(fileOrBlob, opts = {}) {
   // HARD CEILING LOOP (iOS-safety) — guarantees the final payload fits within
   // the backend 500KB cap. Progressive downscale + quality drop; the previous
   // code stopped at one downscale which was sometimes insufficient on iPhone.
+  // Budget extended from 8→25 iterations and quality floor lowered 0.3→0.2 to
+  // cover iPhone XR / 17 Pro Max where toDataURL quality param is honored less
+  // aggressively by iOS Safari — devices that already fit exit the loop early,
+  // so this has ZERO impact on Android / iPhone 12 / iPhone 14 (proven-good).
   let safetyIter = 0;
   let curW = canvas.width;
   let curH = canvas.height;
   let curQ = 0.7;
-  while (bytes > HARD_CAP_BYTES && safetyIter < 8) {
+  while (bytes > HARD_CAP_BYTES && safetyIter < 25) {
     // Alternate between quality drop and dimension drop for smooth degradation.
-    if (safetyIter % 2 === 0 && curQ > 0.3) {
-      curQ = Math.max(0.3, curQ - 0.1);
+    if (safetyIter % 2 === 0 && curQ > 0.2) {
+      curQ = Math.max(0.2, curQ - 0.1);
     } else {
       curW = Math.round(curW * 0.85);
       curH = Math.round(curH * 0.85);
