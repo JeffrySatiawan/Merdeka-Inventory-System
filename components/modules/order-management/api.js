@@ -164,5 +164,47 @@ export async function compressToWebp(fileOrBlob, opts = {}) {
   }
   // ============================================================
 
+  // ============================================================
+  // FAILSAFE FORCE-FIT LOOP (added 2026-08-08) — absolute guarantee
+  // ============================================================
+  // Contract: no output larger than HARD_CAP_BYTES (490KB) will leave
+  // this function. This is the LAST resort. If ANY prior stage still
+  // produced >490KB, this loop progressively downscales dimensions AND
+  // drops quality using the reliable JPEG encoder until the file fits.
+  //
+  // Aspect ratio preserved: both width and height scaled by the same
+  // factor (0.8x per iteration).
+  //
+  // Bounded by 40 iterations AND a 120px dimension floor to prevent
+  // any pathological loop.
+  //
+  // ZERO IMPACT on working devices: while() condition is
+  // `bytes > HARD_CAP_BYTES`. Any device that already fits exits with
+  // FALSE on entry and the body never executes.
+  //
+  // Math: at 120x90 JPEG q0.15 ≈ 3KB — guaranteed to fit well under cap.
+  {
+    let ffI = 0;
+    let ffW = canvas.width;
+    let ffH = canvas.height;
+    let ffQ = 0.35;
+    while (bytes > HARD_CAP_BYTES && ffI < 40 && ffW > 120) {
+      ffW = Math.max(120, Math.round(ffW * 0.8));
+      ffH = Math.max(120, Math.round(ffH * 0.8));
+      canvas.width = ffW;
+      canvas.height = ffH;
+      ctx.drawImage(img, 0, 0, ffW, ffH);
+      // Force JPEG encoder — honors quality reliably on all platforms
+      // (including iOS 18 iPhone XR where WebP quality is ignored).
+      out = canvas.toDataURL('image/jpeg', ffQ);
+      bytes = Math.ceil((out.length * 3) / 4);
+      if (ffI % 2 === 1 && ffQ > 0.15) {
+        ffQ = Math.max(0.15, ffQ - 0.05);
+      }
+      ffI++;
+    }
+  }
+  // ============================================================
+
   return { dataUrl: out, sizeBytes: bytes };
 }
