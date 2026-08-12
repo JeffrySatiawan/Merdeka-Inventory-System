@@ -271,23 +271,36 @@ async function scanQrFromPdfDoc(pdfDoc) {
   const scale = 2.0;
 
   // ---- PASS 1: QR only ----
+  // For each page, try scale 2.0 first (proven-good for 4/5 pages in production
+  // test PDF). If ZXing throws NotFoundException on that page, retry with an
+  // additional larger scale — SAME parser, SAME algorithm, only the render
+  // resolution changes. This unblocks pages whose QR was slightly out of the
+  // decoder's sweet spot at scale 2.0 (e.g. page 5 of the test PDF).
+  const qrScales = [2.0, 3.5];
   const foundQr = new Set();
   for (let p = 1; p <= pdfDoc.numPages; p += 1) {
-    try {
-      const page = await pdfDoc.getPage(p);
-      const vp = page.getViewport({ scale });
-      canvas.width = Math.ceil(vp.width);
-      canvas.height = Math.ceil(vp.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    let decoded = false;
+    for (let si = 0; si < qrScales.length && !decoded; si += 1) {
+      const s = qrScales[si];
       try {
-        const result = await qrReader.decodeFromCanvas(canvas);
-        const text = result?.getText?.() || '';
-        if (text && text.trim()) foundQr.add(text.trim());
-      } catch {
-        /* NotFoundException — no QR on this page, keep going */
+        const page = await pdfDoc.getPage(p);
+        const vp = page.getViewport({ scale: s });
+        canvas.width = Math.ceil(vp.width);
+        canvas.height = Math.ceil(vp.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        try {
+          const result = await qrReader.decodeFromCanvas(canvas);
+          const text = result?.getText?.() || '';
+          if (text && text.trim()) {
+            foundQr.add(text.trim());
+            decoded = true;
+          }
+        } catch {
+          /* NotFoundException — try next scale, else move to next page */
+        }
+      } catch (_e) {
+        /* Continue on per-page errors */
       }
-    } catch (_e) {
-      /* Continue on per-page errors */
     }
   }
   if (foundQr.size > 0) {
