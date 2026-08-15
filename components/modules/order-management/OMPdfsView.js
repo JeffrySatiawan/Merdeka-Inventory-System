@@ -627,7 +627,11 @@ export default function OMPdfsView({ user }) {
   async function load() {
     setLoading(true);
     try {
-      const d = await omApi('pdfs');
+      // Request MAX limit supported by backend (500) so all PDFs within
+      // pdf_retention_days (default 7) are visible — not just today's ~100.
+      // Prior default of 100 caused "list mentok H+1" when daily PDF volume
+      // exceeded 100. Backend still returns only non-deleted items.
+      const d = await omApi('pdfs?limit=500');
       setItems(d.items || []);
     } catch (e) {
       toast.error(e.message || 'Gagal memuat daftar PDF');
