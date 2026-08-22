@@ -703,17 +703,60 @@ export default function OMPdfsView({ user }) {
     }
   }
 
+  // ---- Filter state (frontend-only, uses existing fields) ----
+  const [periodFilter, setPeriodFilter] = useState('week'); // 'today' | 'week' | 'range'
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const filteredItems = useMemo(() => {
+    const now = new Date();
+    let start = null, end = null;
+    if (periodFilter === 'today') {
+      start = new Date(now); start.setHours(0, 0, 0, 0);
+      end = new Date(now); end.setHours(23, 59, 59, 999);
+    } else if (periodFilter === 'week') {
+      start = new Date(now.getTime() - 7 * 86400000);
+      end = new Date(now); end.setHours(23, 59, 59, 999);
+    } else if (periodFilter === 'range' && (dateFrom || dateTo)) {
+      if (dateFrom) { start = new Date(dateFrom); start.setHours(0, 0, 0, 0); }
+      if (dateTo)   { end   = new Date(dateTo);   end.setHours(23, 59, 59, 999); }
+    }
+    return items.filter((x) => {
+      const t = x.uploaded_at ? new Date(x.uploaded_at) : null;
+      if (start && t && t < start) return false;
+      if (end   && t && t > end)   return false;
+      const printed = !!x.printed_at;
+      const ketokoDone = !!x.ketoko_input_at || (x.ketoko_total_count > 0 && x.ketoko_checked_count >= x.ketoko_total_count);
+      switch (statusFilter) {
+        case 'not_printed':          return !printed;
+        case 'printed':              return printed;
+        case 'not_ketoko':           return !ketokoDone;
+        case 'ketoko':               return ketokoDone;
+        case 'printed_not_ketoko':   return printed && !ketokoDone;
+        default:                     return true;
+      }
+    });
+  }, [items, periodFilter, dateFrom, dateTo, statusFilter]);
+
   const totalDetected = useMemo(
-    () => items.reduce((s, x) => s + (x.detected_tracking_numbers?.length || 0), 0),
-    [items]
+    () => filteredItems.reduce((s, x) => s + (x.detected_tracking_numbers?.length || 0), 0),
+    [filteredItems]
   );
-  const printedCount = useMemo(() => items.filter((x) => x.printed_at).length, [items]);
+  const printedCount = useMemo(() => filteredItems.filter((x) => x.printed_at).length, [filteredItems]);
   // KETOKO progress is now counted by RESI (tracking numbers), NOT by PDF files.
-  // Each PDF may contain multiple resi; each can be checked independently.
-  // The header card denominator is `totalDetected` (total resi across all PDFs).
   const ketokoResiChecked = useMemo(
-    () => items.reduce((s, x) => s + (x.ketoko_checked_count || 0), 0),
-    [items]
+    () => filteredItems.reduce((s, x) => s + (x.ketoko_checked_count || 0), 0),
+    [filteredItems]
+  );
+  // Alert: PDFs sudah diprint tapi ketoko belum lengkap (dari periode aktif).
+  const belumKetokoCount = useMemo(
+    () => filteredItems.filter((x) => {
+      const printed = !!x.printed_at;
+      const ketokoDone = !!x.ketoko_input_at || (x.ketoko_total_count > 0 && x.ketoko_checked_count >= x.ketoko_total_count);
+      return printed && !ketokoDone;
+    }).length,
+    [filteredItems]
   );
   const isOwner = user?.role === 'owner';
 
@@ -913,7 +956,7 @@ export default function OMPdfsView({ user }) {
         <Card className="border-white/10 bg-white/[0.02]">
           <CardContent className="pt-5 pb-4">
             <div className="text-xs text-muted-foreground">Total File</div>
-            <div className="text-2xl font-bold mt-1">{items.length}</div>
+            <div className="text-2xl font-bold mt-1">{filteredItems.length}</div>
           </CardContent>
         </Card>
         <Card className="border-emerald-500/20 bg-emerald-500/5">
@@ -926,7 +969,7 @@ export default function OMPdfsView({ user }) {
           <CardContent className="pt-5 pb-4">
             <div className="text-xs text-blue-300">Sudah Diprint</div>
             <div className="text-2xl font-bold mt-1 text-blue-400">
-              {printedCount}<span className="text-sm text-muted-foreground">/{items.length}</span>
+              {printedCount}<span className="text-sm text-muted-foreground">/{filteredItems.length}</span>
             </div>
           </CardContent>
         </Card>
@@ -945,6 +988,49 @@ export default function OMPdfsView({ user }) {
         </Card>
       </div>
 
+      {/* Filter toolbar + Alert Ketoko */}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white">
+            <option value="today">Hari Ini</option>
+            <option value="week">Minggu Ini (7 hari)</option>
+            <option value="range">Range Tanggal</option>
+          </select>
+          {periodFilter === 'range' && (
+            <>
+              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white" />
+              <span className="text-muted-foreground">→</span>
+              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white" />
+            </>
+          )}
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white">
+            <option value="all">Semua Status</option>
+            <option value="not_printed">Belum Diprint</option>
+            <option value="printed">Sudah Diprint</option>
+            <option value="not_ketoko">Belum Input Ketoko</option>
+            <option value="ketoko">Sudah Input Ketoko</option>
+            <option value="printed_not_ketoko">Sudah Diprint + Belum Input Ketoko</option>
+          </select>
+        </div>
+        {belumKetokoCount > 0 ? (
+          <button onClick={() => setStatusFilter('printed_not_ketoko')}
+            className="flex items-center gap-2 px-3 py-2 rounded-md bg-red-500/15 border border-red-500/40 text-red-300 hover:bg-red-500/25 transition text-sm text-left">
+            <span>⚠️</span>
+            <span><b>{belumKetokoCount} RESI</b> BELUM INPUT KETOKO</span>
+            <span className="text-xs text-red-300/70 ml-2">(klik untuk filter)</span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm">
+            <span>✓</span>
+            <span>Semua Resi Sudah Input Ketoko</span>
+          </div>
+        )}
+      </div>
+
       {/* List */}
       <Card className="border-white/10 bg-white/[0.02]">
         <CardContent className="pt-6">
@@ -952,19 +1038,21 @@ export default function OMPdfsView({ user }) {
             <div className="space-y-2">
               {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16" />)}
             </div>
-          ) : items.length === 0 ? (
+          ) : filteredItems.length === 0 ? (
             <div className="text-center py-10">
               <FileText className="w-10 h-10 mx-auto text-muted-foreground/40 mb-3" />
-              <div className="text-sm text-muted-foreground">Belum ada PDF diunggah.</div>
+              <div className="text-sm text-muted-foreground">
+                {items.length === 0 ? 'Belum ada PDF diunggah.' : 'Tidak ada PDF pada filter ini.'}
+              </div>
               <div className="text-xs text-muted-foreground/70 mt-1">
-                {isOwner
+                {items.length === 0 ? (isOwner
                   ? 'Klik "Unggah PDF" untuk mulai — bisa pilih dari galeri / file HP.'
-                  : 'Hanya owner (ADMIN) yang dapat mengunggah PDF resi.'}
+                  : 'Hanya owner (ADMIN) yang dapat mengunggah PDF resi.') : 'Coba ubah periode atau status filter.'}
               </div>
             </div>
           ) : (
             <div className="space-y-3">
-              {items.map((it) => (
+              {filteredItems.map((it) => (
                 <PdfRow
                   key={it.id}
                   item={it}
