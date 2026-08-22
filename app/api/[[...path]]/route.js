@@ -108,6 +108,13 @@ const AVAILABLE_MODULES = [
     icon: 'ShoppingCart',
     status: 'coming_soon',
   },
+  {
+    key: 'absensi',
+    name: 'Absensi',
+    description: 'Pondasi module Absensi. Fitur akan ditambahkan pada patch berikutnya.',
+    icon: 'Clock',
+    status: 'coming_soon',
+  },
 ];
 const VALID_MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
 const VALID_ROLES = ['owner', 'supervisor', 'staff'];

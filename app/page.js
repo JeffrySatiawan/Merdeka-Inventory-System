@@ -179,6 +179,7 @@ function LoginScreen({ onLogin }) {
 const MODULES_META = {
   cycle_count: { key: 'cycle_count', name: 'Cycle Count', icon: Package, status: 'active' },
   order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'active' },
+  absensi: { key: 'absensi', name: 'Absensi', icon: Clock, status: 'coming_soon' },
 };
 
 // Compute allowed module keys for a user (owner has all)
