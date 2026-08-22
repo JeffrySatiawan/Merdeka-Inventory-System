@@ -992,7 +992,7 @@ export default function OMPdfsView({ user }) {
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <select value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white">
+            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white [&>option]:bg-zinc-800 [&>option]:text-white">
             <option value="today">Hari Ini</option>
             <option value="week">Minggu Ini (7 hari)</option>
             <option value="range">Range Tanggal</option>
@@ -1007,7 +1007,7 @@ export default function OMPdfsView({ user }) {
             </>
           )}
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white">
+            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-white [&>option]:bg-zinc-800 [&>option]:text-white">
             <option value="all">Semua Status</option>
             <option value="not_printed">Belum Diprint</option>
             <option value="printed">Sudah Diprint</option>
