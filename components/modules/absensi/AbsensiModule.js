@@ -1,0 +1,969 @@
+'use client';
+
+// ============================================================================
+// AbsensiModule — isolated attendance module.
+// Reuses existing helpers:
+//   - startCameraScanner()  from OMS (QR code scanning via @zxing/browser)
+//   - compressToWebp()      from OMS (client-side selfie compression)
+//   - shadcn/ui components (Button, Card, Dialog, Select, Input, Badge, Skeleton)
+//   - existing auth token from localStorage.cc_token
+// ============================================================================
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { toast } from 'sonner';
+import {
+  Clock,
+  LogIn,
+  LogOut,
+  History,
+  MapPin,
+  Camera,
+  QrCode,
+  ShieldCheck,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  RefreshCw,
+  Settings as SettingsIcon,
+  Users,
+  Timer,
+  ClipboardCheck,
+  Radio,
+} from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
+// Reuse OMS helpers — do NOT duplicate.
+import { startCameraScanner, feedback } from '@/components/modules/order-management/scanner';
+import { compressToWebp } from '@/components/modules/order-management/api';
+
+// ---- API helper (isolated) --------------------------------------------------
+async function absApi(path, options = {}) {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('cc_token') : null;
+  const headers = {
+    ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers || {}),
+  };
+  const res = await fetch(`/api/absensi${path ? `/${path}` : ''}`, { ...options, headers });
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+// ---- Utility formatters ----------------------------------------------------
+function fmtMinutes(m) {
+  if (m == null) return '-';
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  if (h > 0) return `${h}j ${mm}m`;
+  return `${mm}m`;
+}
+function fmtDate(d) { try { return new Date(d).toLocaleString('id-ID'); } catch { return '-'; } }
+
+// ---- Selfie capture (front camera) ------------------------------------------
+// Small dedicated component — gallery upload is intentionally NOT supported.
+function SelfieCapture({ open, onClose, onCaptured, title = 'Ambil Selfie' }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setError('');
+      try {
+        if (!navigator?.mediaDevices?.getUserMedia) {
+          setError('Kamera tidak tersedia di browser ini');
+          return;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 720 } },
+          audio: false,
+        });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        const v = videoRef.current;
+        if (v) {
+          v.srcObject = stream;
+          v.setAttribute('playsinline', 'true');
+          v.muted = true;
+          await v.play().catch(() => {});
+        }
+      } catch (e) {
+        setError(e?.message || 'Tidak bisa mengakses kamera. Cek izin kamera browser.');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { streamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
+      streamRef.current = null;
+    };
+  }, [open]);
+
+  const snap = async () => {
+    setBusy(true);
+    try {
+      const v = videoRef.current;
+      if (!v || !v.videoWidth) throw new Error('Kamera belum siap');
+      const canvas = document.createElement('canvas');
+      const size = Math.min(720, Math.min(v.videoWidth, v.videoHeight));
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      // Center-crop the video into a square.
+      const sx = (v.videoWidth - size) / 2;
+      const sy = (v.videoHeight - size) / 2;
+      ctx.drawImage(v, sx, sy, size, size, 0, 0, size, size);
+      // Convert to compressed WebP data URL via OMS helper — supports iOS fallback.
+      const blob = await new Promise((res) => canvas.toBlob(res, 'image/webp', 0.9));
+      const { dataUrl } = await compressToWebp(blob, { maxWidth: 640, maxHeight: 640, targetKB: 180 });
+      onCaptured?.(dataUrl);
+    } catch (e) {
+      toast.error(e.message || 'Gagal mengambil foto');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !busy) onClose?.(); }}>
+      <DialogContent className="sm:max-w-md bg-[#0a0a0b] border-white/10">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Camera className="w-4 h-4 text-emerald-400" /> {title}
+          </DialogTitle>
+          <DialogDescription>
+            Kamera depan aktif. Upload foto dari galeri TIDAK diizinkan.
+          </DialogDescription>
+        </DialogHeader>
+        {error ? (
+          <div className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3">
+            {error}
+          </div>
+        ) : (
+          <div className="relative aspect-square w-full rounded-lg overflow-hidden bg-black border border-white/10">
+            <video
+              ref={videoRef}
+              className="w-full h-full object-cover"
+              playsInline
+              muted
+              autoPlay
+            />
+            <div className="absolute inset-0 pointer-events-none border-4 border-white/10 rounded-lg" />
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onClose?.()} disabled={busy}>Batal</Button>
+          <Button onClick={snap} disabled={busy || !!error} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+            Ambil Foto
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---- QR scanner (reuses OMS startCameraScanner) ----------------------------
+function QrScanner({ open, onClose, onDecoded }) {
+  const containerRef = useRef(null);
+  const controllerRef = useRef(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setError('');
+    let stopped = false;
+    (async () => {
+      try {
+        controllerRef.current = await startCameraScanner(
+          containerRef.current,
+          (text) => {
+            if (stopped) return;
+            try { feedback('ok'); } catch { /* audio may be blocked */ }
+            onDecoded?.(String(text || '').trim());
+          },
+          (e) => setError(e?.message || String(e))
+        );
+      } catch (e) {
+        setError(e?.message || 'Tidak bisa mengaktifkan kamera untuk QR');
+      }
+    })();
+    return () => {
+      stopped = true;
+      try { controllerRef.current?.stop?.(); } catch { /* ignore */ }
+      controllerRef.current = null;
+    };
+  }, [open, onDecoded]);
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
+      <DialogContent className="sm:max-w-md bg-[#0a0a0b] border-white/10">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <QrCode className="w-4 h-4 text-emerald-400" /> Scan QR Absensi
+          </DialogTitle>
+          <DialogDescription>Arahkan kamera ke QR statis milik Owner.</DialogDescription>
+        </DialogHeader>
+        {error ? (
+          <div className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3">{error}</div>
+        ) : (
+          <div ref={containerRef} className="relative aspect-square w-full rounded-lg overflow-hidden bg-black border border-white/10" />
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onClose?.()}>Tutup</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---- Geolocation hook -------------------------------------------------------
+function useGeolocation() {
+  const [coords, setCoords] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const acquire = () => new Promise((resolve, reject) => {
+    if (!navigator?.geolocation) {
+      const e = new Error('Perangkat tidak mendukung GPS');
+      setError(e.message); reject(e); return;
+    }
+    setBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const c = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+        setCoords(c); setError(''); setBusy(false); resolve(c);
+      },
+      (err) => {
+        setError(err?.message || 'Gagal mengambil GPS. Aktifkan izin lokasi.'); setBusy(false); reject(err);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+    );
+  });
+  return { coords, error, busy, acquire };
+}
+
+// ============================================================================
+//  Sub-view: Staff Home (today's status + entry to check-in / check-out)
+// ============================================================================
+function StaffHomeView({ onNav }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    try { setData(await absApi('today')); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  if (loading) return <Skeleton className="h-40 w-full rounded-xl" />;
+  const rec = data?.record;
+  const hasIn = !!rec?.actual_check_in;
+  const hasOut = !!rec?.actual_check_out;
+
+  return (
+    <div className="space-y-4">
+      <Card className="bg-gradient-to-br from-indigo-500/10 via-violet-500/5 to-transparent border-indigo-500/20">
+        <CardContent className="pt-5">
+          <div className="text-xs text-muted-foreground">Hari ini · {data?.date}</div>
+          <div className="text-3xl font-bold tabular-nums mt-1">{data?.now || '--:--'} WITA</div>
+
+          {rec ? (
+            <div className="mt-3 space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Badge className="bg-indigo-500/20 text-indigo-300 border-indigo-500/30">{rec.shift_name}</Badge>
+                <span className="text-muted-foreground">{rec.shift_start}–{rec.shift_end}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Badge className={hasIn ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-white/5'}>
+                  {hasIn ? <><CheckCircle2 className="w-3 h-3 mr-1"/>Masuk {rec.actual_check_in_wita}</> : 'Belum absen masuk'}
+                </Badge>
+                {rec.late_minutes > 0 && (
+                  <Badge className="bg-rose-500/20 text-rose-300 border-rose-500/30">
+                    Terlambat {fmtMinutes(rec.late_minutes)}
+                  </Badge>
+                )}
+                <Badge className={hasOut ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-white/5'}>
+                  {hasOut ? <><CheckCircle2 className="w-3 h-3 mr-1"/>Keluar {rec.actual_check_out_wita}</> : 'Belum absen keluar'}
+                </Badge>
+                {rec.overtime_minutes > 0 && (
+                  <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30">
+                    Lembur {fmtMinutes(rec.overtime_minutes)} · {rec.overtime_status}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 text-sm text-muted-foreground">Anda belum absen hari ini.</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Button
+          onClick={() => onNav('abs:in')}
+          disabled={hasIn}
+          className="h-20 bg-emerald-600 hover:bg-emerald-500 gap-2 text-base"
+        >
+          <LogIn className="w-5 h-5" /> Absen Masuk
+        </Button>
+        <Button
+          onClick={() => onNav('abs:out')}
+          disabled={!hasIn || hasOut}
+          className="h-20 bg-indigo-600 hover:bg-indigo-500 gap-2 text-base"
+        >
+          <LogOut className="w-5 h-5" /> Absen Keluar
+        </Button>
+      </div>
+
+      <Button variant="outline" onClick={() => onNav('abs:history')} className="w-full gap-2">
+        <History className="w-4 h-4" /> Riwayat Absensi
+      </Button>
+    </div>
+  );
+}
+
+// ============================================================================
+//  Sub-view: Check-In Flow (selfie → QR → GPS → submit)
+// ============================================================================
+function CheckInView({ onDone, onBack }) {
+  const [today, setToday] = useState(null);
+  const [shiftKey, setShiftKey] = useState('');
+  const [selfie, setSelfie] = useState(null);
+  const [qrValue, setQrValue] = useState('');
+  const [selfieOpen, setSelfieOpen] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const geo = useGeolocation();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const d = await absApi('today');
+        setToday(d);
+        if (d?.suggested_shift_key) setShiftKey(d.suggested_shift_key);
+      } catch (e) { toast.error(e.message); }
+    })();
+  }, []);
+
+  const submit = async () => {
+    if (!selfie) { toast.error('Ambil selfie terlebih dahulu'); return; }
+    if (!qrValue) { toast.error('Scan QR Absensi terlebih dahulu'); return; }
+    if (!shiftKey) { toast.error('Pilih shift'); return; }
+    if (!geo.coords) { toast.error('Ambil lokasi GPS terlebih dahulu'); return; }
+    setSubmitting(true);
+    try {
+      await absApi('check-in', {
+        method: 'POST',
+        body: JSON.stringify({
+          photo_data_url: selfie,
+          qr_value: qrValue,
+          lat: geo.coords.lat,
+          lng: geo.coords.lng,
+          shift_key: shiftKey,
+        }),
+      });
+      toast.success('Absen masuk berhasil');
+      onDone?.();
+    } catch (e) {
+      toast.error(e.message);
+    } finally { setSubmitting(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-1">← Kembali</Button>
+        <div className="text-lg font-semibold">Absen Masuk</div>
+      </div>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardContent className="pt-4 space-y-3">
+          {/* Shift */}
+          <div>
+            <Label className="text-xs">Shift <span className="text-rose-400">*</span></Label>
+            <Select value={shiftKey} onValueChange={setShiftKey}>
+              <SelectTrigger><SelectValue placeholder="Pilih shift" /></SelectTrigger>
+              <SelectContent>
+                {(today?.shifts || []).map((s) => (
+                  <SelectItem key={s.key} value={s.key}>{s.name} · {s.start}-{s.end}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Selfie */}
+          <StepButton
+            done={!!selfie}
+            icon={Camera}
+            label="Selfie"
+            hint={selfie ? 'Selfie sudah diambil' : 'Ambil selfie via kamera depan (galeri tidak diizinkan)'}
+            onClick={() => setSelfieOpen(true)}
+          />
+          {selfie && (
+            <img src={selfie} alt="selfie" className="w-24 h-24 rounded-lg object-cover border border-white/10" />
+          )}
+
+          {/* QR */}
+          <StepButton
+            done={!!qrValue}
+            icon={QrCode}
+            label="Scan QR Absensi"
+            hint={qrValue ? 'QR terdeteksi' : 'Scan QR statis milik Owner'}
+            onClick={() => setQrOpen(true)}
+          />
+
+          {/* GPS */}
+          <StepButton
+            done={!!geo.coords}
+            icon={MapPin}
+            label={geo.busy ? 'Mengambil GPS…' : 'Ambil Lokasi GPS'}
+            hint={geo.coords
+              ? `lat ${geo.coords.lat.toFixed(5)}, lng ${geo.coords.lng.toFixed(5)} (±${Math.round(geo.coords.acc || 0)}m)`
+              : (geo.error || 'Izinkan akses lokasi')}
+            onClick={() => geo.acquire().catch(() => {})}
+          />
+
+          <Button
+            onClick={submit}
+            disabled={submitting || !selfie || !qrValue || !shiftKey || !geo.coords}
+            className="w-full h-11 bg-emerald-600 hover:bg-emerald-500 gap-2"
+          >
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+            Konfirmasi Absen Masuk
+          </Button>
+        </CardContent>
+      </Card>
+
+      <SelfieCapture
+        open={selfieOpen}
+        onClose={() => setSelfieOpen(false)}
+        onCaptured={(url) => { setSelfie(url); setSelfieOpen(false); }}
+      />
+      <QrScanner
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+        onDecoded={(text) => { setQrValue(text); setQrOpen(false); }}
+      />
+    </div>
+  );
+}
+
+// ============================================================================
+//  Sub-view: Check-Out Flow (selfie → GPS → submit)
+// ============================================================================
+function CheckOutView({ onDone, onBack }) {
+  const [selfie, setSelfie] = useState(null);
+  const [selfieOpen, setSelfieOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const geo = useGeolocation();
+
+  const submit = async () => {
+    if (!selfie) { toast.error('Ambil selfie terlebih dahulu'); return; }
+    if (!geo.coords) { toast.error('Ambil lokasi GPS terlebih dahulu'); return; }
+    setSubmitting(true);
+    try {
+      await absApi('check-out', {
+        method: 'POST',
+        body: JSON.stringify({
+          photo_data_url: selfie,
+          lat: geo.coords.lat,
+          lng: geo.coords.lng,
+        }),
+      });
+      toast.success('Absen keluar berhasil');
+      onDone?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setSubmitting(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-1">← Kembali</Button>
+        <div className="text-lg font-semibold">Absen Keluar</div>
+      </div>
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardContent className="pt-4 space-y-3">
+          <StepButton
+            done={!!selfie}
+            icon={Camera}
+            label="Selfie"
+            hint={selfie ? 'Selfie sudah diambil' : 'Ambil selfie via kamera depan'}
+            onClick={() => setSelfieOpen(true)}
+          />
+          {selfie && (
+            <img src={selfie} alt="selfie-out" className="w-24 h-24 rounded-lg object-cover border border-white/10" />
+          )}
+          <StepButton
+            done={!!geo.coords}
+            icon={MapPin}
+            label={geo.busy ? 'Mengambil GPS…' : 'Ambil Lokasi GPS'}
+            hint={geo.coords ? `lat ${geo.coords.lat.toFixed(5)}, lng ${geo.coords.lng.toFixed(5)}` : (geo.error || 'Izinkan akses lokasi')}
+            onClick={() => geo.acquire().catch(() => {})}
+          />
+          <Button
+            onClick={submit}
+            disabled={submitting || !selfie || !geo.coords}
+            className="w-full h-11 bg-indigo-600 hover:bg-indigo-500 gap-2"
+          >
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
+            Konfirmasi Absen Keluar
+          </Button>
+        </CardContent>
+      </Card>
+      <SelfieCapture open={selfieOpen} onClose={() => setSelfieOpen(false)} onCaptured={(url) => { setSelfie(url); setSelfieOpen(false); }} />
+    </div>
+  );
+}
+
+function StepButton({ done, icon: Icon, label, hint, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full text-left rounded-lg border p-3 flex items-center gap-3 transition ${
+        done
+          ? 'border-emerald-500/40 bg-emerald-500/5 hover:bg-emerald-500/10'
+          : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.05]'
+      }`}
+    >
+      <div className={`w-9 h-9 rounded-md flex items-center justify-center shrink-0 ${done ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-muted-foreground'}`}>
+        {done ? <CheckCircle2 className="w-4 h-4" /> : <Icon className="w-4 h-4" />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium">{label}</div>
+        <div className="text-[11px] text-muted-foreground truncate">{hint}</div>
+      </div>
+    </button>
+  );
+}
+
+// ============================================================================
+//  Sub-view: History (self)
+// ============================================================================
+function HistoryView({ onBack }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    (async () => {
+      try { const d = await absApi('my-history'); setItems(d.items || []); }
+      catch (e) { toast.error(e.message); }
+      finally { setLoading(false); }
+    })();
+  }, []);
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-1">← Kembali</Button>
+        <div className="text-lg font-semibold">Riwayat Absensi</div>
+      </div>
+      {loading ? (
+        <Skeleton className="h-40 w-full rounded-xl" />
+      ) : items.length === 0 ? (
+        <div className="text-center py-10 text-sm text-muted-foreground">Belum ada riwayat.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((r) => (
+            <Card key={r.id} className="bg-white/[0.02] border-white/10">
+              <CardContent className="pt-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="font-semibold">{r.date}</div>
+                  <Badge className="bg-indigo-500/15 text-indigo-300 border-indigo-500/30">{r.shift_name}</Badge>
+                  {r.late_minutes > 0 && (
+                    <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Terlambat {fmtMinutes(r.late_minutes)}</Badge>
+                  )}
+                  {r.overtime_minutes > 0 && (
+                    <Badge className="bg-amber-500/15 text-amber-300 border-amber-500/30">
+                      Lembur {fmtMinutes(r.overtime_minutes)} · {r.overtime_status}
+                    </Badge>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  Masuk: {r.actual_check_in_wita || '-'} · Keluar: {r.actual_check_out_wita || '-'} · Kerja: {fmtMinutes(r.worked_minutes)}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+//  Owner Dashboard
+// ============================================================================
+function OwnerDashboardView() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const load = async () => {
+    try { setData(await absApi('dashboard')); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, []);
+  if (loading) return <Skeleton className="h-60 w-full rounded-xl" />;
+  const s = data?.summary || {};
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Metric icon={Users} label="Total Staff" value={s.total_staff ?? 0} tone="default" />
+        <Metric icon={LogIn} label="Sudah Masuk" value={s.checked_in ?? 0} tone="green" />
+        <Metric icon={AlertCircle} label="Terlambat" value={s.late ?? 0} tone="red" />
+        <Metric icon={Timer} label="Belum Absen" value={s.not_checked_in ?? 0} tone="orange" />
+        <Metric icon={LogOut} label="Sudah Keluar" value={s.checked_out ?? 0} tone="default" />
+        <Metric icon={Clock} label="Masih Bekerja" value={s.still_working ?? 0} tone="default" />
+        <Metric icon={ClipboardCheck} label="Lembur Pending" value={s.overtime_pending ?? 0} tone="orange" />
+        <Metric icon={Radio} label="Sekarang" value={data?.now || '--:--'} tone="default" />
+      </div>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Absensi Hari Ini · {data?.date}</CardTitle>
+          <CardDescription>Data auto-refresh setiap 15 detik</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {(data?.records || []).length === 0 ? (
+            <div className="text-sm text-muted-foreground py-6 text-center">Belum ada yang absen.</div>
+          ) : (
+            <div className="space-y-2">
+              {data.records.map((r) => (
+                <div key={r.id} className="rounded-lg border border-white/10 p-3 bg-white/[0.02]">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-semibold">{r.user_name}</div>
+                    <Badge className="bg-indigo-500/15 text-indigo-300 border-indigo-500/30">{r.shift_name}</Badge>
+                    {r.late_minutes > 0 && <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Terlambat {fmtMinutes(r.late_minutes)}</Badge>}
+                    {r.overtime_minutes > 0 && (
+                      <Badge className={
+                        r.overtime_status === 'approved' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' :
+                        r.overtime_status === 'rejected' ? 'bg-rose-500/15 text-rose-300 border-rose-500/30' :
+                        'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                      }>Lembur {fmtMinutes(r.overtime_minutes)} · {r.overtime_status}</Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Masuk: {r.actual_check_in_wita || '-'} · Keluar: {r.actual_check_out_wita || '-'} · Kerja: {fmtMinutes(r.worked_minutes)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {(data?.not_checked_in || []).length > 0 && (
+            <div className="mt-4">
+              <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">Belum Absen ({data.not_checked_in.length})</div>
+              <div className="flex flex-wrap gap-1.5">
+                {data.not_checked_in.map((u) => (
+                  <Badge key={u.user_id} variant="outline" className="border-white/10 text-muted-foreground">{u.user_name}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function Metric({ icon: Icon, label, value, tone = 'default' }) {
+  const tones = {
+    default: 'from-white/5 to-white/[0.02] border-white/10 text-white',
+    green: 'from-emerald-500/20 to-emerald-500/5 border-emerald-500/30 text-emerald-300',
+    red: 'from-rose-500/20 to-rose-500/5 border-rose-500/30 text-rose-300',
+    orange: 'from-amber-500/20 to-amber-500/5 border-amber-500/30 text-amber-300',
+  };
+  return (
+    <div className={`rounded-xl border bg-gradient-to-br ${tones[tone]} p-4`}>
+      <div className="flex items-center gap-2 text-xs opacity-80"><Icon className="w-3.5 h-3.5" /> {label}</div>
+      <div className="text-2xl font-bold mt-1 tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+// ============================================================================
+//  Owner: Overtime Approvals
+// ============================================================================
+function OwnerOvertimeView() {
+  const [tab, setTab] = useState('pending');
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const load = async () => {
+    setLoading(true);
+    try { const d = await absApi(`overtime?status=${tab}`); setItems(d.items || []); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const act = async (id, kind) => {
+    setBusyId(id);
+    try {
+      await absApi(`overtime/${id}/${kind}`, { method: 'POST', body: JSON.stringify({}) });
+      toast.success(kind === 'approve' ? 'Lembur disetujui' : 'Lembur ditolak');
+      load();
+    } catch (e) { toast.error(e.message); }
+    finally { setBusyId(null); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        {['pending', 'approved', 'rejected'].map((k) => (
+          <Button key={k} size="sm" variant={tab === k ? 'default' : 'outline'} onClick={() => setTab(k)} className="capitalize">
+            {k}
+          </Button>
+        ))}
+      </div>
+      {loading ? (
+        <Skeleton className="h-40 w-full rounded-xl" />
+      ) : items.length === 0 ? (
+        <div className="text-center py-10 text-sm text-muted-foreground">Tidak ada data lembur {tab}.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((r) => (
+            <div key={r.id} className="rounded-lg border border-white/10 p-3 bg-white/[0.02] flex flex-wrap items-center gap-3">
+              <div className="flex-1 min-w-[200px]">
+                <div className="font-semibold">{r.user_name} · {r.date}</div>
+                <div className="text-xs text-muted-foreground">
+                  Shift {r.shift_name} ({r.shift_start}–{r.shift_end}) · Keluar {r.actual_check_out_wita} · Lembur {fmtMinutes(r.overtime_minutes)}
+                </div>
+                {r.overtime_reviewed_by_name && (
+                  <div className="text-[10px] text-muted-foreground/70 mt-0.5">
+                    Ditinjau oleh {r.overtime_reviewed_by_name} · {fmtDate(r.overtime_reviewed_at)}
+                  </div>
+                )}
+              </div>
+              {tab === 'pending' && (
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => act(r.id, 'approve')} disabled={busyId === r.id} className="bg-emerald-600 hover:bg-emerald-500 gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Setujui
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => act(r.id, 'reject')} disabled={busyId === r.id} className="border-rose-500/40 text-rose-300 gap-1">
+                    <XCircle className="w-3.5 h-3.5" /> Tolak
+                  </Button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+//  Owner: Settings (lokasi + shift + QR)
+// ============================================================================
+function OwnerSettingsView() {
+  const [settings, setSettings] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [qrValue, setQrValue] = useState(null);
+  const geo = useGeolocation();
+
+  const load = async () => {
+    try { const d = await absApi('settings'); setSettings(d.settings); }
+    catch (e) { toast.error(e.message); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const d = await absApi('settings', { method: 'PUT', body: JSON.stringify({
+        location: settings.location,
+        shifts: settings.shifts,
+        overtime_min_minutes: settings.overtime_min_minutes,
+      })});
+      setSettings(d.settings);
+      toast.success('Pengaturan tersimpan');
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const regenQr = async () => {
+    if (!window.confirm('Regenerate QR? QR lama tidak lagi valid. Cetak ulang QR baru untuk ditempel.')) return;
+    try {
+      const d = await absApi('settings', { method: 'PUT', body: JSON.stringify({ regenerate_qr: true })});
+      setSettings(d.settings);
+      const q = await absApi('qr');
+      setQrValue(q.qr_value);
+      toast.success('QR baru dibuat');
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const revealQr = async () => {
+    try { const q = await absApi('qr'); setQrValue(q.qr_value); }
+    catch (e) { toast.error(e.message); }
+  };
+
+  const setLocFromGps = async () => {
+    try {
+      const c = await geo.acquire();
+      setSettings((s) => ({ ...s, location: { ...s.location, lat: c.lat, lng: c.lng } }));
+      toast.success('Koordinat GPS diambil');
+    } catch { /* toast already surfaced via geo.error */ }
+  };
+
+  if (!settings) return <Skeleton className="h-60 w-full rounded-xl" />;
+
+  return (
+    <div className="space-y-4">
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><MapPin className="w-4 h-4"/>Lokasi & Radius</CardTitle>
+          <CardDescription>Staff hanya dapat absen bila berada dalam radius ini.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Nama Lokasi</Label>
+              <Input value={settings.location.name || ''} onChange={(e) => setSettings((s) => ({ ...s, location: { ...s.location, name: e.target.value }}))} />
+            </div>
+            <div>
+              <Label className="text-xs">Radius (meter)</Label>
+              <Input type="number" min={5} max={2000} value={settings.location.radius_m || 50}
+                onChange={(e) => setSettings((s) => ({ ...s, location: { ...s.location, radius_m: Number(e.target.value) }}))} />
+            </div>
+            <div>
+              <Label className="text-xs">Latitude</Label>
+              <Input type="number" step="0.000001" value={settings.location.lat ?? 0}
+                onChange={(e) => setSettings((s) => ({ ...s, location: { ...s.location, lat: Number(e.target.value) }}))} />
+            </div>
+            <div>
+              <Label className="text-xs">Longitude</Label>
+              <Input type="number" step="0.000001" value={settings.location.lng ?? 0}
+                onChange={(e) => setSettings((s) => ({ ...s, location: { ...s.location, lng: Number(e.target.value) }}))} />
+            </div>
+          </div>
+          <Button variant="outline" onClick={setLocFromGps} disabled={geo.busy} className="gap-2">
+            {geo.busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
+            Ambil dari GPS Saat Ini
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><Clock className="w-4 h-4"/>Shift</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {settings.shifts.map((sh, i) => (
+            <div key={sh.key} className="grid grid-cols-6 gap-2 items-center">
+              <Input value={sh.name} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, name: e.target.value }; return { ...s, shifts: arr };})} className="col-span-2" />
+              <Input value={sh.category} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, category: e.target.value }; return { ...s, shifts: arr };})} />
+              <Input type="time" value={sh.start} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, start: e.target.value }; return { ...s, shifts: arr };})} />
+              <Input type="time" value={sh.end} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, end: e.target.value }; return { ...s, shifts: arr };})} />
+              <div className="text-[10px] text-muted-foreground font-mono truncate">{sh.key}</div>
+            </div>
+          ))}
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <Label className="text-xs">Min. menit lembur</Label>
+              <Input type="number" min={0} max={240} value={settings.overtime_min_minutes ?? 30}
+                onChange={(e) => setSettings((s) => ({ ...s, overtime_min_minutes: Number(e.target.value) }))} />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><QrCode className="w-4 h-4"/>QR Absensi</CardTitle>
+          <CardDescription>Buat QR sekali, cetak, dan tempel di lokasi. Staff scan QR ini saat absen.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {qrValue ? (
+            <div className="rounded border border-white/10 bg-white p-4 text-center">
+              <div className="text-black font-mono text-xs break-all">{qrValue}</div>
+              <div className="text-[10px] text-muted-foreground mt-1">Gunakan generator QR eksternal untuk mencetak QR dari string di atas.</div>
+            </div>
+          ) : (
+            <Button variant="outline" onClick={revealQr} className="gap-2"><QrCode className="w-4 h-4" />Tampilkan QR</Button>
+          )}
+          <Button variant="outline" onClick={regenQr} className="gap-2 border-amber-500/40 text-amber-300"><RefreshCw className="w-4 h-4" />Regenerate QR</Button>
+        </CardContent>
+      </Card>
+
+      <Button onClick={save} disabled={saving} className="bg-indigo-600 hover:bg-indigo-500 gap-2">
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+        Simpan Pengaturan
+      </Button>
+    </div>
+  );
+}
+
+// ============================================================================
+//  Root: AbsensiModule
+// ============================================================================
+export default function AbsensiModule({ user, initialView = 'abs:home' }) {
+  const [view, setView] = useState(initialView);
+  const isOwner = user?.role === 'owner';
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center">
+            <Clock className="w-5 h-5 text-indigo-400" />
+          </div>
+          <div>
+            <div className="text-xl font-bold">Absensi</div>
+            <div className="text-xs text-muted-foreground">Selfie · QR statis · Validasi radius GPS</div>
+          </div>
+        </div>
+        {isOwner && (
+          <div className="flex gap-2">
+            <Button size="sm" variant={view === 'abs:home' ? 'default' : 'outline'} onClick={() => setView('abs:home')}>Staff</Button>
+            <Button size="sm" variant={view === 'abs:owner:dashboard' ? 'default' : 'outline'} onClick={() => setView('abs:owner:dashboard')} className="gap-1"><Users className="w-3.5 h-3.5"/>Dashboard</Button>
+            <Button size="sm" variant={view === 'abs:owner:overtime' ? 'default' : 'outline'} onClick={() => setView('abs:owner:overtime')} className="gap-1"><ClipboardCheck className="w-3.5 h-3.5"/>Lembur</Button>
+            <Button size="sm" variant={view === 'abs:owner:settings' ? 'default' : 'outline'} onClick={() => setView('abs:owner:settings')} className="gap-1"><SettingsIcon className="w-3.5 h-3.5"/>Pengaturan</Button>
+          </div>
+        )}
+      </div>
+
+      <AnimatePresence mode="wait">
+        <motion.div key={view} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
+          {view === 'abs:home' && <StaffHomeView onNav={setView} />}
+          {view === 'abs:in' && <CheckInView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
+          {view === 'abs:out' && <CheckOutView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
+          {view === 'abs:history' && <HistoryView onBack={() => setView('abs:home')} />}
+          {view === 'abs:owner:dashboard' && isOwner && <OwnerDashboardView />}
+          {view === 'abs:owner:overtime' && isOwner && <OwnerOvertimeView />}
+          {view === 'abs:owner:settings' && isOwner && <OwnerSettingsView />}
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}

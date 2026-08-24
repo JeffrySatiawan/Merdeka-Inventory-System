@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import OrderManagementModule from '@/components/modules/order-management/OrderManagementModule';
 import FakturModule from '@/components/modules/faktur/FakturModule';
+import AbsensiModule from '@/components/modules/absensi/AbsensiModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -181,7 +182,7 @@ function LoginScreen({ onLogin }) {
 const MODULES_META = {
   cycle_count: { key: 'cycle_count', name: 'Cycle Count', icon: Package, status: 'active' },
   order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'active' },
-  absensi: { key: 'absensi', name: 'Absensi', icon: Clock, status: 'coming_soon' },
+  absensi: { key: 'absensi', name: 'Absensi', icon: Clock, status: 'active' },
   faktur: { key: 'faktur', name: 'MIS Faktur', icon: Receipt, status: 'active' },
 };
 
@@ -250,6 +251,19 @@ function buildNav(user) {
           module: 'faktur',
           children: [
             { key: 'fk:list', label: 'Daftar Faktur' },
+          ],
+        },
+        {
+          key: 'mod:absensi',
+          label: 'Absensi',
+          icon: Clock,
+          module: 'absensi',
+          children: [
+            { key: 'abs:home', label: 'Absensi Saya' },
+            { key: 'abs:history', label: 'Riwayat Absensi' },
+            { key: 'abs:owner:dashboard', label: 'Dashboard Owner', ownerOnly: true },
+            { key: 'abs:owner:overtime', label: 'Approval Lembur', ownerOnly: true },
+            { key: 'abs:owner:settings', label: 'Pengaturan Absensi', ownerOnly: true },
           ],
         },
       ],
@@ -476,6 +490,7 @@ function getActiveModule(view) {
   if (view.startsWith('cc:')) return 'cycle_count';
   if (view.startsWith('om:') || view === 'mod:order_management') return 'order_management';
   if (view.startsWith('fk:') || view === 'mod:faktur') return 'faktur';
+  if (view.startsWith('abs:') || view === 'mod:absensi') return 'absensi';
   return null; // no module context (e.g. ad:users)
 }
 
@@ -540,12 +555,21 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
     'om:settings': 'Pengaturan OM',
     'mod:faktur': 'MIS Faktur',
     'fk:list': 'Daftar Faktur',
+    'mod:absensi': 'Absensi',
+    'abs:home': 'Absensi Saya',
+    'abs:in': 'Absen Masuk',
+    'abs:out': 'Absen Keluar',
+    'abs:history': 'Riwayat Absensi',
+    'abs:owner:dashboard': 'Absensi · Dashboard',
+    'abs:owner:overtime': 'Absensi · Approval Lembur',
+    'abs:owner:settings': 'Absensi · Pengaturan',
     'ad:users': 'User Management',
   };
   const moduleLabels = {
     cycle_count: 'Cycle Count',
     order_management: 'Order Management',
     faktur: 'MIS Faktur',
+    absensi: 'Absensi',
   };
   const currentLabel = labels[active] || 'MIS';
   const activeModule = getActiveModule(active);
@@ -712,6 +736,14 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'om:settings': 'OM · Pengaturan',
     'mod:faktur': 'MIS Faktur',
     'fk:list': 'Faktur · Daftar',
+    'mod:absensi': 'Absensi',
+    'abs:home': 'Absensi · Saya',
+    'abs:in': 'Absensi · Absen Masuk',
+    'abs:out': 'Absensi · Absen Keluar',
+    'abs:history': 'Absensi · Riwayat',
+    'abs:owner:dashboard': 'Absensi · Dashboard Owner',
+    'abs:owner:overtime': 'Absensi · Approval Lembur',
+    'abs:owner:settings': 'Absensi · Pengaturan',
     'rp:history': 'Reports · Riwayat SKU',
     'ad:users': 'User Management',
   };
@@ -2562,6 +2594,7 @@ function StaffScreen({ user, onLogout }) {
   const [pending, setPending] = useState(new Set());
   const [showHistory, setShowHistory] = useState(false);
   const [showFaktur, setShowFaktur] = useState(false);
+  const [showAbsensi, setShowAbsensi] = useState(false);
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -2634,6 +2667,28 @@ function StaffScreen({ user, onLogout }) {
     );
   }
 
+  // Absensi overlay (accessible to any staff)
+  if (showAbsensi) {
+    return (
+      <div className="min-h-screen bg-[#09090b] p-4 md:p-6">
+        <div className="max-w-4xl mx-auto mb-4 flex items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowAbsensi(false)}
+            className="gap-2"
+          >
+            ← Kembali ke Tugas
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onLogout} className="gap-2 text-muted-foreground">
+            <LogOut className="w-4 h-4" /> Keluar
+          </Button>
+        </div>
+        <AbsensiModule user={user} />
+      </div>
+    );
+  }
+
   const tasks = data?.tasks || [];
   const completed = tasks.filter((t) => t.completed).length;
   const total = tasks.length;
@@ -2652,6 +2707,14 @@ function StaffScreen({ user, onLogout }) {
             <h1 className="text-2xl font-bold">{user.name}</h1>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAbsensi(true)}
+              className="gap-2 border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10"
+            >
+              <Clock className="w-4 h-4" /> Absensi
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -2870,6 +2933,21 @@ function ModulePickerScreen({ user, onPick, onLogout }) {
       stats: [],
     });
   }
+  if (mods.includes('absensi')) {
+    cards.push({
+      key: 'absensi',
+      name: 'Absensi',
+      subtitle: 'Selfie · QR statis · Validasi radius GPS',
+      icon: Clock,
+      gradient: 'from-indigo-500/30 via-violet-500/20 to-transparent',
+      border: 'border-indigo-500/40 hover:border-indigo-500/70',
+      iconBg: 'bg-indigo-500/20 border-indigo-500/40',
+      iconColor: 'text-indigo-400',
+      accentText: 'text-indigo-300',
+      target: 'abs:home',
+      stats: [],
+    });
+  }
 
   const timeLabel = clock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
   const dateLabel = clock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -3079,11 +3157,11 @@ function App() {
   }
 
   // Preserve original workflow: staff with ONLY cycle_count access -> keep StaffScreen
-  // MIS Faktur is a "universal" module (available to every logged-in user), so we
-  // exclude it here so that a cycle_count-only staff still goes straight into the
+  // MIS Faktur & Absensi are "universal" modules (available to every logged-in user),
+  // so we exclude them here so a cycle_count-only staff still goes straight into the
   // simplified StaffScreen instead of getting bounced into the module picker.
   const mods = userModules(user);
-  const primaryMods = mods.filter((m) => m !== 'faktur');
+  const primaryMods = mods.filter((m) => m !== 'faktur' && m !== 'absensi');
   if (
     user.role === 'staff' &&
     primaryMods.length === 1 &&
@@ -3156,6 +3234,9 @@ function App() {
         )}
         {(activeView.startsWith('fk:') || activeView === 'mod:faktur') && (
           <FakturModule user={user} />
+        )}
+        {(activeView.startsWith('abs:') || activeView === 'mod:absensi') && (
+          <AbsensiModule user={user} initialView={activeView === 'mod:absensi' ? 'abs:home' : activeView} />
         )}
         {activeView === 'rp:history' && <ReportsHistoryView />}
         {activeView === 'ad:users' && <EmployeesView />}

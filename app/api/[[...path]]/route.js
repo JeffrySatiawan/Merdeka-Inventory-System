@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import { handleOMRequest } from '@/lib/modules/order-management/service';
 import { handleFakturRequest } from '@/lib/modules/faktur/service';
+import { handleAbsensiRequest } from '@/lib/modules/absensi/service';
 
 // ---------- Mongo ----------
 let cachedClient = null;
@@ -112,9 +113,9 @@ const AVAILABLE_MODULES = [
   {
     key: 'absensi',
     name: 'Absensi',
-    description: 'Pondasi module Absensi. Fitur akan ditambahkan pada patch berikutnya.',
+    description: 'Absensi masuk & keluar dengan selfie, QR statis, dan validasi GPS radius.',
     icon: 'Clock',
-    status: 'coming_soon',
+    status: 'active',
   },
   {
     key: 'faktur',
@@ -143,7 +144,8 @@ function hasModule(user, moduleKey) {
 // per-employee `modules` array. Currently only MIS Faktur qualifies.
 function withGlobalModules(user, mods) {
   const set = new Set(Array.isArray(mods) ? mods : []);
-  set.add('faktur'); // available to all authenticated staff
+  set.add('faktur');   // available to all authenticated staff
+  set.add('absensi');  // available to all authenticated staff
   return Array.from(set);
 }
 
@@ -436,6 +438,18 @@ async function handleRequest(req, path, method) {
     if (!user) return err('unauthorized', 401);
     const sub = path === 'faktur' ? '' : path.slice('faktur/'.length);
     const resp = await handleFakturRequest(req, sub, method, { db, user });
+    if (resp) return resp;
+    return err('not found', 404);
+  }
+
+  // ============================================================
+  // MODULE — Absensi (isolated). All authenticated users allowed.
+  // ============================================================
+  if (path === 'absensi' || path.startsWith('absensi/')) {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    const sub = path === 'absensi' ? '' : path.slice('absensi/'.length);
+    const resp = await handleAbsensiRequest(req, sub, method, { db, user });
     if (resp) return resp;
     return err('not found', 404);
   }
