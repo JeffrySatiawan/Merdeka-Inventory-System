@@ -24,6 +24,7 @@ import {
   Send,
   UserCircle2,
   Calendar,
+  ShieldCheck,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -66,6 +67,148 @@ async function fakturApi(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+// ---- Dynamic 4-digit PIN verification (mirrors OMS KETOKO / Buka PDF) -------
+// A random non-trivial 4-digit PIN is displayed on-screen; the operator must
+// re-type it to confirm intent. Regenerates + shakes on wrong input. Used for
+// both "Buka PDF" and "Hapus" actions in MIS Faktur.
+const _EASY_PINS = new Set([
+  '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
+  '1234', '2345', '3456', '4567', '5678', '6789', '7890',
+  '4321', '5432', '6543', '7654', '8765', '9876', '0987',
+  '1212', '2121', '1010', '0101',
+]);
+function generatePin() {
+  const rand = () => {
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const arr = new Uint32Array(1);
+      crypto.getRandomValues(arr);
+      return arr[0] % 10000;
+    }
+    return Math.floor(Math.random() * 10000);
+  };
+  for (let i = 0; i < 50; i += 1) {
+    const pin = String(rand()).padStart(4, '0');
+    if (!_EASY_PINS.has(pin)) return pin;
+  }
+  return '3617';
+}
+
+function PinChallengeDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  faktur,
+  actionLabel,
+  actionTone = 'primary', // 'primary' | 'danger'
+  busy,
+  onVerified,
+}) {
+  const [pin, setPin] = useState('');
+  const [input, setInput] = useState('');
+  const [shake, setShake] = useState(false);
+  const inputRef = useRef(null);
+
+  // (Re)generate PIN whenever the dialog opens; clear on close.
+  useEffect(() => {
+    if (open) {
+      setPin(generatePin());
+      setInput('');
+      setShake(false);
+      // focus input after the dialog animation
+      setTimeout(() => inputRef.current?.focus(), 60);
+    } else {
+      setPin('');
+      setInput('');
+    }
+  }, [open]);
+
+  const submit = () => {
+    if (busy) return;
+    if (input === pin) {
+      onVerified?.();
+    } else {
+      // Wrong: regenerate, clear input, shake, refocus.
+      setPin(generatePin());
+      setInput('');
+      setShake(true);
+      setTimeout(() => setShake(false), 400);
+      setTimeout(() => inputRef.current?.focus(), 30);
+    }
+  };
+
+  const btnClass =
+    actionTone === 'danger'
+      ? 'bg-rose-600 hover:bg-rose-500'
+      : 'bg-emerald-600 hover:bg-emerald-500';
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!busy) onOpenChange(v); }}>
+      <DialogContent className="sm:max-w-sm bg-[#0a0a0b] border-white/10">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-amber-400" /> {title || 'Verifikasi PIN'}
+          </DialogTitle>
+          {description && <DialogDescription>{description}</DialogDescription>}
+        </DialogHeader>
+
+        {faktur && (
+          <div className="text-xs bg-white/5 rounded p-2 border border-white/10">
+            <div><b>{faktur.no_faktur || 'Tanpa nomor'}</b></div>
+            <div className="text-muted-foreground truncate">{faktur.nama_pelanggan || '-'}</div>
+            <div className="text-muted-foreground truncate">{faktur.filename}</div>
+          </div>
+        )}
+
+        <motion.div
+          animate={shake ? { x: [0, -8, 8, -6, 6, -3, 3, 0] } : { x: 0 }}
+          transition={{ duration: 0.4 }}
+          className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 flex items-center gap-3"
+        >
+          <div className="flex-1">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">PIN Verifikasi</div>
+            <div className="font-mono text-2xl font-bold tracking-[0.35em] text-amber-300 select-none">
+              {pin}
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">Ketik PIN</div>
+            <Input
+              ref={inputRef}
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={4}
+              value={input}
+              onChange={(e) => setInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+              onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+              className="font-mono text-center text-lg tracking-[0.35em]"
+              placeholder="----"
+            />
+          </div>
+        </motion.div>
+
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+          >
+            Batal
+          </Button>
+          <Button
+            className={`${btnClass} gap-2`}
+            disabled={busy || input.length !== 4}
+            onClick={submit}
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+            {actionLabel || 'Verifikasi'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 // ---- Status badge -----------------------------------------------------------
@@ -248,7 +391,8 @@ export default function FakturModule({ user }) {
   const [status, setStatus] = useState('all');
   const [uploadOpen, setUploadOpen] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null);
+  // PIN challenge: { kind: 'open'|'delete', item }
+  const [pinChallenge, setPinChallenge] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -275,6 +419,30 @@ export default function FakturModule({ user }) {
     window.open(url, '_blank');
   }
 
+  // Called after PIN verified in the challenge dialog.
+  async function handleVerifiedAction() {
+    if (!pinChallenge) return;
+    const { kind, item } = pinChallenge;
+    if (kind === 'open') {
+      setPinChallenge(null);
+      openPdf(item.id);
+      return;
+    }
+    if (kind === 'delete') {
+      setBusyId(item.id);
+      try {
+        await fakturApi(item.id, { method: 'DELETE' });
+        toast.success('Faktur dihapus');
+        setPinChallenge(null);
+        load();
+      } catch (e) {
+        toast.error(e.message);
+      } finally {
+        setBusyId(null);
+      }
+    }
+  }
+
   async function retry(id) {
     setBusyId(id);
     try {
@@ -284,20 +452,6 @@ export default function FakturModule({ user }) {
       } else {
         toast.error(`Masih gagal: ${d?.telegram?.error || 'unknown'}`);
       }
-      load();
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  async function del(id) {
-    setBusyId(id);
-    try {
-      await fakturApi(id, { method: 'DELETE' });
-      toast.success('Faktur dihapus');
-      setConfirmDelete(null);
       load();
     } catch (e) {
       toast.error(e.message);
@@ -436,7 +590,7 @@ export default function FakturModule({ user }) {
                         size="sm"
                         variant="secondary"
                         className="gap-1"
-                        onClick={() => openPdf(it.id)}
+                        onClick={() => setPinChallenge({ kind: 'open', item: it })}
                         disabled={it.telegram_status !== 'sent' && !it.has_local_file}
                       >
                         <Download className="w-3.5 h-3.5" /> Buka
@@ -459,7 +613,7 @@ export default function FakturModule({ user }) {
                           size="sm"
                           variant="ghost"
                           className="gap-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
-                          onClick={() => setConfirmDelete(it)}
+                          onClick={() => setPinChallenge({ kind: 'delete', item: it })}
                           disabled={busyId === it.id}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -476,33 +630,24 @@ export default function FakturModule({ user }) {
 
       <UploadDialog open={uploadOpen} onOpenChange={setUploadOpen} onDone={load} />
 
-      <Dialog open={!!confirmDelete} onOpenChange={(v) => { if (!v) setConfirmDelete(null); }}>
-        <DialogContent className="sm:max-w-sm bg-[#0a0a0b] border-white/10">
-          <DialogHeader>
-            <DialogTitle>Hapus faktur ini?</DialogTitle>
-            <DialogDescription>
-              Metadata akan dihapus dari MIS. File di Telegram tidak akan ikut terhapus.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="text-xs bg-white/5 rounded p-2 border border-white/10">
-            <div><b>{confirmDelete?.no_faktur || 'Tanpa nomor'}</b></div>
-            <div className="text-muted-foreground">{confirmDelete?.nama_pelanggan || '-'}</div>
-            <div className="text-muted-foreground">{confirmDelete?.filename}</div>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmDelete(null)} disabled={busyId === confirmDelete?.id}>
-              Batal
-            </Button>
-            <Button
-              className="bg-rose-600 hover:bg-rose-500"
-              onClick={() => del(confirmDelete.id)}
-              disabled={busyId === confirmDelete?.id}
-            >
-              {busyId === confirmDelete?.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Hapus'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Dynamic 4-digit PIN verification — same pattern as OMS KETOKO / Buka PDF.
+          Reused for both "Buka" and "Hapus" so every sensitive action requires
+          the operator to re-type an on-screen challenge. */}
+      <PinChallengeDialog
+        open={!!pinChallenge}
+        onOpenChange={(v) => { if (!v) setPinChallenge(null); }}
+        title={pinChallenge?.kind === 'delete' ? 'Verifikasi PIN — Hapus Faktur' : 'Verifikasi PIN — Buka Faktur'}
+        description={
+          pinChallenge?.kind === 'delete'
+            ? 'Metadata akan dihapus dari MIS. File di Telegram tetap ada. Ketik ulang PIN untuk konfirmasi.'
+            : 'Ketik ulang PIN di layar untuk membuka PDF faktur.'
+        }
+        faktur={pinChallenge?.item}
+        actionLabel={pinChallenge?.kind === 'delete' ? 'Hapus' : 'Buka PDF'}
+        actionTone={pinChallenge?.kind === 'delete' ? 'danger' : 'primary'}
+        busy={busyId === pinChallenge?.item?.id}
+        onVerified={handleVerifiedAction}
+      />
     </div>
   );
 }
