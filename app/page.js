@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import OrderManagementModule from '@/components/modules/order-management/OrderManagementModule';
+import FakturModule from '@/components/modules/faktur/FakturModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -40,6 +41,7 @@ import {
   Boxes,
   Lock,
   Truck,
+  Receipt,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -180,6 +182,7 @@ const MODULES_META = {
   cycle_count: { key: 'cycle_count', name: 'Cycle Count', icon: Package, status: 'active' },
   order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'active' },
   absensi: { key: 'absensi', name: 'Absensi', icon: Clock, status: 'coming_soon' },
+  faktur: { key: 'faktur', name: 'MIS Faktur', icon: Receipt, status: 'active' },
 };
 
 // Compute allowed module keys for a user (owner has all)
@@ -238,6 +241,15 @@ function buildNav(user) {
             { key: 'om:reports', label: 'Laporan' },
             { key: 'om:expeditions', label: 'Master Ekspedisi' },
             { key: 'om:settings', label: 'Pengaturan', ownerOnly: true },
+          ],
+        },
+        {
+          key: 'mod:faktur',
+          label: 'MIS Faktur',
+          icon: Receipt,
+          module: 'faktur',
+          children: [
+            { key: 'fk:list', label: 'Daftar Faktur' },
           ],
         },
       ],
@@ -463,6 +475,7 @@ function getActiveModule(view) {
   if (!view) return null;
   if (view.startsWith('cc:')) return 'cycle_count';
   if (view.startsWith('om:') || view === 'mod:order_management') return 'order_management';
+  if (view.startsWith('fk:') || view === 'mod:faktur') return 'faktur';
   return null; // no module context (e.g. ad:users)
 }
 
@@ -525,11 +538,14 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
     'om:expeditions': 'Master Ekspedisi',
     'om:pdfs': 'PDF Resi',
     'om:settings': 'Pengaturan OM',
+    'mod:faktur': 'MIS Faktur',
+    'fk:list': 'Daftar Faktur',
     'ad:users': 'User Management',
   };
   const moduleLabels = {
     cycle_count: 'Cycle Count',
     order_management: 'Order Management',
+    faktur: 'MIS Faktur',
   };
   const currentLabel = labels[active] || 'MIS';
   const activeModule = getActiveModule(active);
@@ -694,6 +710,8 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'om:expeditions': 'OM · Master Ekspedisi',
     'om:pdfs': 'OM · PDF Resi',
     'om:settings': 'OM · Pengaturan',
+    'mod:faktur': 'MIS Faktur',
+    'fk:list': 'Faktur · Daftar',
     'rp:history': 'Reports · Riwayat SKU',
     'ad:users': 'User Management',
   };
@@ -2543,6 +2561,7 @@ function StaffScreen({ user, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(new Set());
   const [showHistory, setShowHistory] = useState(false);
+  const [showFaktur, setShowFaktur] = useState(false);
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -2593,6 +2612,28 @@ function StaffScreen({ user, onLogout }) {
     );
   }
 
+  // Faktur overlay (accessible to any staff)
+  if (showFaktur) {
+    return (
+      <div className="min-h-screen bg-[#09090b] p-4 md:p-6">
+        <div className="max-w-6xl mx-auto mb-4 flex items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowFaktur(false)}
+            className="gap-2"
+          >
+            ← Kembali ke Tugas
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onLogout} className="gap-2 text-muted-foreground">
+            <LogOut className="w-4 h-4" /> Keluar
+          </Button>
+        </div>
+        <FakturModule user={user} />
+      </div>
+    );
+  }
+
   const tasks = data?.tasks || [];
   const completed = tasks.filter((t) => t.completed).length;
   const total = tasks.length;
@@ -2611,6 +2652,14 @@ function StaffScreen({ user, onLogout }) {
             <h1 className="text-2xl font-bold">{user.name}</h1>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowFaktur(true)}
+              className="gap-2 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"
+            >
+              <Receipt className="w-4 h-4" /> Faktur
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -2804,6 +2853,21 @@ function ModulePickerScreen({ user, onPick, onLogout }) {
             { label: 'Kirim', value: omStats?.today?.delivered ?? 0 },
           ]
         : [],
+    });
+  }
+  if (mods.includes('faktur')) {
+    cards.push({
+      key: 'faktur',
+      name: 'MIS Faktur',
+      subtitle: 'Arsip PDF faktur tersimpan di Telegram',
+      icon: Receipt,
+      gradient: 'from-emerald-500/30 via-teal-500/20 to-transparent',
+      border: 'border-emerald-500/40 hover:border-emerald-500/70',
+      iconBg: 'bg-emerald-500/20 border-emerald-500/40',
+      iconColor: 'text-emerald-400',
+      accentText: 'text-emerald-300',
+      target: 'fk:list',
+      stats: [],
     });
   }
 
@@ -3015,17 +3079,21 @@ function App() {
   }
 
   // Preserve original workflow: staff with ONLY cycle_count access -> keep StaffScreen
+  // MIS Faktur is a "universal" module (available to every logged-in user), so we
+  // exclude it here so that a cycle_count-only staff still goes straight into the
+  // simplified StaffScreen instead of getting bounced into the module picker.
   const mods = userModules(user);
+  const primaryMods = mods.filter((m) => m !== 'faktur');
   if (
     user.role === 'staff' &&
-    mods.length === 1 &&
-    mods[0] === 'cycle_count'
+    primaryMods.length === 1 &&
+    primaryMods[0] === 'cycle_count'
   ) {
     return <StaffScreen user={user} onLogout={logout} />;
   }
 
   // If user has >= 2 modules and hasn't picked yet → show interactive module picker
-  if (showPicker && mods.length >= 2) {
+  if (showPicker && primaryMods.length >= 2) {
     return (
       <ModulePickerScreen
         user={user}
@@ -3085,6 +3153,9 @@ function App() {
         )}
         {activeView === 'mod:order_management' && (
           <OrderManagementModule view="om:dashboard" user={user} />
+        )}
+        {(activeView.startsWith('fk:') || activeView === 'mod:faktur') && (
+          <FakturModule user={user} />
         )}
         {activeView === 'rp:history' && <ReportsHistoryView />}
         {activeView === 'ad:users' && <EmployeesView />}

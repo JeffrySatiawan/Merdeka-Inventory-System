@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import { handleOMRequest } from '@/lib/modules/order-management/service';
+import { handleFakturRequest } from '@/lib/modules/faktur/service';
 
 // ---------- Mongo ----------
 let cachedClient = null;
@@ -115,6 +116,13 @@ const AVAILABLE_MODULES = [
     icon: 'Clock',
     status: 'coming_soon',
   },
+  {
+    key: 'faktur',
+    name: 'MIS Faktur',
+    description: 'Arsip faktur pelanggan (PDF) tersimpan otomatis di Telegram Channel.',
+    icon: 'Receipt',
+    status: 'active',
+  },
 ];
 const VALID_MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
 const VALID_ROLES = ['owner', 'supervisor', 'staff'];
@@ -129,6 +137,14 @@ function hasModule(user, moduleKey) {
   if (!user) return false;
   if (user.role === 'owner') return true; // Owner selalu punya akses semua module
   return Array.isArray(user.modules) && user.modules.includes(moduleKey);
+}
+
+// Merge module keys that are open to every authenticated user regardless of
+// per-employee `modules` array. Currently only MIS Faktur qualifies.
+function withGlobalModules(user, mods) {
+  const set = new Set(Array.isArray(mods) ? mods : []);
+  set.add('faktur'); // available to all authenticated staff
+  return Array.from(set);
 }
 
 // ---------- Seed ----------
@@ -412,6 +428,18 @@ async function handleRequest(req, path, method) {
     return err('not found', 404);
   }
 
+  // ============================================================
+  // MODULE — MIS Faktur (isolated). All authenticated users allowed.
+  // ============================================================
+  if (path === 'faktur' || path.startsWith('faktur/')) {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    const sub = path === 'faktur' ? '' : path.slice('faktur/'.length);
+    const resp = await handleFakturRequest(req, sub, method, { db, user });
+    if (resp) return resp;
+    return err('not found', 404);
+  }
+
   // ---------- AUTH ----------
   if (path === 'auth/login' && method === 'POST') {
     const body = await req.json();
@@ -428,7 +456,11 @@ async function handleRequest(req, path, method) {
       createdAt: new Date(),
     });
     const { password: _pw, _id, ...safe } = user;
-    return json({ token, user: safe });
+    // Enrich returned user with globally-available modules (e.g. Faktur)
+    const effective = safe.role === 'owner'
+      ? VALID_MODULE_KEYS.slice()
+      : withGlobalModules(safe, safe.modules);
+    return json({ token, user: { ...safe, modules: effective } });
   }
 
   if (path === 'auth/logout' && method === 'POST') {
@@ -445,9 +477,7 @@ async function handleRequest(req, path, method) {
     const effectiveModules =
       user.role === 'owner'
         ? VALID_MODULE_KEYS.slice()
-        : Array.isArray(user.modules)
-        ? user.modules
-        : [];
+        : withGlobalModules(user, user.modules);
     return json({ user: { ...user, modules: effectiveModules } });
   }
 
