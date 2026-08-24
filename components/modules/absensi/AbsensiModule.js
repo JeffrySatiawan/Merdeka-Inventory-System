@@ -291,7 +291,7 @@ function useGeolocation() {
 // ============================================================================
 //  Sub-view: Staff Home (today's status + entry to check-in / check-out)
 // ============================================================================
-function StaffHomeView({ onNav }) {
+function StaffHomeView({ user, onNav }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -306,9 +306,19 @@ function StaffHomeView({ onNav }) {
   const rec = data?.record;
   const hasIn = !!rec?.actual_check_in;
   const hasOut = !!rec?.actual_check_out;
+  const displayName = String(user?.name || user?.username || 'Pengguna').toUpperCase();
 
   return (
     <div className="space-y-4">
+      {/* Prominent name banner — matches "ABSENSI / CINDY" spec so the operator
+          instantly sees WHICH account is signed in before submitting. */}
+      <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/[0.06] p-4">
+        <div className="text-[10px] uppercase tracking-[0.25em] text-indigo-300/80">Anda login sebagai</div>
+        <div className="mt-0.5 text-3xl md:text-4xl font-black tracking-wide text-white break-words">
+          {displayName}
+        </div>
+      </div>
+
       <Card className="bg-gradient-to-br from-indigo-500/10 via-violet-500/5 to-transparent border-indigo-500/20">
         <CardContent className="pt-5">
           <div className="text-xs text-muted-foreground">Hari ini · {data?.date}</div>
@@ -727,6 +737,209 @@ function Metric({ icon: Icon, label, value, tone = 'default' }) {
 }
 
 // ============================================================================
+//  Owner: Laporan Absensi (filter + tabel + export Excel)
+// ============================================================================
+function OwnerReportView() {
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  const firstOfMonthIso = () => {
+    const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
+  };
+  const [filters, setFilters] = useState({
+    from: firstOfMonthIso(),
+    to: todayIso(),
+    user_id: 'all',
+    shift_key: 'all',
+    status: 'all',
+  });
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [staffOpts, setStaffOpts] = useState([]);
+  const [shiftOpts, setShiftOpts] = useState([]);
+  const [exporting, setExporting] = useState(false);
+
+  const buildQS = () => {
+    const p = new URLSearchParams();
+    if (filters.from) p.set('from', filters.from);
+    if (filters.to) p.set('to', filters.to);
+    if (filters.user_id && filters.user_id !== 'all') p.set('user_id', filters.user_id);
+    if (filters.shift_key && filters.shift_key !== 'all') p.set('shift_key', filters.shift_key);
+    if (filters.status && filters.status !== 'all') p.set('status', filters.status);
+    return p.toString();
+  };
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const d = await absApi(`report?${buildQS()}`);
+      setItems(d.items || []);
+    } catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+
+  // Load filter options once: shifts from settings, employees from employees API.
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await absApi('settings');
+        setShiftOpts(s?.settings?.shifts || []);
+      } catch { /* ignore */ }
+      try {
+        // Reuse existing /api/employees endpoint (no changes to that route).
+        const token = localStorage.getItem('cc_token');
+        const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
+        if (res.ok) {
+          const d = await res.json();
+          const list = (Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner');
+          setStaffOpts(list);
+        }
+      } catch { /* ignore */ }
+    })();
+    load(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      const token = localStorage.getItem('cc_token');
+      const res = await fetch(`/api/absensi/report/export?${buildQS()}`, {
+        headers: { Authorization: `Bearer ${token || ''}` },
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `laporan-absensi_${filters.from || 'all'}_${filters.to || 'all'}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      toast.success('Excel berhasil diunduh');
+    } catch (e) { toast.error(e.message); }
+    finally { setExporting(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Filter Laporan</CardTitle>
+          <CardDescription>Filter periode, staff, shift, dan status.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div>
+              <Label className="text-xs">Dari</Label>
+              <Input type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="text-xs">Sampai</Label>
+              <Input type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="text-xs">Staff</Label>
+              <Select value={filters.user_id} onValueChange={(v) => setFilters((f) => ({ ...f, user_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Semua Staff" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Semua Staff</SelectItem>
+                  {staffOpts.map((e) => (<SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Shift</Label>
+              <Select value={filters.shift_key} onValueChange={(v) => setFilters((f) => ({ ...f, shift_key: v }))}>
+                <SelectTrigger><SelectValue placeholder="Semua Shift" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Semua Shift</SelectItem>
+                  {shiftOpts.map((s) => (<SelectItem key={s.key} value={s.key}>{s.name}</SelectItem>))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Status</Label>
+              <Select value={filters.status} onValueChange={(v) => setFilters((f) => ({ ...f, status: v }))}>
+                <SelectTrigger><SelectValue placeholder="Semua" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Semua</SelectItem>
+                  <SelectItem value="late">Terlambat</SelectItem>
+                  <SelectItem value="ontime">Tepat Waktu</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <Button size="sm" onClick={load} disabled={loading} className="gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Terapkan
+            </Button>
+            <Button size="sm" variant="outline" onClick={exportExcel} disabled={exporting || items.length === 0} className="gap-2 border-emerald-500/40 text-emerald-300">
+              {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardCheck className="w-4 h-4" />}
+              Export Excel
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Data Laporan · {items.length} record</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <Skeleton className="h-40 w-full rounded" />
+          ) : items.length === 0 ? (
+            <div className="text-center py-10 text-sm text-muted-foreground">Tidak ada data untuk filter ini.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground border-b border-white/10">
+                  <tr>
+                    {['Tanggal', 'Staff', 'Shift', 'Masuk', 'Keluar', 'Status', 'Terlambat', 'Lembur'].map((h) => (
+                      <th key={h} className="text-left py-2 px-2 font-medium">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((r) => {
+                    const isLate = (r.late_minutes || 0) > 0;
+                    return (
+                      <tr key={r.id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                        <td className="py-2 px-2 tabular-nums">{r.date}</td>
+                        <td className="py-2 px-2">{r.user_name}</td>
+                        <td className="py-2 px-2">{r.shift_name}</td>
+                        <td className="py-2 px-2 tabular-nums">{r.actual_check_in_wita || '-'}</td>
+                        <td className="py-2 px-2 tabular-nums">{r.actual_check_out_wita || '-'}</td>
+                        <td className="py-2 px-2">
+                          {r.actual_check_in
+                            ? (isLate
+                              ? <Badge className="bg-rose-500/15 text-rose-300 border-rose-500/30">Terlambat</Badge>
+                              : <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">Tepat Waktu</Badge>)
+                            : <Badge className="bg-white/5 text-muted-foreground border-white/10">Belum Masuk</Badge>}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums">{isLate ? fmtMinutes(r.late_minutes) : '-'}</td>
+                        <td className="py-2 px-2 tabular-nums">
+                          {r.overtime_minutes > 0
+                            ? <span>{fmtMinutes(r.overtime_minutes)} · <span className="capitalize text-muted-foreground">{r.overtime_status}</span></span>
+                            : '-'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================================
 //  Owner: Overtime Approvals
 // ============================================================================
 function OwnerOvertimeView() {
@@ -820,6 +1033,7 @@ function OwnerSettingsView() {
         location: settings.location,
         shifts: settings.shifts,
         overtime_min_minutes: settings.overtime_min_minutes,
+        photo_retention_days: settings.photo_retention_days,
       })});
       setSettings(d.settings);
       toast.success('Pengaturan tersimpan');
@@ -909,6 +1123,19 @@ function OwnerSettingsView() {
               <Input type="number" min={0} max={240} value={settings.overtime_min_minutes ?? 30}
                 onChange={(e) => setSettings((s) => ({ ...s, overtime_min_minutes: Number(e.target.value) }))} />
             </div>
+            <div>
+              <Label className="text-xs">Retensi Foto Absensi (hari)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={365}
+                value={settings.photo_retention_days ?? 30}
+                onChange={(e) => setSettings((s) => ({ ...s, photo_retention_days: Number(e.target.value) }))}
+              />
+              <div className="text-[10px] text-muted-foreground mt-1">
+                Foto selfie akan dihapus otomatis setelah melewati periode ini. Data absensi tetap tersimpan.
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -959,9 +1186,10 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
           </div>
         </div>
         {isOwner && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <Button size="sm" variant={view === 'abs:home' ? 'default' : 'outline'} onClick={() => setView('abs:home')}>Staff</Button>
             <Button size="sm" variant={view === 'abs:owner:dashboard' ? 'default' : 'outline'} onClick={() => setView('abs:owner:dashboard')} className="gap-1"><Users className="w-3.5 h-3.5"/>Dashboard</Button>
+            <Button size="sm" variant={view === 'abs:owner:report' ? 'default' : 'outline'} onClick={() => setView('abs:owner:report')} className="gap-1"><History className="w-3.5 h-3.5"/>Laporan</Button>
             <Button size="sm" variant={view === 'abs:owner:overtime' ? 'default' : 'outline'} onClick={() => setView('abs:owner:overtime')} className="gap-1"><ClipboardCheck className="w-3.5 h-3.5"/>Lembur</Button>
             <Button size="sm" variant={view === 'abs:owner:settings' ? 'default' : 'outline'} onClick={() => setView('abs:owner:settings')} className="gap-1"><SettingsIcon className="w-3.5 h-3.5"/>Pengaturan</Button>
           </div>
@@ -970,11 +1198,12 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
 
       <AnimatePresence mode="wait">
         <motion.div key={view} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
-          {view === 'abs:home' && <StaffHomeView onNav={setView} />}
+          {view === 'abs:home' && <StaffHomeView user={user} onNav={setView} />}
           {view === 'abs:in' && <CheckInView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:out' && <CheckOutView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:history' && <HistoryView onBack={() => setView('abs:home')} />}
           {view === 'abs:owner:dashboard' && isOwner && <OwnerDashboardView />}
+          {view === 'abs:owner:report' && isOwner && <OwnerReportView />}
           {view === 'abs:owner:overtime' && isOwner && <OwnerOvertimeView />}
           {view === 'abs:owner:settings' && isOwner && <OwnerSettingsView />}
         </motion.div>
