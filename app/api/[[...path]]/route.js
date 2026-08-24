@@ -142,10 +142,14 @@ function hasModule(user, moduleKey) {
 
 // Merge module keys that are open to every authenticated user regardless of
 // per-employee `modules` array. Currently only MIS Faktur qualifies.
+// Merge module keys that are open to every authenticated user regardless of
+// per-employee `modules` array. Currently only MIS Faktur qualifies (per product
+// spec: "semua staff yang login" can upload invoices). Absensi is NOT in this
+// list because access to Absensi must be controlled via User Management on a
+// per-employee basis (owner enables the module in the employee edit dialog).
 function withGlobalModules(user, mods) {
   const set = new Set(Array.isArray(mods) ? mods : []);
-  set.add('faktur');   // available to all authenticated staff
-  set.add('absensi');  // available to all authenticated staff
+  set.add('faktur'); // available to all authenticated staff
   return Array.from(set);
 }
 
@@ -443,11 +447,16 @@ async function handleRequest(req, path, method) {
   }
 
   // ============================================================
-  // MODULE — Absensi (isolated). All authenticated users allowed.
+  // MODULE — Absensi (isolated). Access controlled via User Management
+  // (owner assigns `absensi` in the employee.modules array). Owner has all
+  // modules by default. Any other authenticated user without permission → 403.
   // ============================================================
   if (path === 'absensi' || path.startsWith('absensi/')) {
     const user = await getUserFromRequest(req);
     if (!user) return err('unauthorized', 401);
+    if (!hasModule(user, 'absensi')) {
+      return err('forbidden — module Absensi belum diaktifkan untuk akun Anda', 403);
+    }
     const sub = path === 'absensi' ? '' : path.slice('absensi/'.length);
     const resp = await handleAbsensiRequest(req, sub, method, { db, user });
     if (resp) return resp;

@@ -2594,7 +2594,6 @@ function StaffScreen({ user, onLogout }) {
   const [pending, setPending] = useState(new Set());
   const [showHistory, setShowHistory] = useState(false);
   const [showFaktur, setShowFaktur] = useState(false);
-  const [showAbsensi, setShowAbsensi] = useState(false);
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
@@ -2667,28 +2666,6 @@ function StaffScreen({ user, onLogout }) {
     );
   }
 
-  // Absensi overlay (accessible to any staff)
-  if (showAbsensi) {
-    return (
-      <div className="min-h-screen bg-[#09090b] p-4 md:p-6">
-        <div className="max-w-4xl mx-auto mb-4 flex items-center justify-between gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowAbsensi(false)}
-            className="gap-2"
-          >
-            ← Kembali ke Tugas
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onLogout} className="gap-2 text-muted-foreground">
-            <LogOut className="w-4 h-4" /> Keluar
-          </Button>
-        </div>
-        <AbsensiModule user={user} />
-      </div>
-    );
-  }
-
   const tasks = data?.tasks || [];
   const completed = tasks.filter((t) => t.completed).length;
   const total = tasks.length;
@@ -2707,14 +2684,6 @@ function StaffScreen({ user, onLogout }) {
             <h1 className="text-2xl font-bold">{user.name}</h1>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowAbsensi(true)}
-              className="gap-2 border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10"
-            >
-              <Clock className="w-4 h-4" /> Absensi
-            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -3157,11 +3126,13 @@ function App() {
   }
 
   // Preserve original workflow: staff with ONLY cycle_count access -> keep StaffScreen
-  // MIS Faktur & Absensi are "universal" modules (available to every logged-in user),
-  // so we exclude them here so a cycle_count-only staff still goes straight into the
+  // MIS Faktur is a "universal" module (available to every logged-in user), so we
+  // exclude it here so that a cycle_count-only staff still goes straight into the
   // simplified StaffScreen instead of getting bounced into the module picker.
+  // Absensi is per-employee (managed in User Management) so it counts as a
+  // primary module — a staff with cycle_count + absensi should see the picker.
   const mods = userModules(user);
-  const primaryMods = mods.filter((m) => m !== 'faktur' && m !== 'absensi');
+  const primaryMods = mods.filter((m) => m !== 'faktur');
   if (
     user.role === 'staff' &&
     primaryMods.length === 1 &&

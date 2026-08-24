@@ -8218,3 +8218,236 @@ agent_communication:
       Test file: /app/backend_test_absensi_photo_flags.py
       All 6 tests passed (100%). Fix verified. No code modifications needed.
 
+
+##====================================================================================================
+## ABSENSI — MOVED FROM GLOBAL-UNIVERSAL TO PER-EMPLOYEE PERMISSION (2026-02)
+##====================================================================================================
+
+user_problem_statement: |
+  Absensi must be togglable per-employee in User Management (owner assigns
+  the module to specific staff via the existing employee edit dialog). It
+  should no longer be auto-granted to every logged-in user.
+
+  Changes (minimal, backward-compatible):
+    - /app/app/api/[[...path]]/route.js
+        * withGlobalModules(): removed `set.add('absensi')`. Only 'faktur'
+          remains auto-injected. Comment updated.
+        * Absensi delegation now enforces `hasModule(user, 'absensi')`; users
+          without the permission get 403 "forbidden — module Absensi belum
+          diaktifkan untuk akun Anda". Owner (role='owner') always passes
+          because hasModule() returns true unconditionally for owners.
+    - /app/app/page.js
+        * primaryMods filter no longer excludes 'absensi' → staff with
+          cycle_count + absensi will now see the multi-module picker instead
+          of StaffScreen.
+        * Removed the "Absensi" header button + fullscreen overlay from
+          StaffScreen — staff w/ absensi permission naturally reach it via
+          the picker/sidebar. Staff without absensi permission never sees
+          the button (previously it was always visible).
+    - MODULES_META.absensi already `status: 'active'` and AVAILABLE_MODULES
+      already contains it, so it automatically appears as a checkbox in the
+      User Management "Permission Modules" dialog with the Clock icon — no
+      changes needed there.
+
+  Expected effect:
+    - Owner: unchanged (has all modules).
+    - Any existing staff whose employee.modules array does NOT include
+      'absensi' will lose access to /api/absensi/* (403). Owner must open
+      User Management → edit employee → tick "Absensi" to grant access.
+    - Faktur behavior unchanged (still auto-injected for all authenticated
+      users).
+
+backend:
+  - task: "Absensi access now requires per-employee module permission"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Please verify permission gating on Absensi endpoints. All other
+          modules (OMS, CC, Faktur) must remain unaffected.
+
+          Credentials:
+            - Owner: owner / owner123
+            - Staff without absensi permission: cindy / cindy123 (cindy's
+              employee.modules should NOT include 'absensi' in the DB —
+              please confirm by GET /api/employees as owner and inspect
+              cindy's `modules` array).
+
+          Test cases:
+          1. GET /api/auth/me (as cindy) → 200; user.modules includes 'faktur'
+             but must NOT include 'absensi' (unless cindy was explicitly
+             granted).
+          2. GET /api/absensi/settings (as cindy without absensi) → 403 with
+             error text containing "belum diaktifkan".
+          3. GET /api/absensi/today (as cindy without absensi) → 403.
+          4. POST /api/absensi/check-in (as cindy without absensi) → 403.
+          5. GET /api/absensi/settings (as owner) → 200 (unchanged).
+          6. GET /api/absensi/dashboard (as owner) → 200 (unchanged).
+          7. Now GRANT cindy the absensi module: PATCH /api/employees/<cindy_id>
+             (or the equivalent update endpoint) with body { modules:
+             [...existing, 'absensi'] }. Confirm 200.
+          8. Re-login as cindy (POST /api/auth/login) → the returned
+             user.modules must now include 'absensi'.
+          9. GET /api/absensi/settings (as cindy after grant) → 200.
+          10. Regression: GET /api/om/dashboard, /api/dashboard, /api/faktur
+              still 200 for both owner and staff.
+          11. Revoke (optional cleanup): PATCH cindy removing 'absensi' from
+              modules; GET /api/absensi/settings → 403 again.
+
+          Do NOT modify any code during testing.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 11 TESTS PASSED (100%) — Absensi permission gating FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for Absensi module permission changes (moved from global-universal to per-employee permission)
+          **TEST FILE:** /app/backend_test_absensi_permission.py
+          **TEST METHOD:** Python requests library with real API calls
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-08-24T22:55:02Z
+          **CREDENTIALS:** owner/owner123, cindy/cindy123
+          
+          **TEST RESULTS:**
+          
+          ✅ CASE 1: GET /api/employees as owner → Found cindy (id=85dec2f1-3413-45cf-a4fc-f38963f2949d)
+             - Initial modules: ['cycle_count', 'order_management'] (NO 'absensi')
+             - Baseline established: cindy does NOT have absensi permission
+          
+          ✅ CASE 2: GET /api/auth/me as cindy → user.modules=['cycle_count','order_management','faktur']
+             - ✅ 'faktur' auto-injected by withGlobalModules() (correct)
+             - ✅ 'absensi' NOT in modules (correct - not granted yet)
+          
+          ✅ CASE 3: GET /api/absensi/settings as cindy → HTTP 403
+             - Error text contains "belum diaktifkan" (correct Indonesian error message)
+             - Permission gate working correctly
+          
+          ✅ CASE 4: GET /api/absensi/today as cindy → HTTP 403
+             - Permission gate blocking access correctly
+          
+          ✅ CASE 5: POST /api/absensi/check-in as cindy → HTTP 403
+             - Permission gate short-circuits before processing request body
+          
+          ✅ CASE 6: GET /api/absensi/settings as owner → HTTP 200
+             - Owner bypass working correctly (hasModule returns true for owner role)
+          
+          ✅ CASE 7: GET /api/absensi/dashboard as owner → HTTP 200
+             - Owner has unrestricted access to all Absensi endpoints
+          
+          ✅ CASE 8: PUT /api/employees/<cindy_id> with modules=['cycle_count','order_management','absensi'] → HTTP 200
+             - Successfully granted 'absensi' module to cindy
+             - Response: modules=['cycle_count','order_management','absensi']
+          
+          ✅ CASE 9: Re-login as cindy → user.modules=['cycle_count','order_management','absensi','faktur']
+             - ✅ 'absensi' now present (granted in CASE 8)
+             - ✅ 'faktur' still auto-injected (withGlobalModules working)
+             - Module grant persisted correctly across login
+          
+          ✅ CASE 10: GET /api/absensi/settings as cindy (with new token) → HTTP 200
+             - Cindy can now access Absensi endpoints after being granted permission
+             - Permission gate correctly allows access when module present
+          
+          ✅ CASE 11: Regression tests — ALL 6 PASSED
+             - Owner: GET /api/om/dashboard → 200 ✓
+             - Owner: GET /api/dashboard → 200 ✓
+             - Owner: GET /api/faktur → 200 ✓
+             - Cindy: GET /api/om/dashboard → 200 ✓
+             - Cindy: GET /api/dashboard → 200 ✓
+             - Cindy: GET /api/faktur → 200 ✓
+             - **NO REGRESSIONS DETECTED** — OMS, CC, Faktur all working correctly
+          
+          ✅ CLEANUP: Restored cindy's modules to ['cycle_count','order_management']
+             - Verified: GET /api/absensi/settings as cindy → 403 (permission revoked)
+             - Permission gate reacts correctly to module removal
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Permission Gate Implementation (VERIFIED):**
+             - Line 454-459 in route.js: `if (!hasModule(user, 'absensi'))` → 403
+             - Error message: "forbidden — module Absensi belum diaktifkan untuk akun Anda"
+             - Gate applied to ALL absensi/* endpoints before delegation to handleAbsensiRequest
+          
+          2. **Owner Bypass (VERIFIED):**
+             - hasModule() returns true unconditionally for user.role === 'owner'
+             - Owner can access all Absensi endpoints regardless of modules array
+          
+          3. **withGlobalModules() Behavior (VERIFIED):**
+             - 'faktur' auto-injected for all authenticated users (line 152)
+             - 'absensi' NOT in global modules list (correctly removed per spec)
+             - /api/auth/me returns effective modules with global modules merged
+          
+          4. **Module Grant/Revoke (VERIFIED):**
+             - PUT /api/employees/:id accepts modules array
+             - Changes persist to database and take effect on next login
+             - Permission gate reacts immediately to module changes
+          
+          5. **Backward Compatibility (VERIFIED):**
+             - Faktur still auto-granted to all authenticated users (unchanged)
+             - OMS, CC, Faktur endpoints all working correctly (no regressions)
+             - Owner workflow completely unchanged
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Staff without 'absensi' in modules array get 403 on absensi endpoints
+          ✅ Error message contains "belum diaktifkan" (Indonesian)
+          ✅ Owner always has access (role-based bypass working)
+          ✅ Granting module via PUT /api/employees works correctly
+          ✅ Module changes persist across login
+          ✅ Permission gate reacts to module grant/revoke
+          ✅ 'faktur' still auto-injected (withGlobalModules unchanged)
+          ✅ Zero regressions in OMS, CC, Faktur modules
+          
+          **CONCLUSION:**
+          The Absensi permission refactor is FULLY WORKING. All requirements met:
+          1. Absensi access is now per-employee (not global-universal)
+          2. Staff without 'absensi' in modules array cannot access absensi endpoints (403)
+          3. Owner has unrestricted access (role-based bypass)
+          4. Module can be granted/revoked via User Management (PUT /api/employees)
+          5. Permission gate correctly enforces access control
+          6. Faktur remains auto-granted to all authenticated users (unchanged)
+          7. Zero regressions in other modules (OMS, CC, Faktur)
+          8. Error messages clear and in Indonesian
+          
+          Test file: /app/backend_test_absensi_permission.py
+          All 11 tests passed (100%). Task marked as working=true, needs_retesting=false.
+
+test_plan:
+  current_focus:
+    - "Absensi access now requires per-employee module permission"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Absensi module access converted from global-universal to per-employee
+      permission. User Management already has the checkbox (dynamic from
+      MODULES_META). Please run the 11 backend cases and report pass/fail.
+  - agent: "testing"
+    message: |
+      ✅ ALL 11 BACKEND TESTS PASSED (100%) — Absensi permission gating FULLY WORKING.
+      
+      **SUMMARY:**
+      - Staff without 'absensi' in modules array correctly denied access (403) to all absensi endpoints
+      - Owner has unrestricted access (role-based bypass working)
+      - Module grant/revoke via PUT /api/employees working correctly
+      - Permission changes persist across login
+      - 'faktur' still auto-injected for all authenticated users (withGlobalModules unchanged)
+      - Zero regressions in OMS, CC, Faktur modules
+      
+      **KEY FINDINGS:**
+      1. Permission gate at line 454-459 in route.js working correctly
+      2. hasModule() correctly returns true for owner role (bypass)
+      3. withGlobalModules() correctly adds 'faktur' but NOT 'absensi'
+      4. Error message "belum diaktifkan" displayed correctly in Indonesian
+      5. All regression tests passed (OMS, CC, Faktur unaffected)
+      
+      Test file: /app/backend_test_absensi_permission.py
+      No code modifications made during testing.
+      Task marked as working=true, needs_retesting=false.
+
