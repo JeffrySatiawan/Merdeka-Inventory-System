@@ -237,6 +237,7 @@ function StatusBadge({ status }) {
 // ---- Upload dialog ----------------------------------------------------------
 function UploadDialog({ open, onOpenChange, onDone }) {
   const [file, setFile] = useState(null);
+  const [noKetoko, setNoKetoko] = useState('');
   const [noFaktur, setNoFaktur] = useState('');
   const [namaPelanggan, setNamaPelanggan] = useState('');
   const [tanggalFaktur, setTanggalFaktur] = useState(
@@ -249,6 +250,7 @@ function UploadDialog({ open, onOpenChange, onDone }) {
 
   function reset() {
     setFile(null);
+    setNoKetoko('');
     setNoFaktur('');
     setNamaPelanggan('');
     setTanggalFaktur(new Date().toISOString().slice(0, 10));
@@ -266,10 +268,15 @@ function UploadDialog({ open, onOpenChange, onDone }) {
       toast.error('File harus berupa PDF');
       return;
     }
+    if (!noKetoko.trim()) {
+      toast.error('No. Transaksi KETOKO wajib diisi');
+      return;
+    }
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append('file', file);
+      fd.append('no_ketoko', noKetoko.trim());
       if (noFaktur) fd.append('no_faktur', noFaktur);
       if (namaPelanggan) fd.append('nama_pelanggan', namaPelanggan);
       if (tanggalFaktur) fd.append('tanggal_faktur', tanggalFaktur);
@@ -318,6 +325,20 @@ function UploadDialog({ open, onOpenChange, onDone }) {
                 {file.name} · {(file.size / 1024).toFixed(1)} KB
               </div>
             )}
+          </div>
+
+          <div>
+            <Label className="text-xs mb-1 block">
+              No. Transaksi KETOKO <span className="text-rose-400">*</span>
+            </Label>
+            <Input
+              placeholder="Contoh: KTK-20260224-001"
+              value={noKetoko}
+              onChange={(e) => setNoKetoko(e.target.value)}
+              className={!noKetoko.trim() ? 'border-rose-500/40 focus-visible:ring-rose-500/40' : ''}
+              autoComplete="off"
+            />
+            <div className="text-[10px] text-muted-foreground mt-1">Wajib diisi. Referensi transaksi di sistem KETOKO.</div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -373,7 +394,7 @@ function UploadDialog({ open, onOpenChange, onDone }) {
           <Button variant="ghost" disabled={busy} onClick={() => { reset(); onOpenChange(false); }}>
             Batal
           </Button>
-          <Button disabled={busy || !file} onClick={submit} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
+          <Button disabled={busy || !file || !noKetoko.trim()} onClick={submit} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             {busy ? 'Mengirim…' : 'Upload & Kirim'}
           </Button>
@@ -505,7 +526,7 @@ export default function FakturModule({ user }) {
             <div className="flex-1 min-w-[220px] relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Cari nomor faktur / pelanggan / nama file…"
+                placeholder="Cari No. KETOKO / nomor faktur / pelanggan / nama file…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
@@ -567,6 +588,11 @@ export default function FakturModule({ user }) {
                         <StatusBadge status={it.telegram_status} />
                       </div>
                       <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                        {it.no_ketoko && (
+                          <span className="inline-flex items-center gap-1 text-emerald-300 font-medium">
+                            KETOKO: {it.no_ketoko}
+                          </span>
+                        )}
                         {it.nama_pelanggan && (
                           <span className="inline-flex items-center gap-1"><UserCircle2 className="w-3 h-3" />{it.nama_pelanggan}</span>
                         )}
