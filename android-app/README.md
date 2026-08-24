@@ -83,4 +83,4 @@ App memanggil 2 endpoint MIS:
 - `POST /api/om/pdfs/auto` — Upload PDF (multipart, field `file`)
 - `GET  /api/om/pdfs`     — List upload hari ini
 
-Base URL default: `https://pdf-notify-sound.preview.emergentagent.com` (bisa diubah di login screen).
+Base URL default: `https://absensi-foundation.preview.emergentagent.com` (bisa diubah di login screen).

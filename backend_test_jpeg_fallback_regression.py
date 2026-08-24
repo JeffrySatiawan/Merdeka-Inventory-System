@@ -7,7 +7,7 @@ that forces JPEG re-encode when WebP output exceeds 490KB cap (iPhone XR iOS 18 
 
 Backend is UNCHANGED. This test verifies the photo pipeline still works with all formats.
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 
 CRITICAL SUCCESS CRITERIA:
@@ -21,7 +21,7 @@ import base64
 import sys
 from datetime import datetime
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 CREDENTIALS = {"username": "owner", "password": "owner123"}
 
 # Test state

@@ -18,7 +18,7 @@ import json
 from pymongo import MongoClient
 
 # Base URL and credentials
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 USERNAME = "owner"
 PASSWORD = "owner123"
 

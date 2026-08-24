@@ -4,7 +4,7 @@
 import requests
 import json
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 
 def login(username, password):
     resp = requests.post(f"{BASE_URL}/api/auth/login", json={"username": username, "password": password})

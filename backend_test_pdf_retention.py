@@ -12,7 +12,7 @@ PATCH SUMMARY (backend-only, additive):
 2. Cleanup code line ~322 now reads `s.pdf_retention_days ?? s.photo_retention_days ?? 7` for PDF cutoff (was `photoCutoff`).
 3. `PUT /api/om/settings` now accepts `pdf_retention_days` (1-365).
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 
 TEST PLAN:
@@ -32,7 +32,7 @@ import io
 import time
 from datetime import datetime
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "owner123"
 

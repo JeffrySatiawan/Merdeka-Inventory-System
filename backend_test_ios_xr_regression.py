@@ -10,7 +10,7 @@ No structure changes. Backend is UNTOUCHED.
 This test confirms the photo upload pipeline is still healthy after the frontend-only 
 compression tweak.
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 
 TEST SET:
@@ -27,7 +27,7 @@ import base64
 import sys
 from datetime import datetime
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "owner123"
 

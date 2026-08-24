@@ -11,7 +11,7 @@ Changed `omApi('pdfs')` → `omApi('pdfs?limit=500')` in OMPdfsView.js load() fu
 
 BACKEND UNCHANGED — endpoint already supports limit up to 500 per existing code.
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 
 TEST PLAN (execute all 5, do NOT stop early):
@@ -36,7 +36,7 @@ import time
 from datetime import datetime
 from pymongo import MongoClient
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "owner123"
 MONGO_URL = "mongodb://localhost:27017"

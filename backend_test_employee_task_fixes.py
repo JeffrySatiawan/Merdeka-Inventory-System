@@ -8,7 +8,7 @@ import requests
 import time
 from datetime import datetime
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 
 def login(username, password):
     """Login and return token"""

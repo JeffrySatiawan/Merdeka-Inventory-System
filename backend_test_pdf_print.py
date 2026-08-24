@@ -7,7 +7,7 @@ import requests
 import sys
 import io
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 
 # Test credentials
 OWNER_CREDS = {"username": "owner", "password": "owner123"}

@@ -12,7 +12,7 @@ was insufficient (iPhone XR).
 Backend is 100% UNTOUCHED. Please run a quick regression to confirm the photo upload pipeline 
 is healthy.
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 
 QUICK REGRESSION SET (run all 5 tests, DO NOT stop early):
@@ -58,7 +58,7 @@ import base64
 import sys
 from datetime import datetime
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "owner123"
 

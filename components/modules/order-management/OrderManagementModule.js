@@ -1651,6 +1651,9 @@ function OMReportsView({ user }) {
     try {
       const params = new URLSearchParams();
       Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+      // Ensure historical transactions are not truncated by the default backend limit (500).
+      // Backend caps at 2000; explicitly request the max so long date ranges load fully.
+      if (!params.has('limit')) params.set('limit', '2000');
       const d = await omApi(`shipments?${params.toString()}`);
       setData(d);
     } catch (e) { toast.error(e.message); }

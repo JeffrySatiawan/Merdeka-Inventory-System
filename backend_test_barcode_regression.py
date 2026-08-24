@@ -28,7 +28,7 @@ import io
 from datetime import datetime
 
 # Base URL from /app/.env
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 API_BASE = f"{BASE_URL}/api"
 
 # Test credentials

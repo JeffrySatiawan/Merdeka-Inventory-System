@@ -24,7 +24,7 @@ import time
 import sys
 from datetime import datetime
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "owner123"
 

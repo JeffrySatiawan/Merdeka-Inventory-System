@@ -9,7 +9,7 @@ PATCH SUMMARY:
   * Karyawan (user.role !== 'owner'): can print each PDF only ONCE (403 on second attempt)
   * Owner: unlimited (unchanged)
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner/owner123, cindy/cindy123
 
 TEST PLAN:
@@ -29,7 +29,7 @@ import time
 import sys
 from io import BytesIO
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 API_BASE = f"{BASE_URL}/api"
 
 # Test counters

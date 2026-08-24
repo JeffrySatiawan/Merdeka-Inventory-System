@@ -13,7 +13,7 @@ Fixed iOS photo compression bug — added WebP feature-detect + JPEG fallback + 
 safety loop. Backend was NOT modified. This is a regression test to confirm the photo
 upload/serve pipeline still works with both WebP and JPEG payloads.
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 """
 
@@ -25,7 +25,7 @@ import base64
 from pymongo import MongoClient
 
 # Base URL and credentials
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 USERNAME = "owner"
 PASSWORD = "owner123"
 

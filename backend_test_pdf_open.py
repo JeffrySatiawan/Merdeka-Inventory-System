@@ -19,7 +19,7 @@ import requests
 import time
 from datetime import datetime, timedelta
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 
 # Minimal valid PDF (about 500 bytes)
 MINIMAL_PDF = b"""%PDF-1.4

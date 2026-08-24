@@ -7,7 +7,7 @@ Added additional failsafe force-fit loop in `/app/components/modules/order-manag
 after the existing JPEG fallback. New loop is bounded (40 iters + 120px floor) and only 
 executes when `bytes > HARD_CAP_BYTES`. Backend is UNCHANGED — this is frontend-only.
 
-BASE URL: https://pdf-notify-sound.preview.emergentagent.com
+BASE URL: https://absensi-foundation.preview.emergentagent.com
 CREDENTIALS: owner / owner123
 
 QUICK REGRESSION (run all 5 tests, DO NOT stop early):
@@ -28,7 +28,7 @@ import requests
 import base64
 import sys
 
-BASE_URL = "https://pdf-notify-sound.preview.emergentagent.com"
+BASE_URL = "https://absensi-foundation.preview.emergentagent.com"
 OWNER_USERNAME = "owner"
 OWNER_PASSWORD = "owner123"
 
