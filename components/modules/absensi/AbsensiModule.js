@@ -196,27 +196,36 @@ function SelfieCapture({ open, onClose, onCaptured, title = 'Ambil Selfie' }) {
 
 // ---- QR scanner (reuses OMS startCameraScanner) ----------------------------
 function QrScanner({ open, onClose, onDecoded }) {
-  const containerRef = useRef(null);
+  // Use a callback ref so the effect only starts the scanner once the DOM
+  // container is actually attached. Radix Dialog portals its content and
+  // mounts it asynchronously — a plain useRef would still be null when the
+  // effect fires on the same tick as `open` flipping to true, causing
+  // "Camera container tidak ditemukan".
+  const [containerEl, setContainerEl] = useState(null);
   const controllerRef = useRef(null);
+  const onDecodedRef = useRef(onDecoded);
   const [error, setError] = useState('');
 
+  // Keep the latest onDecoded without re-triggering the scanner effect.
+  useEffect(() => { onDecodedRef.current = onDecoded; }, [onDecoded]);
+
   useEffect(() => {
-    if (!open) return;
+    if (!open || !containerEl) return undefined;
     setError('');
     let stopped = false;
     (async () => {
       try {
         controllerRef.current = await startCameraScanner(
-          containerRef.current,
+          containerEl,
           (text) => {
             if (stopped) return;
             try { feedback('ok'); } catch { /* audio may be blocked */ }
-            onDecoded?.(String(text || '').trim());
+            onDecodedRef.current?.(String(text || '').trim());
           },
           (e) => setError(e?.message || String(e))
         );
       } catch (e) {
-        setError(e?.message || 'Tidak bisa mengaktifkan kamera untuk QR');
+        if (!stopped) setError(e?.message || 'Tidak bisa mengaktifkan kamera untuk QR');
       }
     })();
     return () => {
@@ -224,7 +233,7 @@ function QrScanner({ open, onClose, onDecoded }) {
       try { controllerRef.current?.stop?.(); } catch { /* ignore */ }
       controllerRef.current = null;
     };
-  }, [open, onDecoded]);
+  }, [open, containerEl]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose?.(); }}>
@@ -235,10 +244,16 @@ function QrScanner({ open, onClose, onDecoded }) {
           </DialogTitle>
           <DialogDescription>Arahkan kamera ke QR statis milik Owner.</DialogDescription>
         </DialogHeader>
-        {error ? (
-          <div className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3">{error}</div>
-        ) : (
-          <div ref={containerRef} className="relative aspect-square w-full rounded-lg overflow-hidden bg-black border border-white/10" />
+        {/* IMPORTANT: keep the container mounted even when error is set so the
+            scanner effect can still target it on subsequent retries. */}
+        <div
+          ref={setContainerEl}
+          className="relative aspect-square w-full rounded-lg overflow-hidden bg-black border border-white/10"
+        />
+        {error && (
+          <div className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3">
+            {error}
+          </div>
         )}
         <DialogFooter>
           <Button variant="ghost" onClick={() => onClose?.()}>Tutup</Button>
@@ -423,6 +438,15 @@ function CheckInView({ onDone, onBack }) {
             </Select>
           </div>
 
+          {/* QR */}
+          <StepButton
+            done={!!qrValue}
+            icon={QrCode}
+            label="Scan QR Absensi"
+            hint={qrValue ? 'QR terdeteksi' : 'Scan QR statis milik Owner'}
+            onClick={() => setQrOpen(true)}
+          />
+
           {/* Selfie */}
           <StepButton
             done={!!selfie}
@@ -434,15 +458,6 @@ function CheckInView({ onDone, onBack }) {
           {selfie && (
             <img src={selfie} alt="selfie" className="w-24 h-24 rounded-lg object-cover border border-white/10" />
           )}
-
-          {/* QR */}
-          <StepButton
-            done={!!qrValue}
-            icon={QrCode}
-            label="Scan QR Absensi"
-            hint={qrValue ? 'QR terdeteksi' : 'Scan QR statis milik Owner'}
-            onClick={() => setQrOpen(true)}
-          />
 
           {/* GPS */}
           <StepButton
