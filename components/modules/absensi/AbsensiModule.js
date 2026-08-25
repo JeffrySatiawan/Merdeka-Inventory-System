@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
+import QRCodeLib from 'qrcode';
 import {
   Clock,
   LogIn,
@@ -1055,6 +1056,117 @@ function OwnerOvertimeView() {
 }
 
 // ============================================================================
+//  Owner: QR Preview Panel — renders a real, scannable QR image inline so the
+//  owner never needs an external QR generator. Includes print + download.
+//  This is what the user asked for: "generete QR jadi siap pakai".
+// ============================================================================
+function QrPreviewPanel({ qrValue, onReveal, onRegenerate }) {
+  const [dataUrl, setDataUrl] = useState('');
+  const [rendering, setRendering] = useState(false);
+
+  useEffect(() => {
+    if (!qrValue) { setDataUrl(''); return; }
+    setRendering(true);
+    // 512x512 PNG, high error-correction so printing on cheap paper still scans.
+    QRCodeLib.toDataURL(qrValue, {
+      errorCorrectionLevel: 'H',
+      margin: 2,
+      width: 512,
+      color: { dark: '#000000', light: '#FFFFFF' },
+    })
+      .then((url) => setDataUrl(url))
+      .catch((e) => toast.error(e?.message || 'Gagal render QR'))
+      .finally(() => setRendering(false));
+  }, [qrValue]);
+
+  const downloadPng = () => {
+    if (!dataUrl) return;
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = 'qr-absensi-mis.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const printQr = () => {
+    if (!dataUrl) return;
+    const w = window.open('', '_blank', 'width=600,height=800');
+    if (!w) { toast.error('Popup diblokir browser'); return; }
+    w.document.write(`
+      <html>
+        <head>
+          <title>QR Absensi MIS</title>
+          <style>
+            @page { size: A4; margin: 20mm; }
+            body { font-family: system-ui, sans-serif; text-align: center; padding: 32px; }
+            h1 { font-size: 28px; margin: 0 0 4px; }
+            .sub { color: #555; margin-bottom: 24px; }
+            img { width: 320px; height: 320px; image-rendering: pixelated; border: 8px solid #000; }
+            .code { font-family: ui-monospace, monospace; font-size: 11px; color: #666; margin-top: 16px; word-break: break-all; }
+            .hint { font-size: 13px; color: #333; margin-top: 24px; max-width: 420px; margin-left: auto; margin-right: auto; }
+          </style>
+        </head>
+        <body>
+          <h1>QR ABSENSI MIS</h1>
+          <div class="sub">Merdeka Inventory System</div>
+          <img src="${dataUrl}" alt="QR Absensi" />
+          <div class="hint">Tempel di lokasi absensi. Scan QR ini menggunakan menu Absensi → Absen Masuk → Scan QR Absensi.</div>
+          <div class="code">${qrValue}</div>
+          <script>window.onload = () => setTimeout(() => window.print(), 300);<\/script>
+        </body>
+      </html>
+    `);
+    w.document.close();
+  };
+
+  if (!qrValue) {
+    return (
+      <div className="flex flex-col gap-2">
+        <Button variant="outline" onClick={onReveal} className="gap-2 self-start">
+          <QrCode className="w-4 h-4" /> Tampilkan QR
+        </Button>
+        <Button variant="outline" onClick={onRegenerate} className="gap-2 self-start border-amber-500/40 text-amber-300">
+          <RefreshCw className="w-4 h-4" /> Regenerate QR
+        </Button>
+        <div className="text-[10px] text-muted-foreground">
+          Tekan &quot;Tampilkan QR&quot; untuk memuat gambar QR siap cetak.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-white/10 bg-white p-4 flex flex-col items-center gap-2">
+        {rendering || !dataUrl ? (
+          <div className="w-64 h-64 flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-black" />
+          </div>
+        ) : (
+          <img src={dataUrl} alt="QR Absensi MIS" className="w-64 h-64" style={{ imageRendering: 'pixelated' }} />
+        )}
+        <div className="text-[10px] font-mono text-black break-all text-center">{qrValue}</div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={printQr} disabled={!dataUrl} className="gap-2">
+          <ClipboardCheck className="w-4 h-4" /> Cetak QR (A4)
+        </Button>
+        <Button variant="outline" onClick={downloadPng} disabled={!dataUrl} className="gap-2">
+          <RefreshCw className="w-4 h-4" /> Download PNG
+        </Button>
+        <Button variant="outline" onClick={onRegenerate} className="gap-2 border-amber-500/40 text-amber-300">
+          <RefreshCw className="w-4 h-4" /> Regenerate QR
+        </Button>
+      </div>
+      <div className="text-[11px] text-muted-foreground">
+        QR digenerate langsung oleh sistem — tidak perlu generator eksternal. Cetak / download lalu tempel di lokasi absensi.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 //  Owner: Settings (lokasi + shift + QR)
 // ============================================================================
 function OwnerSettingsView() {
@@ -1067,7 +1179,13 @@ function OwnerSettingsView() {
     try { const d = await absApi('settings'); setSettings(d.settings); }
     catch (e) { toast.error(e.message); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // Auto-load QR so owner sees a ready-to-print image immediately.
+    (async () => {
+      try { const q = await absApi('qr'); setQrValue(q.qr_value); } catch { /* ignore */ }
+    })();
+  }, []);
 
   const save = async () => {
     setSaving(true);
@@ -1186,18 +1304,10 @@ function OwnerSettingsView() {
       <Card className="bg-[#0a0a0b] border-white/10">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2"><QrCode className="w-4 h-4"/>QR Absensi</CardTitle>
-          <CardDescription>Buat QR sekali, cetak, dan tempel di lokasi. Staff scan QR ini saat absen.</CardDescription>
+          <CardDescription>Owner tampilkan atau cetak QR di sini. Staff scan QR ini saat absen.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-2">
-          {qrValue ? (
-            <div className="rounded border border-white/10 bg-white p-4 text-center">
-              <div className="text-black font-mono text-xs break-all">{qrValue}</div>
-              <div className="text-[10px] text-muted-foreground mt-1">Gunakan generator QR eksternal untuk mencetak QR dari string di atas.</div>
-            </div>
-          ) : (
-            <Button variant="outline" onClick={revealQr} className="gap-2"><QrCode className="w-4 h-4" />Tampilkan QR</Button>
-          )}
-          <Button variant="outline" onClick={regenQr} className="gap-2 border-amber-500/40 text-amber-300"><RefreshCw className="w-4 h-4" />Regenerate QR</Button>
+        <CardContent className="space-y-3">
+          <QrPreviewPanel qrValue={qrValue} onReveal={revealQr} onRegenerate={regenQr} />
         </CardContent>
       </Card>
 
@@ -1414,6 +1524,94 @@ function PointsHistoryView({ user }) {
 }
 
 // ============================================================================
+//  Reward Poin Absen — Late tiers editor
+//  Dynamic ladder of {max_late_minutes, points, label}. Last row is the
+//  catch-all (>= tak-terhingga, `max_late_minutes: null`). Owner may add
+//  or delete rows; on save the server normalizes & sorts them.
+// ============================================================================
+function LateTiersEditor({ tiers, onChange }) {
+  const upd = (i, patch) => {
+    const next = tiers.slice();
+    next[i] = { ...next[i], ...patch };
+    onChange(next);
+  };
+  const remove = (i) => {
+    if (tiers.length <= 1) return;
+    const next = tiers.filter((_, idx) => idx !== i);
+    // Force the (new) last row to be catch-all so backend never rejects.
+    next[next.length - 1] = { ...next[next.length - 1], max_late_minutes: null };
+    onChange(next);
+  };
+  const addRow = () => {
+    // Insert a new tier BEFORE the catch-all last row.
+    const last = tiers[tiers.length - 1] || { points: 0, label: 'Terlambat berat' };
+    const prev = tiers[tiers.length - 2];
+    const newMax = Number.isFinite(prev?.max_late_minutes) ? Number(prev.max_late_minutes) + 15 : 15;
+    const inserted = { max_late_minutes: newMax, points: 3, label: `Terlambat <=${newMax} menit` };
+    const next = [...tiers.slice(0, -1), inserted, last];
+    onChange(next);
+  };
+  const isLast = (i) => i === tiers.length - 1;
+  return (
+    <div className="space-y-2">
+      <div className="hidden md:grid md:grid-cols-12 text-[10px] uppercase tracking-wider text-muted-foreground px-1">
+        <div className="md:col-span-5">Label</div>
+        <div className="md:col-span-3">Maks. Menit</div>
+        <div className="md:col-span-2">Poin</div>
+        <div className="md:col-span-2 text-right">Aksi</div>
+      </div>
+      {tiers.map((t, i) => (
+        <div key={i} className="grid grid-cols-12 gap-2 items-center border border-white/5 bg-white/[0.02] rounded-md p-2">
+          <Input
+            className="col-span-12 md:col-span-5"
+            placeholder="Contoh: Terlambat 10–30 menit"
+            value={t.label || ''}
+            onChange={(e) => upd(i, { label: e.target.value })}
+          />
+          <div className="col-span-6 md:col-span-3">
+            <Input
+              type="number"
+              min={0}
+              max={1440}
+              value={isLast(i) ? '' : (t.max_late_minutes ?? '')}
+              placeholder={isLast(i) ? '∞ (tanpa batas)' : 'contoh 15'}
+              disabled={isLast(i)}
+              onChange={(e) => upd(i, {
+                max_late_minutes: e.target.value === '' ? null : Number(e.target.value),
+              })}
+            />
+            {isLast(i) && (
+              <div className="text-[9px] text-muted-foreground mt-0.5">Baris ini otomatis catch-all.</div>
+            )}
+          </div>
+          <Input
+            className="col-span-4 md:col-span-2"
+            type="number"
+            value={t.points ?? 0}
+            onChange={(e) => upd(i, { points: Number(e.target.value) })}
+          />
+          <div className="col-span-2 md:col-span-2 text-right">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+              onClick={() => remove(i)}
+              disabled={tiers.length <= 1}
+              title={tiers.length <= 1 ? 'Minimal 1 baris' : 'Hapus baris'}
+            >
+              <Minus className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+      ))}
+      <Button variant="outline" size="sm" onClick={addRow} className="gap-2">
+        <Plus className="w-4 h-4" /> Tambah Tingkat Keterlambatan
+      </Button>
+    </div>
+  );
+}
+
+// ============================================================================
 //  Reward Poin Absen — Owner Settings + Manual Adjustment
 // ============================================================================
 function PointsSettingsView() {
@@ -1479,13 +1677,23 @@ function PointsSettingsView() {
       <Card className="bg-[#0a0a0b] border-white/10">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2"><Coins className="w-4 h-4"/>Aturan Poin Absensi</CardTitle>
-          <CardDescription>Berlaku untuk absensi masuk baru. Riwayat lama tidak berubah kecuali Owner recompute.</CardDescription>
+          <CardDescription>
+            Tambah / ubah tingkat keterlambatan sesuai kebutuhan. Baris terakhir otomatis jadi
+            catch-all (tanpa batas atas). Kosongkan &quot;Maks. Menit&quot; untuk baris terakhir.
+          </CardDescription>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div><Label className="text-xs">Tepat waktu</Label><Input type="number" value={settings.points_ontime} onChange={(e) => set('points_ontime', Number(e.target.value))} /></div>
-          <div><Label className="text-xs">Terlambat &lt;10m</Label><Input type="number" value={settings.points_late_lt_10} onChange={(e) => set('points_late_lt_10', Number(e.target.value))} /></div>
-          <div><Label className="text-xs">Terlambat 10–30m</Label><Input type="number" value={settings.points_late_10_to_30} onChange={(e) => set('points_late_10_to_30', Number(e.target.value))} /></div>
-          <div><Label className="text-xs">Terlambat &gt;30m</Label><Input type="number" value={settings.points_late_gt_30} onChange={(e) => set('points_late_gt_30', Number(e.target.value))} /></div>
+        <CardContent className="space-y-2">
+          <LateTiersEditor
+            tiers={Array.isArray(settings.late_tiers) && settings.late_tiers.length
+              ? settings.late_tiers
+              : [
+                  { max_late_minutes: 0, points: settings.points_ontime ?? 10, label: 'Tepat waktu' },
+                  { max_late_minutes: 10, points: settings.points_late_lt_10 ?? 7, label: 'Terlambat <10 menit' },
+                  { max_late_minutes: 30, points: settings.points_late_10_to_30 ?? 5, label: 'Terlambat 10–30 menit' },
+                  { max_late_minutes: null, points: settings.points_late_gt_30 ?? 0, label: 'Terlambat >30 menit' },
+                ]}
+            onChange={(tiers) => setSettings((s) => ({ ...s, late_tiers: tiers }))}
+          />
         </CardContent>
       </Card>
 
