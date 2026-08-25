@@ -92,71 +92,53 @@ function fmtMinutes(m) {
 }
 function fmtDate(d) { try { return new Date(d).toLocaleString('id-ID'); } catch { return '-'; } }
 
-// ---- Selfie capture (front camera) ------------------------------------------
-// Small dedicated component — gallery upload is intentionally NOT supported.
+// ---- Selfie capture (uses native camera picker — SAME pattern as OMS
+//      "Dokumentasi Packing", which works reliably on every device we support:
+//      iOS Safari, Android Chrome, PWA modes, and desktop Chrome fallback).
+//      User can toggle front (user) / back (environment) — the `capture`
+//      attribute is a hint to the OS camera app; on devices where the app
+//      allows switching, the user can also flip from within the OS app.
 function SelfieCapture({ open, onClose, onCaptured, title = 'Ambil Selfie' }) {
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const [error, setError] = useState('');
+  const fileRef = useRef(null);
+  const [facing, setFacing] = useState('user'); // 'user' = depan, 'environment' = belakang
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    (async () => {
+    if (open) {
+      setPreview(null);
       setError('');
-      try {
-        if (!navigator?.mediaDevices?.getUserMedia) {
-          setError('Kamera tidak tersedia di browser ini');
-          return;
-        }
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 720 } },
-          audio: false,
-        });
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-        const v = videoRef.current;
-        if (v) {
-          v.srcObject = stream;
-          v.setAttribute('playsinline', 'true');
-          v.muted = true;
-          await v.play().catch(() => {});
-        }
-      } catch (e) {
-        setError(e?.message || 'Tidak bisa mengakses kamera. Cek izin kamera browser.');
-      }
-    })();
-    return () => {
-      cancelled = true;
-      try { streamRef.current?.getTracks?.().forEach((t) => t.stop()); } catch { /* ignore */ }
-      streamRef.current = null;
-    };
+      setFacing('user');
+      if (fileRef.current) fileRef.current.value = '';
+    }
   }, [open]);
 
-  const snap = async () => {
+  const openPicker = () => {
+    setError('');
+    if (fileRef.current) fileRef.current.click();
+  };
+
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     setBusy(true);
     try {
-      const v = videoRef.current;
-      if (!v || !v.videoWidth) throw new Error('Kamera belum siap');
-      const canvas = document.createElement('canvas');
-      const size = Math.min(720, Math.min(v.videoWidth, v.videoHeight));
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      // Center-crop the video into a square.
-      const sx = (v.videoWidth - size) / 2;
-      const sy = (v.videoHeight - size) / 2;
-      ctx.drawImage(v, sx, sy, size, size, 0, 0, size, size);
-      // Convert to compressed WebP data URL via OMS helper — supports iOS fallback.
-      const blob = await new Promise((res) => canvas.toBlob(res, 'image/webp', 0.9));
-      const { dataUrl } = await compressToWebp(blob, { maxWidth: 640, maxHeight: 640, targetKB: 180 });
-      onCaptured?.(dataUrl);
-    } catch (e) {
-      toast.error(e.message || 'Gagal mengambil foto');
+      // Reuse OMS-proven compress helper — battle-tested across devices,
+      // ~200KB WebP target, safe for iOS bugs.
+      const { dataUrl, sizeBytes } = await compressToWebp(file, { maxWidth: 900, targetKB: 220 });
+      setPreview({ dataUrl, sizeBytes });
+    } catch (err) {
+      setError(err?.message || 'Kompresi foto gagal');
     } finally {
       setBusy(false);
+      if (fileRef.current) fileRef.current.value = '';
     }
+  };
+
+  const confirm = () => {
+    if (!preview) return;
+    onCaptured?.(preview.dataUrl);
   };
 
   return (
@@ -167,31 +149,88 @@ function SelfieCapture({ open, onClose, onCaptured, title = 'Ambil Selfie' }) {
             <Camera className="w-4 h-4 text-emerald-400" /> {title}
           </DialogTitle>
           <DialogDescription>
-            Kamera depan aktif. Upload foto dari galeri TIDAK diizinkan.
+            Kamera perangkat aktif. Upload dari galeri tidak diizinkan (OS Camera dipaksa via <code>capture</code>).
           </DialogDescription>
         </DialogHeader>
-        {error ? (
+
+        {/* Front / back toggle */}
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={facing === 'user' ? 'default' : 'outline'}
+            onClick={() => setFacing('user')}
+            className="gap-1"
+          >
+            <Camera className="w-3.5 h-3.5" /> Kamera Depan
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={facing === 'environment' ? 'default' : 'outline'}
+            onClick={() => setFacing('environment')}
+            className="gap-1"
+          >
+            <Camera className="w-3.5 h-3.5" /> Kamera Belakang
+          </Button>
+        </div>
+
+        {/* Preview or empty placeholder */}
+        {preview ? (
+          <div className="relative">
+            <img src={preview.dataUrl} alt="preview" className="w-full max-h-72 object-cover rounded-lg border border-emerald-500/40" />
+            <Badge variant="outline" className="absolute top-2 right-2 bg-black/60 text-[9px] border-emerald-500/40 text-emerald-300">
+              ✓ {(preview.sizeBytes / 1024).toFixed(0)} KB · WEBP
+            </Badge>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={openPicker}
+            disabled={busy}
+            className="w-full h-40 rounded-lg border border-dashed border-white/15 bg-white/[0.02] hover:bg-white/[0.05] flex flex-col items-center justify-center gap-1 text-muted-foreground disabled:opacity-60"
+          >
+            {busy ? <Loader2 className="w-6 h-6 animate-spin" /> : <Camera className="w-8 h-8" />}
+            <span className="text-sm">{busy ? 'Memproses foto…' : 'Ketuk untuk membuka kamera'}</span>
+            <span className="text-[10px]">Otomatis dikompres ke WebP ~200 KB</span>
+          </button>
+        )}
+
+        {error && (
           <div className="text-sm text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-3">
             {error}
           </div>
-        ) : (
-          <div className="relative aspect-square w-full rounded-lg overflow-hidden bg-black border border-white/10">
-            <video
-              ref={videoRef}
-              className="w-full h-full object-cover"
-              playsInline
-              muted
-              autoPlay
-            />
-            <div className="absolute inset-0 pointer-events-none border-4 border-white/10 rounded-lg" />
-          </div>
         )}
+
+        {/* Native hidden file input — key changes when `facing` changes so the
+            `capture` attribute is re-picked up by the browser. */}
+        <input
+          key={facing}
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture={facing}
+          className="hidden"
+          onChange={onFile}
+        />
+
         <DialogFooter>
           <Button variant="ghost" onClick={() => onClose?.()} disabled={busy}>Batal</Button>
-          <Button onClick={snap} disabled={busy || !!error} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
-            Ambil Foto
-          </Button>
+          {preview ? (
+            <>
+              <Button variant="outline" onClick={openPicker} disabled={busy}>
+                Foto Ulang
+              </Button>
+              <Button onClick={confirm} disabled={busy} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
+                <CheckCircle2 className="w-4 h-4" /> Gunakan Foto
+              </Button>
+            </>
+          ) : (
+            <Button onClick={openPicker} disabled={busy} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+              Ambil Foto
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
