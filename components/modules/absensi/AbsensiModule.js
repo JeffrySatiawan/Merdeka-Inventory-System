@@ -1338,6 +1338,24 @@ function PointsBoardView({ user }) {
   if (loading && !data) return <Skeleton className="h-60 w-full rounded-xl" />;
   const items = data?.items || [];
   const myIndex = items.findIndex((r) => r.user_id === user?.id);
+  const ps = data?.settings || {};
+  const tiers = Array.isArray(ps.late_tiers) ? ps.late_tiers : [];
+  // Auto-labels e.g. "Tepat waktu", "1–10 mnt", ">30 mnt" — mirrors the
+  // Owner-friendly labels used in the Pengaturan Poin editor.
+  const tierPills = tiers.map((t, i) => {
+    const prev = i === 0 ? null : tiers[i - 1]?.max_late_minutes;
+    let label;
+    if (t.max_late_minutes === 0) label = 'Tepat waktu';
+    else if (t.max_late_minutes === null) label = `>${prev ?? 0} mnt`;
+    else if (prev === null || prev === undefined || prev === 0) label = `≤${t.max_late_minutes} mnt`;
+    else label = `${prev + 1}–${t.max_late_minutes} mnt`;
+    const p = Number(t.points || 0);
+    const sign = p > 0 ? '+' : '';
+    const tone = p > 0 ? 'text-emerald-300 border-emerald-400/30 bg-emerald-500/10'
+                : p < 0 ? 'text-rose-300 border-rose-400/30 bg-rose-500/10'
+                : 'text-slate-300 border-white/15 bg-white/[0.04]';
+    return { label, text: `${sign}${p}`, tone };
+  });
   return (
     <div className="space-y-4">
       <Card className="bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-transparent border-amber-500/20">
@@ -1357,6 +1375,31 @@ function PointsBoardView({ user }) {
               <span className="text-muted-foreground"> · Poin </span>
               <b className="tabular-nums">{items[myIndex].balance}</b>
               {items[myIndex].capped && <span className="text-[10px] text-muted-foreground ml-1">(capped)</span>}
+            </div>
+          )}
+          {/* Compact rules summary — visible to all users so aturan main-nya transparan. */}
+          {(tierPills.length > 0 || ps.max_positive != null || ps.max_negative != null) && (
+            <div className="mt-3 pt-3 border-t border-amber-500/15">
+              <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                <span className="text-[10px] uppercase tracking-wide text-amber-300/80 font-semibold">Aturan Poin</span>
+                {tierPills.map((p, i) => (
+                  <span key={i} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${p.tone}`}>
+                    <span className="opacity-80">{p.label}</span>
+                    <b className="tabular-nums">{p.text}</b>
+                  </span>
+                ))}
+                {(ps.max_positive != null || ps.max_negative != null) && (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-white/15 bg-white/[0.04] text-slate-300">
+                    <span className="opacity-80">Batas</span>
+                    <b className="tabular-nums">+{ps.max_positive}</b>
+                    <span className="opacity-60">/</span>
+                    <b className="tabular-nums">{ps.max_negative}</b>
+                  </span>
+                )}
+                {ps.initial_balance != null && (
+                  <span className="text-[10px] text-muted-foreground">Awal periode: <b className="tabular-nums text-slate-300">{ps.initial_balance}</b></span>
+                )}
+              </div>
             </div>
           )}
         </CardContent>
@@ -1524,89 +1567,168 @@ function PointsHistoryView({ user }) {
 }
 
 // ============================================================================
-//  Reward Poin Absen — Late tiers editor
-//  Dynamic ladder of {max_late_minutes, points, label}. Last row is the
-//  catch-all (>= tak-terhingga, `max_late_minutes: null`). Owner may add
-//  or delete rows; on save the server normalizes & sorts them.
+//  Reward Poin Absen — Late tiers editor (UI ramah Owner)
+//  Model data tetap { max_late_minutes, points, label } supaya kompatibel
+//  dengan backend. Owner hanya melihat:
+//    - Kondisi Keterlambatan (auto-derived dari batas menit)
+//    - Poin (editable)
+//    - Batas menit (editable — kecuali baris terakhir)
+//  Label otomatis diperbarui setiap perubahan sehingga backend menerima
+//  string yang tetap deskriptif ("Tepat waktu", "1–10 menit", ">60 menit").
 // ============================================================================
+function deriveTiersLabels(rows) {
+  // Ensure sort ascending with catch-all last.
+  const sorted = rows.slice().sort((a, b) => {
+    if (a.max_late_minutes === null) return 1;
+    if (b.max_late_minutes === null) return -1;
+    return (a.max_late_minutes ?? 0) - (b.max_late_minutes ?? 0);
+  });
+  return sorted.map((r, i, arr) => {
+    const prev = i > 0 ? arr[i - 1] : null;
+    const prevMax = prev ? (prev.max_late_minutes ?? 0) : null;
+    if (r.max_late_minutes === null) {
+      // Catch-all row.
+      const label = prev ? `>${prevMax} menit` : 'Semua keterlambatan';
+      return { ...r, _rangeLabel: label, label };
+    }
+    if (r.max_late_minutes === 0) {
+      return { ...r, _rangeLabel: 'Tepat waktu', label: 'Tepat waktu' };
+    }
+    if (prev === null || (prevMax ?? 0) < 0) {
+      const label = `≤${r.max_late_minutes} menit`;
+      return { ...r, _rangeLabel: label, label };
+    }
+    const from = (prevMax ?? 0) + 1;
+    const label = `${from}–${r.max_late_minutes} menit`;
+    return { ...r, _rangeLabel: label, label };
+  });
+}
+
 function LateTiersEditor({ tiers, onChange }) {
+  // Always work on labeled/sorted view but persist through onChange the same
+  // { max_late_minutes, points, label } shape.
+  const display = deriveTiersLabels(tiers);
+
+  const pushChange = (nextArr) => {
+    // Re-derive labels so `label` stays in sync when the ladder changes.
+    onChange(deriveTiersLabels(nextArr).map(({ _rangeLabel, ...rest }) => rest));
+  };
+
   const upd = (i, patch) => {
-    const next = tiers.slice();
+    const next = display.slice();
     next[i] = { ...next[i], ...patch };
-    onChange(next);
+    pushChange(next);
   };
+
   const remove = (i) => {
-    if (tiers.length <= 1) return;
-    const next = tiers.filter((_, idx) => idx !== i);
-    // Force the (new) last row to be catch-all so backend never rejects.
+    if (display.length <= 1) return;
+    const next = display.filter((_, idx) => idx !== i);
+    // Make sure the new last row is catch-all.
     next[next.length - 1] = { ...next[next.length - 1], max_late_minutes: null };
-    onChange(next);
+    pushChange(next);
   };
+
   const addRow = () => {
-    // Insert a new tier BEFORE the catch-all last row.
-    const last = tiers[tiers.length - 1] || { points: 0, label: 'Terlambat berat' };
-    const prev = tiers[tiers.length - 2];
-    const newMax = Number.isFinite(prev?.max_late_minutes) ? Number(prev.max_late_minutes) + 15 : 15;
-    const inserted = { max_late_minutes: newMax, points: 3, label: `Terlambat <=${newMax} menit` };
-    const next = [...tiers.slice(0, -1), inserted, last];
-    onChange(next);
+    // Insert a new tier just BEFORE the catch-all last row.
+    const beforeLast = display[display.length - 2];
+    const last = display[display.length - 1];
+    const prevMax = Number.isFinite(beforeLast?.max_late_minutes) ? Number(beforeLast.max_late_minutes) : 0;
+    const inserted = { max_late_minutes: prevMax + 15, points: 0, label: '' };
+    const next = [...display.slice(0, -1), inserted, last];
+    pushChange(next);
   };
-  const isLast = (i) => i === tiers.length - 1;
+
+  // Validation — overlapping / out-of-order thresholds.
+  const nonNullMaxes = display.filter((t) => t.max_late_minutes !== null).map((t) => t.max_late_minutes);
+  const outOfOrder = nonNullMaxes.some((v, i, arr) => i > 0 && v <= arr[i - 1]);
+  const anyNegative = nonNullMaxes.some((v) => v < 0);
+  const dupExists = new Set(nonNullMaxes).size !== nonNullMaxes.length;
+
   return (
     <div className="space-y-2">
+      {/* Table header — hidden on mobile, shown on md+ */}
       <div className="hidden md:grid md:grid-cols-12 text-[10px] uppercase tracking-wider text-muted-foreground px-1">
-        <div className="md:col-span-5">Label</div>
-        <div className="md:col-span-3">Maks. Menit</div>
+        <div className="md:col-span-6">Kondisi Keterlambatan</div>
+        <div className="md:col-span-2">Batas Menit</div>
         <div className="md:col-span-2">Poin</div>
         <div className="md:col-span-2 text-right">Aksi</div>
       </div>
-      {tiers.map((t, i) => (
-        <div key={i} className="grid grid-cols-12 gap-2 items-center border border-white/5 bg-white/[0.02] rounded-md p-2">
-          <Input
-            className="col-span-12 md:col-span-5"
-            placeholder="Contoh: Terlambat 10–30 menit"
-            value={t.label || ''}
-            onChange={(e) => upd(i, { label: e.target.value })}
-          />
-          <div className="col-span-6 md:col-span-3">
-            <Input
-              type="number"
-              min={0}
-              max={1440}
-              value={isLast(i) ? '' : (t.max_late_minutes ?? '')}
-              placeholder={isLast(i) ? '∞ (tanpa batas)' : 'contoh 15'}
-              disabled={isLast(i)}
-              onChange={(e) => upd(i, {
-                max_late_minutes: e.target.value === '' ? null : Number(e.target.value),
-              })}
-            />
-            {isLast(i) && (
-              <div className="text-[9px] text-muted-foreground mt-0.5">Baris ini otomatis catch-all.</div>
-            )}
+
+      {display.map((t, i) => {
+        const isLast = i === display.length - 1;
+        return (
+          <div
+            key={i}
+            className={`grid grid-cols-12 gap-2 items-center border rounded-md p-2 ${
+              i === 0 ? 'border-emerald-500/20 bg-emerald-500/[0.03]' :
+              isLast ? 'border-rose-500/20 bg-rose-500/[0.03]' :
+              'border-white/5 bg-white/[0.02]'
+            }`}
+          >
+            {/* Kondisi (auto) */}
+            <div className="col-span-12 md:col-span-6">
+              <div className="text-sm font-semibold">{t._rangeLabel}</div>
+              <div className="text-[10px] text-muted-foreground md:hidden">Kondisi otomatis dari batas menit</div>
+            </div>
+
+            {/* Batas menit — hidden for catch-all last row */}
+            <div className="col-span-6 md:col-span-2">
+              {isLast ? (
+                <div className="text-xs text-muted-foreground italic pl-2">otomatis</div>
+              ) : (
+                <Input
+                  type="number"
+                  min={0}
+                  max={1440}
+                  value={t.max_late_minutes ?? 0}
+                  onChange={(e) => upd(i, {
+                    max_late_minutes: e.target.value === '' ? 0 : Math.max(0, Number(e.target.value)),
+                  })}
+                />
+              )}
+            </div>
+
+            {/* Poin */}
+            <div className="col-span-4 md:col-span-2">
+              <Input
+                type="number"
+                value={t.points ?? 0}
+                onChange={(e) => upd(i, { points: Number(e.target.value) })}
+              />
+            </div>
+
+            {/* Aksi */}
+            <div className="col-span-2 md:col-span-2 text-right">
+              <Button
+                size="icon"
+                variant="ghost"
+                className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 disabled:opacity-30"
+                onClick={() => remove(i)}
+                disabled={display.length <= 1}
+                title={display.length <= 1 ? 'Minimal 1 baris' : 'Hapus tingkat ini'}
+              >
+                <Minus className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
-          <Input
-            className="col-span-4 md:col-span-2"
-            type="number"
-            value={t.points ?? 0}
-            onChange={(e) => upd(i, { points: Number(e.target.value) })}
-          />
-          <div className="col-span-2 md:col-span-2 text-right">
-            <Button
-              size="icon"
-              variant="ghost"
-              className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
-              onClick={() => remove(i)}
-              disabled={tiers.length <= 1}
-              title={tiers.length <= 1 ? 'Minimal 1 baris' : 'Hapus baris'}
-            >
-              <Minus className="w-4 h-4" />
-            </Button>
-          </div>
+        );
+      })}
+
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button variant="outline" size="sm" onClick={addRow} className="gap-2">
+          <Plus className="w-4 h-4" /> Tambah Tingkat Keterlambatan
+        </Button>
+        <div className="text-[11px] text-muted-foreground">
+          Kondisi otomatis dihitung dari batas menit. Baris paling bawah = &quot;&gt;X menit&quot;.
         </div>
-      ))}
-      <Button variant="outline" size="sm" onClick={addRow} className="gap-2">
-        <Plus className="w-4 h-4" /> Tambah Tingkat Keterlambatan
-      </Button>
+      </div>
+
+      {(outOfOrder || anyNegative || dupExists) && (
+        <div className="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded p-2">
+          Batas menit harus <b>naik berurutan</b> tanpa nilai negatif atau duplikat.
+          {outOfOrder && <> Ada urutan yang salah — sistem akan otomatis mengurutkan saat disimpan, tetapi cek kembali agar rentang sesuai keinginan.</>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1678,8 +1800,9 @@ function PointsSettingsView() {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2"><Coins className="w-4 h-4"/>Aturan Poin Absensi</CardTitle>
           <CardDescription>
-            Tambah / ubah tingkat keterlambatan sesuai kebutuhan. Baris terakhir otomatis jadi
-            catch-all (tanpa batas atas). Kosongkan &quot;Maks. Menit&quot; untuk baris terakhir.
+            Owner bebas menentukan rentang keterlambatan &amp; nilai poin. Kondisi
+            otomatis dihitung sistem — baris paling bawah selalu menjadi
+            &quot;&gt;X menit&quot;.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
