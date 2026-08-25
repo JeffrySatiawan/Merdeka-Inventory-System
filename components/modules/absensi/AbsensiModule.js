@@ -31,6 +31,10 @@ import {
   Timer,
   ClipboardCheck,
   Radio,
+  Trophy,
+  Coins,
+  Plus,
+  Minus,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -1167,6 +1171,346 @@ function OwnerSettingsView() {
 }
 
 // ============================================================================
+//  Reward Poin Absen — Live Point Board
+//  Auto-refreshes every 10s (reuses the same polling pattern as OwnerDashboardView).
+// ============================================================================
+function PointsBoardView({ user }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState('');
+  const load = async () => {
+    try {
+      const qs = period ? `?period=${encodeURIComponent(period)}` : '';
+      setData(await absApi(`points/leaderboard${qs}`));
+    } catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [period]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (loading && !data) return <Skeleton className="h-60 w-full rounded-xl" />;
+  const items = data?.items || [];
+  const myIndex = items.findIndex((r) => r.user_id === user?.id);
+  return (
+    <div className="space-y-4">
+      <Card className="bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-transparent border-amber-500/20">
+        <CardContent className="pt-4">
+          <div className="flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-amber-400" />
+            <div>
+              <div className="text-sm font-semibold">Live Point Board</div>
+              <div className="text-[10px] text-muted-foreground">
+                Periode {data?.period_key} · {data?.period_range?.from} → {data?.period_range?.to} · auto-refresh 10 detik
+              </div>
+            </div>
+          </div>
+          {myIndex >= 0 && (
+            <div className="mt-3 text-sm">
+              Ranking Anda: <b className="text-amber-300">#{items[myIndex].rank}</b>
+              <span className="text-muted-foreground"> · Poin </span>
+              <b className="tabular-nums">{items[myIndex].balance}</b>
+              {items[myIndex].capped && <span className="text-[10px] text-muted-foreground ml-1">(capped)</span>}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardContent className="pt-4">
+          {items.length === 0 ? (
+            <div className="text-center py-10 text-sm text-muted-foreground">Belum ada data ranking.</div>
+          ) : (
+            <div className="space-y-1.5">
+              {items.map((r) => {
+                const isMe = r.user_id === user?.id;
+                const medal = r.rank === 1 ? 'text-amber-300' : r.rank === 2 ? 'text-slate-300' : r.rank === 3 ? 'text-orange-300' : 'text-muted-foreground';
+                return (
+                  <div key={r.user_id} className={`rounded-lg border px-3 py-2 flex items-center gap-3 ${isMe ? 'border-amber-500/40 bg-amber-500/[0.06]' : 'border-white/10 bg-white/[0.02]'}`}>
+                    <div className={`w-8 text-center font-black tabular-nums ${medal}`}>#{r.rank}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className={`text-sm truncate ${isMe ? 'font-semibold text-amber-200' : ''}`}>{r.user_name}</div>
+                      {r.capped && <div className="text-[10px] text-muted-foreground">Capped di batas maks/min</div>}
+                    </div>
+                    <div className="text-right">
+                      <div className="text-lg font-bold tabular-nums">{r.balance}</div>
+                      <div className="text-[10px] text-muted-foreground tabular-nums">
+                        {r.delta >= 0 ? '+' : ''}{r.delta} dari {r.initial_balance}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================================
+//  Reward Poin Absen — Riwayat Poin
+//  Staff: own history only. Owner: filterable by user.
+// ============================================================================
+function PointsHistoryView({ user }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [staffOpts, setStaffOpts] = useState([]);
+  const [userId, setUserId] = useState('all');
+  const [period, setPeriod] = useState('');
+  const isOwner = user?.role === 'owner';
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (period) params.set('period', period);
+      if (isOwner && userId && userId !== 'all') params.set('user_id', userId);
+      const d = await absApi(`points/history?${params.toString()}`);
+      setData(d);
+    } catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    if (isOwner) {
+      (async () => {
+        try {
+          const token = localStorage.getItem('cc_token');
+          const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
+          if (res.ok) {
+            const d = await res.json();
+            const list = (Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner');
+            setStaffOpts(list);
+          }
+        } catch { /* ignore */ }
+      })();
+    }
+    load(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, period]);
+
+  return (
+    <div className="space-y-3">
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardContent className="pt-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">Periode</Label>
+              <Input
+                placeholder="Contoh: 2026-08 (26 Jul → 25 Agu). Kosongkan = periode aktif"
+                value={period}
+                onChange={(e) => setPeriod(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') load(); }}
+              />
+            </div>
+            {isOwner && (
+              <div>
+                <Label className="text-xs">Staff</Label>
+                <Select value={userId} onValueChange={setUserId}>
+                  <SelectTrigger><SelectValue placeholder="Semua Staff" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Semua Staff</SelectItem>
+                    {staffOpts.map((e) => (<SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="flex items-end">
+              <Button size="sm" onClick={load} disabled={loading} className="gap-2 w-full">
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                Terapkan
+              </Button>
+            </div>
+          </div>
+          {data && (
+            <div className="mt-3 text-xs text-muted-foreground">
+              Periode <b className="text-white">{data.period_key}</b> · {data.period_range?.from} → {data.period_range?.to}
+              {!isOwner && (
+                <span> · Poin awal: {data.initial_balance} · Perubahan: <b className={data.total_delta >= 0 ? 'text-emerald-300' : 'text-rose-300'}>{data.total_delta >= 0 ? '+' : ''}{data.total_delta}</b></span>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardContent className="pt-4">
+          {loading ? (
+            <Skeleton className="h-40 w-full rounded" />
+          ) : (data?.items?.length || 0) === 0 ? (
+            <div className="text-center py-10 text-sm text-muted-foreground">Belum ada riwayat poin di periode ini.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground border-b border-white/10">
+                  <tr>
+                    {['Tanggal', ...(isOwner ? ['Staff'] : []), 'Event', 'Keterangan', 'Poin'].map((h) => (
+                      <th key={h} className="text-left py-2 px-2 font-medium">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data.items || []).map((r) => (
+                    <tr key={r.id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                      <td className="py-2 px-2 tabular-nums">{r.event_date}</td>
+                      {isOwner && <td className="py-2 px-2">{r.user_name}</td>}
+                      <td className="py-2 px-2 capitalize">{r.event_type}</td>
+                      <td className="py-2 px-2 text-muted-foreground">
+                        {r.reason}
+                        {r.created_by_name && r.event_type === 'adjustment' && (
+                          <div className="text-[10px] text-muted-foreground/70">oleh {r.created_by_name}</div>
+                        )}
+                      </td>
+                      <td className={`py-2 px-2 text-right tabular-nums font-semibold ${r.points >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                        {r.points >= 0 ? '+' : ''}{r.points}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================================
+//  Reward Poin Absen — Owner Settings + Manual Adjustment
+// ============================================================================
+function PointsSettingsView() {
+  const [settings, setSettings] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [staffOpts, setStaffOpts] = useState([]);
+  const [adj, setAdj] = useState({ user_id: '', points: '', reason: '' });
+  const [adjBusy, setAdjBusy] = useState(false);
+
+  const load = async () => {
+    try { const d = await absApi('points/settings'); setSettings(d.settings); }
+    catch (e) { toast.error(e.message); }
+  };
+  useEffect(() => {
+    load();
+    (async () => {
+      try {
+        const token = localStorage.getItem('cc_token');
+        const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
+        if (res.ok) {
+          const d = await res.json();
+          setStaffOpts((Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner'));
+        }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const d = await absApi('points/settings', { method: 'PUT', body: JSON.stringify(settings) });
+      setSettings(d.settings);
+      toast.success('Pengaturan poin tersimpan');
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const applyAdjustment = async (sign) => {
+    if (!adj.user_id) { toast.error('Pilih staff'); return; }
+    const raw = Number(adj.points);
+    if (!Number.isFinite(raw) || raw === 0) { toast.error('Jumlah poin harus bukan nol'); return; }
+    if (!adj.reason.trim()) { toast.error('Alasan wajib diisi'); return; }
+    setAdjBusy(true);
+    try {
+      await absApi('points/adjustment', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: adj.user_id,
+          points: sign * Math.abs(raw),
+          reason: adj.reason.trim(),
+        }),
+      });
+      toast.success(sign > 0 ? 'Poin ditambahkan' : 'Poin dikurangi');
+      setAdj({ user_id: '', points: '', reason: '' });
+    } catch (e) { toast.error(e.message); }
+    finally { setAdjBusy(false); }
+  };
+
+  if (!settings) return <Skeleton className="h-60 w-full rounded-xl" />;
+  const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+  return (
+    <div className="space-y-4">
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><Coins className="w-4 h-4"/>Aturan Poin Absensi</CardTitle>
+          <CardDescription>Berlaku untuk absensi masuk baru. Riwayat lama tidak berubah kecuali Owner recompute.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div><Label className="text-xs">Tepat waktu</Label><Input type="number" value={settings.points_ontime} onChange={(e) => set('points_ontime', Number(e.target.value))} /></div>
+          <div><Label className="text-xs">Terlambat &lt;10m</Label><Input type="number" value={settings.points_late_lt_10} onChange={(e) => set('points_late_lt_10', Number(e.target.value))} /></div>
+          <div><Label className="text-xs">Terlambat 10–30m</Label><Input type="number" value={settings.points_late_10_to_30} onChange={(e) => set('points_late_10_to_30', Number(e.target.value))} /></div>
+          <div><Label className="text-xs">Terlambat &gt;30m</Label><Input type="number" value={settings.points_late_gt_30} onChange={(e) => set('points_late_gt_30', Number(e.target.value))} /></div>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Batas Saldo</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div><Label className="text-xs">Saldo Awal</Label><Input type="number" value={settings.initial_balance} onChange={(e) => set('initial_balance', Number(e.target.value))} /></div>
+          <div><Label className="text-xs">Maks. Positif</Label><Input type="number" value={settings.max_positive} onChange={(e) => set('max_positive', Number(e.target.value))} /></div>
+          <div><Label className="text-xs">Maks. Negatif</Label><Input type="number" value={settings.max_negative} onChange={(e) => set('max_negative', Number(e.target.value))} /></div>
+          <div>
+            <Label className="text-xs">Nilai 1 poin (Rp)</Label>
+            <Input type="number" value={settings.rupiah_per_point ?? 2500} onChange={(e) => set('rupiah_per_point', Number(e.target.value))} />
+            <div className="text-[10px] text-muted-foreground mt-1">Tidak ditampilkan ke staff.</div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Button onClick={save} disabled={saving} className="bg-indigo-600 hover:bg-indigo-500 gap-2">
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+        Simpan Pengaturan
+      </Button>
+
+      <Card className="bg-[#0a0a0b] border-white/10">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2"><Plus className="w-4 h-4"/>Manual Adjustment</CardTitle>
+          <CardDescription>Tambah atau kurangi poin dengan alasan. Tercatat sebagai transaksi baru — tidak mengedit riwayat.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">Staff</Label>
+              <Select value={adj.user_id} onValueChange={(v) => setAdj((a) => ({ ...a, user_id: v }))}>
+                <SelectTrigger><SelectValue placeholder="Pilih staff" /></SelectTrigger>
+                <SelectContent>
+                  {staffOpts.map((e) => (<SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Jumlah Poin (positif)</Label>
+              <Input type="number" min={1} value={adj.points} onChange={(e) => setAdj((a) => ({ ...a, points: e.target.value }))} />
+            </div>
+            <div>
+              <Label className="text-xs">Alasan <span className="text-rose-400">*</span></Label>
+              <Input value={adj.reason} onChange={(e) => setAdj((a) => ({ ...a, reason: e.target.value }))} placeholder="Contoh: Reward kinerja mingguan" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => applyAdjustment(1)} disabled={adjBusy} className="bg-emerald-600 hover:bg-emerald-500 gap-2">
+              {adjBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Tambah Poin
+            </Button>
+            <Button onClick={() => applyAdjustment(-1)} disabled={adjBusy} variant="outline" className="border-rose-500/40 text-rose-300 gap-2">
+              {adjBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Minus className="w-4 h-4" />} Kurangi Poin
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ============================================================================
 //  Root: AbsensiModule
 // ============================================================================
 export default function AbsensiModule({ user, initialView = 'abs:home' }) {
@@ -1185,15 +1529,20 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
             <div className="text-xs text-muted-foreground">Selfie · QR statis · Validasi radius GPS</div>
           </div>
         </div>
-        {isOwner && (
-          <div className="flex gap-2 flex-wrap">
-            <Button size="sm" variant={view === 'abs:home' ? 'default' : 'outline'} onClick={() => setView('abs:home')}>Staff</Button>
-            <Button size="sm" variant={view === 'abs:owner:dashboard' ? 'default' : 'outline'} onClick={() => setView('abs:owner:dashboard')} className="gap-1"><Users className="w-3.5 h-3.5"/>Dashboard</Button>
-            <Button size="sm" variant={view === 'abs:owner:report' ? 'default' : 'outline'} onClick={() => setView('abs:owner:report')} className="gap-1"><History className="w-3.5 h-3.5"/>Laporan</Button>
-            <Button size="sm" variant={view === 'abs:owner:overtime' ? 'default' : 'outline'} onClick={() => setView('abs:owner:overtime')} className="gap-1"><ClipboardCheck className="w-3.5 h-3.5"/>Lembur</Button>
-            <Button size="sm" variant={view === 'abs:owner:settings' ? 'default' : 'outline'} onClick={() => setView('abs:owner:settings')} className="gap-1"><SettingsIcon className="w-3.5 h-3.5"/>Pengaturan</Button>
-          </div>
-        )}
+        <div className="flex gap-2 flex-wrap">
+          <Button size="sm" variant={view === 'abs:home' ? 'default' : 'outline'} onClick={() => setView('abs:home')}>Absensi</Button>
+          <Button size="sm" variant={view === 'abs:points:board' ? 'default' : 'outline'} onClick={() => setView('abs:points:board')} className="gap-1"><Trophy className="w-3.5 h-3.5"/>Live Board</Button>
+          <Button size="sm" variant={view === 'abs:points:history' ? 'default' : 'outline'} onClick={() => setView('abs:points:history')} className="gap-1"><Coins className="w-3.5 h-3.5"/>Riwayat Poin</Button>
+          {isOwner && (
+            <>
+              <Button size="sm" variant={view === 'abs:owner:dashboard' ? 'default' : 'outline'} onClick={() => setView('abs:owner:dashboard')} className="gap-1"><Users className="w-3.5 h-3.5"/>Dashboard</Button>
+              <Button size="sm" variant={view === 'abs:owner:report' ? 'default' : 'outline'} onClick={() => setView('abs:owner:report')} className="gap-1"><History className="w-3.5 h-3.5"/>Laporan</Button>
+              <Button size="sm" variant={view === 'abs:owner:overtime' ? 'default' : 'outline'} onClick={() => setView('abs:owner:overtime')} className="gap-1"><ClipboardCheck className="w-3.5 h-3.5"/>Lembur</Button>
+              <Button size="sm" variant={view === 'abs:points:settings' ? 'default' : 'outline'} onClick={() => setView('abs:points:settings')} className="gap-1"><Coins className="w-3.5 h-3.5"/>Pengaturan Poin</Button>
+              <Button size="sm" variant={view === 'abs:owner:settings' ? 'default' : 'outline'} onClick={() => setView('abs:owner:settings')} className="gap-1"><SettingsIcon className="w-3.5 h-3.5"/>Pengaturan</Button>
+            </>
+          )}
+        </div>
       </div>
 
       <AnimatePresence mode="wait">
@@ -1206,6 +1555,9 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
           {view === 'abs:owner:report' && isOwner && <OwnerReportView />}
           {view === 'abs:owner:overtime' && isOwner && <OwnerOvertimeView />}
           {view === 'abs:owner:settings' && isOwner && <OwnerSettingsView />}
+          {view === 'abs:points:board' && <PointsBoardView user={user} />}
+          {view === 'abs:points:history' && <PointsHistoryView user={user} />}
+          {view === 'abs:points:settings' && isOwner && <PointsSettingsView />}
         </motion.div>
       </AnimatePresence>
     </div>
