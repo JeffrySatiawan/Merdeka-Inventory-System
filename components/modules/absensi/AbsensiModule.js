@@ -1423,8 +1423,8 @@ function PointsBoardView({ user }) {
         </CardContent>
       </Card>
 
-      {/* Grafik Tren Ranking — reuse recharts; follows same period as leaderboard. */}
-      <RankingTrendChart period={data?.period_key} meId={user?.id} />
+      {/* Grafik Poin Staff — bar chart bulan berjalan (owner tidak dihitung). */}
+      <PointsBarChart items={items} meId={user?.id} periodKey={data?.period_key} settings={ps} />
 
       <Card className="bg-[#0a0a0b] border-white/10">
         <CardContent className="pt-4">
@@ -1460,69 +1460,38 @@ function PointsBoardView({ user }) {
 }
 
 // ============================================================================
-//  Reward Poin Absen — Ranking Trend Chart
-//  Line chart showing DAILY RANK per staff over the current period.
-//  Reuses recharts (already in package.json). Y-axis is inverted so #1 is on
-//  top — visually mirrors the leaderboard.
+//  Reward Poin Absen — Poin Staff Bar Chart
+//  Bar chart bulan berjalan: X = nama staff, Y = jumlah poin (balance).
+//  Owner tidak dihitung (items sudah difilter oleh backend via getActiveStaff).
+//  Highlight bar staff yang sedang login (kuning).
 // ============================================================================
-function RankingTrendChart({ period, meId }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    if (!period) return;
-    let cancelled = false;
-    setLoading(true);
-    (async () => {
-      try {
-        const d = await absApi(`points/trend?period=${encodeURIComponent(period)}`);
-        if (!cancelled) setData(d);
-      } catch (e) {
-        if (!cancelled) toast.error(e.message);
-      } finally { if (!cancelled) setLoading(false); }
-    })();
-    return () => { cancelled = true; };
-  }, [period]);
-
-  if (loading && !data) {
-    return <Skeleton className="h-56 w-full rounded-xl" />;
-  }
-  const days = data?.days || [];
-  const series = data?.series || [];
-  if (!days.length || !series.length) {
+function PointsBarChart({ items, meId, periodKey, settings }) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) {
     return (
       <Card className="bg-[#0a0a0b] border-white/10">
         <CardContent className="pt-4">
           <div className="flex items-center gap-2 mb-2">
             <TrendingUp className="w-4 h-4 text-emerald-400" />
-            <div className="text-sm font-semibold">Tren Ranking</div>
+            <div className="text-sm font-semibold">Grafik Poin Staff</div>
           </div>
           <div className="text-center py-8 text-xs text-muted-foreground">
-            Belum cukup data untuk menampilkan grafik tren.
+            Belum ada data poin untuk periode ini.
           </div>
         </CardContent>
       </Card>
     );
   }
-
-  // Reshape into recharts row-per-day format so each series is a column.
-  // row = { day: 'MM-DD', <user_id_1>: rank, <user_id_2>: rank, ... }
-  const rows = days.map((day, di) => {
-    const row = { day: day.slice(5) /* MM-DD compact */, _full: day };
-    for (const s of series) {
-      const r = s.ranks[di];
-      if (r != null) row[s.user_id] = r;
-    }
-    return row;
-  });
-
-  // Distinct palette (deterministic order = latest rank order).
-  const palette = [
-    '#f59e0b', '#22d3ee', '#a78bfa', '#f472b6', '#34d399',
-    '#fb923c', '#60a5fa', '#f87171', '#4ade80', '#fbbf24',
-    '#c084fc', '#38bdf8', '#e879f9', '#fca5a5', '#86efac',
-  ];
-  const totalUsers = series.length;
-
+  const rows = list.map((r) => ({
+    name: r.user_name,
+    user_id: r.user_id,
+    balance: Number(r.balance || 0),
+    isMe: r.user_id === meId,
+  }));
+  // Domain: dari max_negative sampai max_positive supaya batas terlihat konsisten.
+  const yMin = Math.min(0, Number(settings?.max_negative ?? 0));
+  const yMaxPref = Number(settings?.max_positive ?? 150);
+  const yMax = Math.max(yMaxPref, ...rows.map((r) => r.balance));
   return (
     <Card className="bg-[#0a0a0b] border-white/10">
       <CardContent className="pt-4">
@@ -1530,54 +1499,26 @@ function RankingTrendChart({ period, meId }) {
           <div className="flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-emerald-400" />
             <div>
-              <div className="text-sm font-semibold">Tren Ranking</div>
+              <div className="text-sm font-semibold">Grafik Poin Staff</div>
               <div className="text-[10px] text-muted-foreground">
-                Naik / turun peringkat per hari · {days.length} hari · {totalUsers} staff
+                Periode {periodKey} · {rows.length} staff · poin di-reset tiap bulan
               </div>
             </div>
           </div>
           <div className="text-[10px] text-muted-foreground hidden sm:block">
-            Sumbu Y = ranking (#1 di atas)
+            Y = jumlah poin · X = nama staff
           </div>
         </div>
-
-        {/* Legend chips */}
-        <div className="flex items-center gap-1.5 flex-wrap mb-2">
-          {series.map((s, i) => {
-            const isMe = s.user_id === meId;
-            const color = palette[i % palette.length];
-            return (
-              <span
-                key={s.user_id}
-                className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[10px] ${
-                  isMe ? 'border-amber-500/60 bg-amber-500/10 text-amber-200 font-semibold' : 'border-white/10 bg-white/[0.03] text-muted-foreground'
-                }`}
-              >
-                <span className="inline-block w-2 h-2 rounded-full" style={{ background: color }} />
-                {s.user_name}
-                {isMe && <span className="text-[9px] uppercase tracking-widest">Anda</span>}
-              </span>
-            );
-          })}
-        </div>
-
-        <div className="w-full h-56">
-          <RankingTrendInner
-            rows={rows}
-            series={series}
-            palette={palette}
-            meId={meId}
-            totalUsers={totalUsers}
-          />
+        <div className="w-full h-64">
+          <PointsBarInner rows={rows} yMin={yMin} yMax={yMax} />
         </div>
       </CardContent>
     </Card>
   );
 }
 
-// Split into an inner component so recharts is only imported / mounted when the
-// chart is actually rendered (keeps first-paint of the Absensi module fast).
-function RankingTrendInner({ rows, series, palette, meId, totalUsers }) {
+// Recharts diimpor secara dinamis supaya first-paint modul Absensi tetap ringan.
+function PointsBarInner({ rows, yMin, yMax }) {
   const [R, setR] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -1586,72 +1527,57 @@ function RankingTrendInner({ rows, series, palette, meId, totalUsers }) {
   }, []);
   if (!R) return <Skeleton className="h-full w-full rounded-lg" />;
   const {
-    ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
+    ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
+    Cell, LabelList,
   } = R;
 
-  const TooltipContent = ({ active, payload, label }) => {
+  const TooltipContent = ({ active, payload }) => {
     if (!active || !payload || !payload.length) return null;
-    // Sort so top rank (#1) shows first.
-    const sorted = [...payload].sort((a, b) => (a.value ?? 999) - (b.value ?? 999));
-    const full = payload[0]?.payload?._full || label;
+    const p = payload[0];
+    const row = p.payload;
     return (
-      <div className="rounded-lg border border-white/10 bg-black/90 backdrop-blur px-3 py-2 text-[11px] shadow-xl">
-        <div className="text-[10px] text-muted-foreground mb-1">{full}</div>
-        {sorted.map((p) => {
-          const s = series.find((x) => x.user_id === p.dataKey);
-          const isMe = p.dataKey === meId;
-          return (
-            <div key={p.dataKey} className={`flex items-center gap-2 ${isMe ? 'text-amber-200 font-semibold' : ''}`}>
-              <span className="inline-block w-2 h-2 rounded-full" style={{ background: p.stroke }} />
-              <span className="min-w-[70px] truncate">{s?.user_name || p.dataKey}</span>
-              <span className="tabular-nums ml-auto">#{p.value}</span>
-            </div>
-          );
-        })}
+      <div className={`rounded-lg border bg-black/90 backdrop-blur px-3 py-2 text-[11px] shadow-xl ${row.isMe ? 'border-amber-500/60' : 'border-white/10'}`}>
+        <div className={`text-xs font-semibold ${row.isMe ? 'text-amber-200' : ''}`}>{row.name}{row.isMe && <span className="ml-1 text-[9px] uppercase tracking-widest">Anda</span>}</div>
+        <div className="mt-0.5">Poin: <b className="tabular-nums">{row.balance}</b></div>
       </div>
     );
   };
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
+      <BarChart data={rows} margin={{ top: 16, right: 12, left: 0, bottom: 4 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
         <XAxis
-          dataKey="day"
-          tick={{ fill: '#94a3b8', fontSize: 10 }}
+          dataKey="name"
+          tick={{ fill: '#cbd5e1', fontSize: 11 }}
           tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
           axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          interval="preserveStartEnd"
+          interval={0}
+          angle={rows.length > 6 ? -20 : 0}
+          textAnchor={rows.length > 6 ? 'end' : 'middle'}
+          height={rows.length > 6 ? 48 : 28}
         />
         <YAxis
-          reversed
           allowDecimals={false}
-          domain={[1, Math.max(1, totalUsers)]}
+          domain={[yMin, yMax]}
           tick={{ fill: '#94a3b8', fontSize: 10 }}
           tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
           axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          tickFormatter={(v) => `#${v}`}
-          width={36}
+          width={40}
         />
-        <Tooltip content={<TooltipContent />} />
-        {series.map((s, i) => {
-          const isMe = s.user_id === meId;
-          const color = palette[i % palette.length];
-          return (
-            <Line
-              key={s.user_id}
-              type="monotone"
-              dataKey={s.user_id}
-              stroke={isMe ? '#fbbf24' : color}
-              strokeWidth={isMe ? 3 : 1.75}
-              strokeOpacity={isMe ? 1 : 0.7}
-              dot={isMe ? { r: 3, fill: '#fbbf24', stroke: '#000', strokeWidth: 1 } : false}
-              activeDot={{ r: 4 }}
-              isAnimationActive={false}
+        <Tooltip cursor={{ fill: 'rgba(255,255,255,0.04)' }} content={<TooltipContent />} />
+        <Bar dataKey="balance" radius={[6, 6, 0, 0]} isAnimationActive={false}>
+          {rows.map((row) => (
+            <Cell
+              key={row.user_id}
+              fill={row.isMe ? '#fbbf24' : '#22d3ee'}
+              stroke={row.isMe ? '#f59e0b' : 'transparent'}
+              strokeWidth={row.isMe ? 2 : 0}
             />
-          );
-        })}
-      </LineChart>
+          ))}
+          <LabelList dataKey="balance" position="top" fill="#e2e8f0" fontSize={11} />
+        </Bar>
+      </BarChart>
     </ResponsiveContainer>
   );
 }
