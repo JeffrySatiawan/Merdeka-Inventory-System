@@ -339,19 +339,37 @@ function useGeolocation() {
 function StaffHomeView({ user, onNav }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [lemburOpen, setLemburOpen] = useState(false);
+  // Tick every 30s so button enable/disable state (threshold) updates live.
+  const [, setTick] = useState(0);
 
   const load = async () => {
     try { setData(await absApi('today')); }
     catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(() => setTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
 
   if (loading) return <Skeleton className="h-40 w-full rounded-xl" />;
   const rec = data?.record;
+  const settings = data?.settings || {};
+  const soModeEnabled = !!settings.so_mode_enabled;
   const hasIn = !!rec?.actual_check_in;
   const hasOut = !!rec?.actual_check_out;
   const displayName = String(user?.name || user?.username || 'Pengguna').toUpperCase();
+
+  // Threshold lembur: shift_end + overtime_request_threshold_min menit.
+  const thresholdMin = Number(settings.overtime_request_threshold_min ?? 15);
+  const shiftEndMins = Number(rec?.shift_end_mins || 0);
+  const nowMins = witaNowMins();
+  const canRequestLembur = hasIn && !rec?.overtime_requested &&
+    nowMins >= (shiftEndMins + thresholdMin);
+  const alreadyRequested = !!rec?.overtime_requested;
+  const remainingToThreshold = Math.max(0, (shiftEndMins + thresholdMin) - nowMins);
 
   return (
     <div className="space-y-4">
@@ -371,9 +389,14 @@ function StaffHomeView({ user, onNav }) {
 
           {rec ? (
             <div className="mt-3 space-y-2 text-sm">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Badge className="bg-indigo-500/20 text-indigo-300 border-indigo-500/30">{rec.shift_name}</Badge>
                 <span className="text-muted-foreground">{rec.shift_start}–{rec.shift_end}</span>
+                {rec.so_selected && (
+                  <Badge className="bg-purple-500/20 text-purple-300 border-purple-500/30">
+                    <ClipboardCheck className="w-3 h-3 mr-1"/>Stock Opname
+                  </Badge>
+                )}
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge className={hasIn ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-white/5'}>
@@ -387,9 +410,9 @@ function StaffHomeView({ user, onNav }) {
                 <Badge className={hasOut ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-white/5'}>
                   {hasOut ? <><CheckCircle2 className="w-3 h-3 mr-1"/>Keluar {rec.actual_check_out_wita}</> : 'Belum absen keluar'}
                 </Badge>
-                {rec.overtime_minutes > 0 && (
+                {alreadyRequested && (
                   <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/30">
-                    Lembur {fmtMinutes(rec.overtime_minutes)} · {rec.overtime_status}
+                    <Timer className="w-3 h-3 mr-1"/>Lembur: {rec.overtime_status === 'pending' ? 'Menunggu Persetujuan' : rec.overtime_status}
                   </Badge>
                 )}
               </div>
@@ -400,6 +423,7 @@ function StaffHomeView({ user, onNav }) {
         </CardContent>
       </Card>
 
+      {/* Tombol utama — TIDAK diubah, tetap dominan. */}
       <div className="grid grid-cols-2 gap-3">
         <Button
           onClick={() => onNav('abs:in')}
@@ -417,17 +441,245 @@ function StaffHomeView({ user, onNav }) {
         </Button>
       </div>
 
+      {/* Tombol tambahan — lebih kecil dari tombol utama, tetap responsive. */}
+      <div className="grid grid-cols-2 gap-3">
+        <Button
+          onClick={() => setLemburOpen(true)}
+          disabled={!canRequestLembur}
+          variant="outline"
+          className={`h-12 gap-2 border-amber-500/40 ${canRequestLembur ? 'text-amber-200 hover:bg-amber-500/10' : 'text-muted-foreground'}`}
+          title={
+            alreadyRequested
+              ? 'Pengajuan lembur sudah dikirim'
+              : !hasIn
+                ? 'Absen masuk terlebih dahulu'
+                : remainingToThreshold > 0
+                  ? `Aktif dalam ${remainingToThreshold} menit lagi`
+                  : 'Ajukan lembur'
+          }
+        >
+          <Timer className="w-4 h-4" />
+          <div className="flex flex-col items-start leading-tight">
+            <span className="text-sm">Pengajuan Lembur</span>
+            {!canRequestLembur && !alreadyRequested && hasIn && remainingToThreshold > 0 && (
+              <span className="text-[9px] text-muted-foreground">Aktif dalam {remainingToThreshold} mnt</span>
+            )}
+            {alreadyRequested && (
+              <span className="text-[9px] text-amber-300/70">Sudah diajukan</span>
+            )}
+          </div>
+        </Button>
+        <Button
+          onClick={() => onNav('abs:in:so')}
+          disabled={!soModeEnabled || hasIn}
+          variant="outline"
+          className={`h-12 gap-2 border-purple-500/40 ${soModeEnabled && !hasIn ? 'text-purple-200 hover:bg-purple-500/10' : 'text-muted-foreground'}`}
+          title={
+            !soModeEnabled
+              ? 'Mode Stock Opname belum diaktifkan Owner'
+              : hasIn
+                ? 'Anda sudah absen masuk hari ini'
+                : 'Absen Masuk sekaligus mode Stock Opname'
+          }
+        >
+          <ClipboardCheck className="w-4 h-4" />
+          <div className="flex flex-col items-start leading-tight">
+            <span className="text-sm">Stock Opname</span>
+            {!soModeEnabled && (
+              <span className="text-[9px] text-muted-foreground">Mode OFF</span>
+            )}
+            {soModeEnabled && hasIn && (
+              <span className="text-[9px] text-muted-foreground">Sudah masuk</span>
+            )}
+          </div>
+        </Button>
+      </div>
+
       <Button variant="outline" onClick={() => onNav('abs:history')} className="w-full gap-2">
         <History className="w-4 h-4" /> Riwayat Absensi
       </Button>
+
+      <LemburSubmitDialog
+        open={lemburOpen}
+        onClose={() => setLemburOpen(false)}
+        rec={rec}
+        onDone={() => { setLemburOpen(false); load(); }}
+      />
     </div>
   );
 }
 
+// Helper — current minutes in WITA timezone (mirrors `witaHM().mins` from
+// backend but pure-frontend). Used untuk hitung threshold pengajuan lembur.
+function witaNowMins() {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Makassar', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    const parts = fmt.formatToParts(new Date());
+    const h = Number(parts.find((p) => p.type === 'hour')?.value || 0);
+    const m = Number(parts.find((p) => p.type === 'minute')?.value || 0);
+    return h * 60 + m;
+  } catch { return 0; }
+}
+
+// ============================================================================
+//  LemburSubmitDialog — form pengajuan lembur (alasan wajib, foto opsional)
+//  Reuse SelfieCapture (yang sudah pakai compressToWebp — kamera OMS Dok.
+//  Packing). Endpoint: POST /api/absensi/lembur/submit
+// ============================================================================
+function LemburSubmitDialog({ open, onClose, rec, onDone }) {
+  const [reason, setReason] = useState('');
+  const [photo, setPhoto] = useState(null);
+  const [photoOpen, setPhotoOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!open) return;
+    setReason('');
+    setPhoto(null);
+    const t = setInterval(() => setTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, [open]);
+
+  if (!open) return null;
+
+  // Preview durasi potensi lembur = max(0, now - shift_end) menit.
+  const nowMins = witaNowMins();
+  const shiftEndMins = Number(rec?.shift_end_mins || 0);
+  const durMins = Math.max(0, nowMins - shiftEndMins);
+  const durText = durMins >= 60
+    ? `${Math.floor(durMins / 60)} jam ${durMins % 60} mnt`
+    : `${durMins} menit`;
+
+  const submit = async () => {
+    const r = reason.trim();
+    if (r.length < 3) { toast.error('Alasan lembur wajib diisi (minimal 3 karakter)'); return; }
+    setSubmitting(true);
+    try {
+      await absApi('lembur/submit', {
+        method: 'POST',
+        body: JSON.stringify({
+          reason: r,
+          photo_data_url: photo || undefined,
+        }),
+      });
+      toast.success('Pengajuan lembur terkirim · menunggu persetujuan Owner');
+      onDone?.();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={(e) => { if (e.target === e.currentTarget && !submitting) onClose?.(); }}
+    >
+      <div className="w-full sm:max-w-md bg-[#0a0a0b] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl">
+        <div className="p-4 border-b border-white/5 flex items-center gap-2">
+          <Timer className="w-4 h-4 text-amber-400" />
+          <div className="text-base font-semibold">Pengajuan Lembur</div>
+          <button
+            className="ml-auto text-muted-foreground hover:text-white text-xl leading-none"
+            disabled={submitting}
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs">
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">Shift</span>
+              <span className="font-medium">{rec?.shift_name} · {rec?.shift_start}–{rec?.shift_end}</span>
+            </div>
+            <div className="flex justify-between gap-3 mt-1">
+              <span className="text-muted-foreground">Mulai lembur (est.)</span>
+              <span className="font-medium">{rec?.shift_end}</span>
+            </div>
+            <div className="flex justify-between gap-3 mt-1">
+              <span className="text-muted-foreground">Durasi potensi (sekarang)</span>
+              <span className="font-semibold text-amber-300 tabular-nums">{durText}</span>
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-2">
+              Durasi final dihitung otomatis saat Anda Absen Keluar. Persetujuan
+              Owner diperlukan agar lembur diakui.
+            </div>
+          </div>
+
+          <div>
+            <Label className="text-xs">Alasan Lembur <span className="text-rose-400">*</span></Label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              maxLength={500}
+              placeholder="Contoh: menyelesaikan stock opname bulanan, packing pesanan yang tersisa, ..."
+              className="mt-1 w-full rounded-md bg-white/5 border border-white/10 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+              disabled={submitting}
+            />
+            <div className="text-[10px] text-muted-foreground mt-0.5">{reason.length}/500</div>
+          </div>
+
+          <div>
+            <Label className="text-xs">Foto Aktivitas (opsional)</Label>
+            <div className="mt-1 flex items-center gap-2">
+              {photo ? (
+                <>
+                  <img src={photo} alt="foto lembur" className="w-16 h-16 rounded-lg object-cover border border-white/10" />
+                  <div className="flex-1 text-[11px] text-muted-foreground">Foto terlampir</div>
+                  <Button variant="ghost" size="sm" onClick={() => setPhoto(null)} disabled={submitting} className="text-xs">
+                    Hapus
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPhotoOpen(true)}
+                  disabled={submitting}
+                  className="gap-2 flex-1"
+                >
+                  <Camera className="w-4 h-4" /> Ambil / Pilih Foto
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-2">
+            <Button variant="outline" onClick={onClose} disabled={submitting} className="h-10">
+              Batal
+            </Button>
+            <Button
+              onClick={submit}
+              disabled={submitting || reason.trim().length < 3}
+              className="h-10 bg-amber-600 hover:bg-amber-500 gap-2"
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Timer className="w-4 h-4" />}
+              Kirim Pengajuan
+            </Button>
+          </div>
+        </div>
+      </div>
+      <SelfieCapture
+        open={photoOpen}
+        onClose={() => setPhotoOpen(false)}
+        onCaptured={(url) => { setPhoto(url); setPhotoOpen(false); }}
+        title="Foto Aktivitas Lembur"
+      />
+    </div>
+  );
+}
+
+
 // ============================================================================
 //  Sub-view: Check-In Flow (selfie → QR → GPS → submit)
 // ============================================================================
-function CheckInView({ onDone, onBack }) {
+function CheckInView({ onDone, onBack, soSelected = false }) {
   const [today, setToday] = useState(null);
   const [shiftKey, setShiftKey] = useState('');
   const [selfie, setSelfie] = useState(null);
@@ -462,9 +714,10 @@ function CheckInView({ onDone, onBack }) {
           lat: geo.coords.lat,
           lng: geo.coords.lng,
           shift_key: shiftKey,
+          so_selected: soSelected === true,
         }),
       });
-      toast.success('Absen masuk berhasil');
+      toast.success(soSelected ? 'Absen masuk (SO) berhasil' : 'Absen masuk berhasil');
       onDone?.();
     } catch (e) {
       toast.error(e.message);
@@ -473,9 +726,14 @@ function CheckInView({ onDone, onBack }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Button variant="ghost" size="sm" onClick={onBack} className="gap-1">← Kembali</Button>
         <div className="text-lg font-semibold">Absen Masuk</div>
+        {soSelected && (
+          <Badge className="bg-purple-500/20 text-purple-300 border-purple-500/30">
+            <ClipboardCheck className="w-3 h-3 mr-1"/>Mode Stock Opname
+          </Badge>
+        )}
       </div>
 
       <Card className="bg-[#0a0a0b] border-white/10">
@@ -960,7 +1218,7 @@ function OwnerReportView() {
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground border-b border-white/10">
                   <tr>
-                    {['Tanggal', 'Staff', 'Shift', 'Masuk', 'Keluar', 'Status', 'Terlambat', 'Lembur'].map((h) => (
+                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur'].map((h) => (
                       <th key={h} className="text-left py-2 px-2 font-medium">{h}</th>
                     ))}
                   </tr>
@@ -968,12 +1226,22 @@ function OwnerReportView() {
                 <tbody>
                   {items.map((r) => {
                     const isLate = (r.late_minutes || 0) > 0;
+                    const soOn = !!r.so_selected;
+                    const soEff = soOn && r.so_effective_start_mins != null
+                      ? `${String(Math.floor(r.so_effective_start_mins/60)).padStart(2,'0')}:${String(r.so_effective_start_mins%60).padStart(2,'0')}`
+                      : '-';
                     return (
                       <tr key={r.id} className="border-b border-white/5 hover:bg-white/[0.02]">
                         <td className="py-2 px-2 tabular-nums">{r.date}</td>
                         <td className="py-2 px-2">{r.user_name}</td>
                         <td className="py-2 px-2">{r.shift_name}</td>
+                        <td className="py-2 px-2">
+                          {soOn
+                            ? <Badge className="bg-purple-500/15 text-purple-300 border-purple-500/30">Ya</Badge>
+                            : <span className="text-muted-foreground">-</span>}
+                        </td>
                         <td className="py-2 px-2 tabular-nums">{r.actual_check_in_wita || '-'}</td>
+                        <td className="py-2 px-2 tabular-nums">{soOn ? soEff : (r.actual_check_in_wita || '-')}</td>
                         <td className="py-2 px-2 tabular-nums">{r.actual_check_out_wita || '-'}</td>
                         <td className="py-2 px-2">
                           {r.actual_check_in
@@ -984,9 +1252,16 @@ function OwnerReportView() {
                         </td>
                         <td className="py-2 px-2 tabular-nums">{isLate ? fmtMinutes(r.late_minutes) : '-'}</td>
                         <td className="py-2 px-2 tabular-nums">
-                          {r.overtime_minutes > 0
-                            ? <span>{fmtMinutes(r.overtime_minutes)} · <span className="capitalize text-muted-foreground">{r.overtime_status}</span></span>
+                          {(r.overtime_minutes > 0 || r.overtime_requested)
+                            ? <span>
+                                {r.overtime_minutes > 0 ? fmtMinutes(r.overtime_minutes) : (r.overtime_raw_minutes ? `~${fmtMinutes(r.overtime_raw_minutes)}` : '0m')}
+                                {' · '}
+                                <span className="capitalize text-muted-foreground">{r.overtime_status}</span>
+                              </span>
                             : '-'}
+                        </td>
+                        <td className="py-2 px-2 max-w-[220px] truncate" title={r.overtime_reason || ''}>
+                          {r.overtime_reason || '-'}
                         </td>
                       </tr>
                     );
@@ -1043,12 +1318,29 @@ function OwnerOvertimeView() {
       ) : (
         <div className="space-y-2">
           {items.map((r) => (
-            <div key={r.id} className="rounded-lg border border-white/10 p-3 bg-white/[0.02] flex flex-wrap items-center gap-3">
+            <div key={r.id} className="rounded-lg border border-white/10 p-3 bg-white/[0.02] flex flex-wrap items-start gap-3">
               <div className="flex-1 min-w-[200px]">
                 <div className="font-semibold">{r.user_name} · {r.date}</div>
                 <div className="text-xs text-muted-foreground">
-                  Shift {r.shift_name} ({r.shift_start}–{r.shift_end}) · Keluar {r.actual_check_out_wita} · Lembur {fmtMinutes(r.overtime_minutes)}
+                  Shift {r.shift_name} ({r.shift_start}–{r.shift_end}) · Keluar {r.actual_check_out_wita || '—'}
+                  {' · '}Lembur {fmtMinutes(r.overtime_minutes || r.overtime_raw_minutes || 0)}
                 </div>
+                {r.overtime_reason && (
+                  <div className="mt-1 text-xs text-slate-200 rounded-md border border-amber-500/20 bg-amber-500/5 p-2 whitespace-pre-wrap break-words">
+                    <span className="text-[10px] uppercase tracking-wider text-amber-300/80 mr-2">Alasan</span>
+                    {r.overtime_reason}
+                  </div>
+                )}
+                {r.has_overtime_photo && (
+                  <a
+                    href={`/api/absensi/lembur/${r.id}/photo`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] text-indigo-300 hover:underline mt-1"
+                  >
+                    <Camera className="w-3 h-3" /> Lihat foto aktivitas
+                  </a>
+                )}
                 {r.overtime_reviewed_by_name && (
                   <div className="text-[10px] text-muted-foreground/70 mt-0.5">
                     Ditinjau oleh {r.overtime_reviewed_by_name} · {fmtDate(r.overtime_reviewed_at)}
@@ -1212,6 +1504,8 @@ function OwnerSettingsView() {
         location: settings.location,
         shifts: settings.shifts,
         overtime_min_minutes: settings.overtime_min_minutes,
+        overtime_request_threshold_min: settings.overtime_request_threshold_min,
+        so_mode_enabled: settings.so_mode_enabled,
         photo_retention_days: settings.photo_retention_days,
       })});
       setSettings(d.settings);
@@ -1314,6 +1608,37 @@ function OwnerSettingsView() {
               <div className="text-[10px] text-muted-foreground mt-1">
                 Foto selfie akan dihapus otomatis setelah melewati periode ini. Data absensi tetap tersimpan.
               </div>
+            </div>
+            <div>
+              <Label className="text-xs">Threshold Pengajuan Lembur (menit)</Label>
+              <Input type="number" min={0} max={240}
+                value={settings.overtime_request_threshold_min ?? 15}
+                onChange={(e) => setSettings((s) => ({ ...s, overtime_request_threshold_min: Number(e.target.value) }))} />
+              <div className="text-[10px] text-muted-foreground mt-1">
+                Tombol &quot;Pengajuan Lembur&quot; aktif setelah shift berakhir + N menit ini.
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Mode Stock Opname</Label>
+              <button
+                type="button"
+                onClick={() => setSettings((s) => ({ ...s, so_mode_enabled: !s.so_mode_enabled }))}
+                className={`mt-1 w-full flex items-center gap-3 px-3 py-2 rounded-md border transition-colors ${
+                  settings.so_mode_enabled
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                    : 'border-white/10 bg-white/[0.02] text-muted-foreground'
+                }`}
+              >
+                <div className={`w-9 h-5 rounded-full relative transition-colors ${settings.so_mode_enabled ? 'bg-emerald-500' : 'bg-white/10'}`}>
+                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${settings.so_mode_enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </div>
+                <div className="text-left text-xs">
+                  <div className="font-medium">{settings.so_mode_enabled ? 'ON' : 'OFF'}</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    Aktifkan agar tombol Stock Opname bisa dipakai staff.
+                  </div>
+                </div>
+              </button>
             </div>
           </div>
         </CardContent>
@@ -2081,6 +2406,7 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
         <motion.div key={view} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
           {view === 'abs:home' && <StaffHomeView user={user} onNav={setView} />}
           {view === 'abs:in' && <CheckInView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
+          {view === 'abs:in:so' && <CheckInView soSelected onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:out' && <CheckOutView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:history' && <HistoryView onBack={() => setView('abs:home')} />}
           {view === 'abs:owner:dashboard' && isOwner && <OwnerDashboardView />}
