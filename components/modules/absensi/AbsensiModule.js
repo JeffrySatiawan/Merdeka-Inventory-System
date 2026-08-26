@@ -1078,6 +1078,10 @@ function OwnerReportView() {
   const [staffOpts, setStaffOpts] = useState([]);
   const [shiftOpts, setShiftOpts] = useState([]);
   const [exporting, setExporting] = useState(false);
+  // Radius berlaku (di-echo backend dari settings) untuk badge GPS di detail.
+  const [radiusM, setRadiusM] = useState(50);
+  // Rec yang sedang dibuka di modal Verifikasi (null = tertutup).
+  const [detailRec, setDetailRec] = useState(null);
 
   const buildQS = () => {
     const p = new URLSearchParams();
@@ -1094,6 +1098,7 @@ function OwnerReportView() {
     try {
       const d = await absApi(`report?${buildQS()}`);
       setItems(d.items || []);
+      if (d.location?.radius_m) setRadiusM(Number(d.location.radius_m));
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
@@ -1220,7 +1225,7 @@ function OwnerReportView() {
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground border-b border-white/10">
                   <tr>
-                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur'].map((h) => (
+                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur', 'Verifikasi'].map((h) => (
                       <th key={h} className="text-left py-2 px-2 font-medium">{h}</th>
                     ))}
                   </tr>
@@ -1265,6 +1270,16 @@ function OwnerReportView() {
                         <td className="py-2 px-2 max-w-[220px] truncate" title={r.overtime_reason || ''}>
                           {r.overtime_reason || '-'}
                         </td>
+                        <td className="py-2 px-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 gap-1 border-indigo-500/40 text-indigo-300 text-[11px]"
+                            onClick={() => setDetailRec(r)}
+                          >
+                            <Camera className="w-3 h-3" /> Lihat Detail
+                          </Button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -1274,9 +1289,114 @@ function OwnerReportView() {
           )}
         </CardContent>
       </Card>
+
+      <VerifikasiDetailModal
+        open={!!detailRec}
+        rec={detailRec}
+        radiusM={radiusM}
+        onClose={() => setDetailRec(null)}
+      />
+
     </div>
   );
 }
+
+// ============================================================================
+//  Owner: Verifikasi Detail Modal — bukti Absen Masuk & Keluar (foto + GPS)
+//  Reuse endpoint existing GET /api/absensi/record/:id/selfie/(in|out).
+//  Radius diambil dari settings.location.radius_m (di-echo backend di /report).
+// ============================================================================
+function VerifikasiDetailModal({ open, rec, radiusM, onClose }) {
+  if (!open || !rec) return null;
+  const distIn = rec.check_in_distance_m;
+  const distOut = rec.check_out_distance_m;
+  const gpsInValid = distIn != null && distIn <= radiusM;
+  const gpsOutValid = distOut != null && distOut <= radiusM;
+  const retensiHapus = !!rec.selfie_deleted;
+  const token = typeof window !== 'undefined' ? (localStorage.getItem('cc_token') || '') : '';
+  const selfieUrl = (which) => `/api/absensi/record/${rec.id}/selfie/${which}?_t=${encodeURIComponent(token).slice(0, 6)}`;
+  const fmtCoord = (v) => (v == null ? '—' : Number(v).toFixed(6));
+
+  const Section = ({ title, wita, lat, lng, dist, valid, hasPhoto, which }) => (
+    <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div className="font-semibold text-sm">{title}</div>
+        <Badge className={valid
+          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+          : (dist == null ? 'bg-white/5 text-muted-foreground border-white/10' : 'bg-rose-500/15 text-rose-300 border-rose-500/30')}>
+          GPS: {dist == null ? 'N/A' : (valid ? 'Valid' : 'Tidak Valid')}
+        </Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="text-[11px] space-y-1">
+          <div><span className="text-muted-foreground">Waktu</span> · <b className="tabular-nums">{wita || '—'}</b></div>
+          <div><span className="text-muted-foreground">Latitude</span> · <span className="tabular-nums">{fmtCoord(lat)}</span></div>
+          <div><span className="text-muted-foreground">Longitude</span> · <span className="tabular-nums">{fmtCoord(lng)}</span></div>
+          <div><span className="text-muted-foreground">Jarak</span> · <b className="tabular-nums">{dist != null ? `${Math.round(dist)} m` : '—'}</b></div>
+          <div><span className="text-muted-foreground">Radius Diizinkan</span> · <span className="tabular-nums">{radiusM} m</span></div>
+          {lat != null && lng != null && (
+            <a
+              className="inline-flex items-center gap-1 text-[11px] text-indigo-300 hover:underline pt-0.5"
+              href={`https://www.google.com/maps?q=${lat},${lng}`}
+              target="_blank" rel="noreferrer"
+            >
+              <MapPin className="w-3 h-3" /> Buka di Google Maps
+            </a>
+          )}
+        </div>
+        <div className="flex flex-col items-center justify-center">
+          {retensiHapus ? (
+            <div className="w-full aspect-square rounded-md border border-dashed border-white/10 bg-white/[0.02] flex items-center justify-center text-center px-3 text-[11px] text-muted-foreground">
+              Foto sudah tidak tersedia<br /><span className="text-[10px]">(retensi telah lewat)</span>
+            </div>
+          ) : hasPhoto ? (
+            <a href={selfieUrl(which)} target="_blank" rel="noreferrer" className="block w-full">
+              <img
+                src={selfieUrl(which)}
+                alt={`selfie-${which}`}
+                className="w-full aspect-square object-cover rounded-md border border-white/10 hover:border-indigo-400/60 transition-colors"
+              />
+              <div className="text-[10px] text-muted-foreground text-center mt-1">Klik untuk perbesar</div>
+            </a>
+          ) : (
+            <div className="w-full aspect-square rounded-md border border-dashed border-white/10 bg-white/[0.02] flex items-center justify-center text-[11px] text-muted-foreground">
+              Belum ada foto
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
+    >
+      <div className="w-full sm:max-w-2xl bg-[#0a0a0b] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col">
+        <div className="p-4 border-b border-white/5 flex items-center gap-3">
+          <Camera className="w-4 h-4 text-indigo-400" />
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-semibold truncate">Verifikasi Absensi</div>
+            <div className="text-[11px] text-muted-foreground">
+              {rec.user_name} · {rec.date} · {rec.shift_name} ({rec.shift_start}–{rec.shift_end})
+            </div>
+          </div>
+          <button className="text-muted-foreground hover:text-white text-xl leading-none" onClick={onClose}>×</button>
+        </div>
+        <div className="p-4 space-y-3 overflow-y-auto">
+          <Section title="Absen Masuk"
+            wita={rec.actual_check_in_wita} lat={rec.check_in_lat} lng={rec.check_in_lng}
+            dist={distIn} valid={gpsInValid} hasPhoto={rec.has_check_in_photo} which="in" />
+          <Section title="Absen Keluar"
+            wita={rec.actual_check_out_wita} lat={rec.check_out_lat} lng={rec.check_out_lng}
+            dist={distOut} valid={gpsOutValid} hasPhoto={rec.has_check_out_photo} which="out" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ============================================================================
 //  Owner: Overtime Approvals
