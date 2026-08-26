@@ -11071,6 +11071,109 @@ backend:
           
           Test file: /app/backend_test_absensi_lembur_so.py
           All critical tests passed. Task marked as working=true, needs_retesting=false.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ PATCH VERIFICATION COMPLETE - Lembur submission after check-out guard FULLY WORKING (11/11 tests passed, 100%).
+          
+          **PATCH TESTED:** Added guard at line 787 in service.js to prevent lembur submission after check-out:
+          ```
+          if (rec.actual_check_out) return errRes('Anda sudah absen keluar — pengajuan lembur tidak bisa dibuat');
+          ```
+          
+          **TEST ENVIRONMENT:**
+          - URL: https://absensi-foundation.preview.emergentagent.com
+          - Test date: 2026-08-26 20:37 WITA
+          - Credentials: owner/owner123, cindy/cindy123
+          - Test file: /app/backend_test_lembur_checkout_guard.py
+          
+          **TEST RESULTS:**
+          
+          ✅ STEP 1: LOGIN AS OWNER AND CINDY (2/2 passed)
+             - Owner login → 200 with token ✓
+             - Cindy login → 200 with token, id: 85dec2f1-3413-45cf-a4fc-f38963f2949d ✓
+          
+          ✅ STEP 2: DELETE TODAY'S RECORD (1/1 passed)
+             - Deleted existing record for cindy on 2026-08-26 via MongoDB ✓
+          
+          ✅ STEP 3: FETCH VALID QR (1/1 passed)
+             - GET /api/absensi/qr as owner → 200 with qr_value ✓
+             - QR value: MIS-ABSENSI:13773523-2b47-4adf-8b94-9d9641ceb3cf ✓
+          
+          ✅ STEP 4: GET SETTINGS (1/1 passed)
+             - GET /api/absensi/settings → 200 ✓
+             - Location: lat=-8.65, lng=115.216 ✓
+             - overtime_request_threshold_min: 15 ✓
+             - so_mode_enabled: False ✓
+          
+          ✅ STEP 5: CHECK-IN CINDY (1/1 passed)
+             - POST /api/absensi/check-in with apotek_pagi shift → 200 ✓
+             - shift_key: apotek_pagi, shift_start_mins: 420, shift_end_mins: 900 ✓
+          
+          ✅ STEP 6: MUTATE RECORD TO MEET THRESHOLD (1/1 passed)
+             - MongoDB update: shift_end_mins set to 1217 (now=1237, threshold met) ✓
+          
+          ✅ STEP 7: SUBMIT LEMBUR BEFORE CHECK-OUT (REGRESSION CHECK) (1/1 passed)
+             - POST /api/absensi/lembur/submit with reason="stock opname sebelum pulang" → 200 ✓
+             - overtime_requested: True ✓
+             - overtime_status: pending ✓
+             - overtime_reason: stock opname sebelum pulang ✓
+             - **CRITICAL SUCCESS:** Lembur submission BEFORE check-out works correctly (regression verified) ✓
+          
+          ✅ STEP 8: RESET OVERTIME_REQUESTED (1/1 passed)
+             - MongoDB update: overtime_requested set to false, overtime_status/reason/photo cleared ✓
+          
+          ✅ STEP 9: CHECK OUT CINDY (1/1 passed)
+             - POST /api/absensi/check-out → 200 ✓
+             - actual_check_out: 2026-08-26T12:37:36.236Z ✓
+             - actual_check_out_wita: 20.37 ✓
+          
+          ✅ STEP 10: SUBMIT LEMBUR AFTER CHECK-OUT (CRITICAL TEST) (1/1 passed)
+             - POST /api/absensi/lembur/submit with reason="stock opname setelah pulang" → 400 (correctly rejected) ✓
+             - Error message: "Anda sudah absen keluar — pengajuan lembur tidak bisa dibuat" ✓
+             - **CRITICAL SUCCESS:** Lembur submission AFTER check-out correctly blocked with 400 ✓
+             - **CRITICAL SUCCESS:** Error message contains expected text ('sudah absen keluar') ✓
+          
+          ✅ STEP 11: REGRESSION - GET /api/absensi/today (1/1 passed)
+             - GET /api/absensi/today as cindy → 200 ✓
+             - settings.overtime_request_threshold_min: 15 ✓
+             - settings.so_mode_enabled: True ✓
+             - **REGRESSION VERIFIED:** GET /api/absensi/today still returns settings correctly ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Patch Implementation (VERIFIED):**
+             - Line 787 in service.js: `if (rec.actual_check_out) return errRes('Anda sudah absen keluar — pengajuan lembur tidak bisa dibuat');`
+             - Guard placed AFTER check-in validation (line 784) and BEFORE overtime_requested check (line 788)
+             - Correct error message in Indonesian
+             - Returns 400 status code
+          
+          2. **Regression Testing (VERIFIED):**
+             - Lembur submission BEFORE check-out still works (200 response)
+             - overtime_requested, overtime_status, overtime_reason all set correctly
+             - No breaking changes to existing lembur submission flow
+          
+          3. **Critical Test (VERIFIED):**
+             - Lembur submission AFTER check-out correctly rejected with 400
+             - Error message matches expected text: "Anda sudah absen keluar — pengajuan lembur tidak bisa dibuat"
+             - Guard prevents submission even when threshold is met and all other conditions are valid
+          
+          4. **Regression - Settings Endpoint (VERIFIED):**
+             - GET /api/absensi/today still returns settings.overtime_request_threshold_min and settings.so_mode_enabled
+             - No breaking changes to settings exposure
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Lembur submission BEFORE check-out works (regression verified)
+          ✅ Lembur submission AFTER check-out correctly rejected with 400
+          ✅ Error message contains expected text ('sudah absen keluar — pengajuan lembur tidak bisa dibuat')
+          ✅ GET /api/absensi/today still returns settings correctly
+          ✅ Zero regressions detected in existing functionality
+          
+          **CONCLUSION:**
+          The patch preventing lembur submission after check-out is FULLY WORKING. The guard at line 787 correctly blocks submissions when actual_check_out is set, with clear error message in Indonesian. All regression tests passed - existing lembur submission flow before check-out remains intact. Zero breaking changes detected.
+          
+          Test file: /app/backend_test_lembur_checkout_guard.py
+          All 11 tests passed (100%). Patch verified and working correctly.
 
 frontend:
   - task: "Staff Home Buttons + LemburSubmitDialog + CheckIn SO Prop + Owner Settings Toggle + Report Columns"

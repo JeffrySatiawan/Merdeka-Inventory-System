@@ -366,7 +366,7 @@ function StaffHomeView({ user, onNav }) {
   const thresholdMin = Number(settings.overtime_request_threshold_min ?? 15);
   const shiftEndMins = Number(rec?.shift_end_mins || 0);
   const nowMins = witaNowMins();
-  const canRequestLembur = hasIn && !rec?.overtime_requested &&
+  const canRequestLembur = hasIn && !hasOut && !rec?.overtime_requested &&
     nowMins >= (shiftEndMins + thresholdMin);
   const alreadyRequested = !!rec?.overtime_requested;
   const remainingToThreshold = Math.max(0, (shiftEndMins + thresholdMin) - nowMins);
@@ -453,9 +453,11 @@ function StaffHomeView({ user, onNav }) {
               ? 'Pengajuan lembur sudah dikirim'
               : !hasIn
                 ? 'Absen masuk terlebih dahulu'
-                : remainingToThreshold > 0
-                  ? `Aktif dalam ${remainingToThreshold} menit lagi`
-                  : 'Ajukan lembur'
+                : hasOut
+                  ? 'Sudah absen keluar — tidak bisa mengajukan lembur'
+                  : remainingToThreshold > 0
+                    ? `Aktif dalam ${remainingToThreshold} menit lagi`
+                    : 'Ajukan lembur'
           }
         >
           <Timer className="w-4 h-4" />
