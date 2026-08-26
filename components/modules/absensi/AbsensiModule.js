@@ -554,11 +554,14 @@ function CheckInView({ onDone, onBack }) {
 // ============================================================================
 function CheckOutView({ onDone, onBack }) {
   const [selfie, setSelfie] = useState(null);
+  const [qrValue, setQrValue] = useState('');
   const [selfieOpen, setSelfieOpen] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const geo = useGeolocation();
 
   const submit = async () => {
+    if (!qrValue) { toast.error('Scan QR Absensi terlebih dahulu'); return; }
     if (!selfie) { toast.error('Ambil selfie terlebih dahulu'); return; }
     if (!geo.coords) { toast.error('Ambil lokasi GPS terlebih dahulu'); return; }
     setSubmitting(true);
@@ -567,6 +570,7 @@ function CheckOutView({ onDone, onBack }) {
         method: 'POST',
         body: JSON.stringify({
           photo_data_url: selfie,
+          qr_value: qrValue,
           lat: geo.coords.lat,
           lng: geo.coords.lng,
         }),
@@ -585,6 +589,14 @@ function CheckOutView({ onDone, onBack }) {
       </div>
       <Card className="bg-[#0a0a0b] border-white/10">
         <CardContent className="pt-4 space-y-3">
+          {/* QR — wajib sama seperti absen masuk */}
+          <StepButton
+            done={!!qrValue}
+            icon={QrCode}
+            label="Scan QR Absensi"
+            hint={qrValue ? 'QR terdeteksi' : 'Scan QR statis milik Owner'}
+            onClick={() => setQrOpen(true)}
+          />
           <StepButton
             done={!!selfie}
             icon={Camera}
@@ -604,7 +616,7 @@ function CheckOutView({ onDone, onBack }) {
           />
           <Button
             onClick={submit}
-            disabled={submitting || !selfie || !geo.coords}
+            disabled={submitting || !qrValue || !selfie || !geo.coords}
             className="w-full h-11 bg-indigo-600 hover:bg-indigo-500 gap-2"
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
@@ -613,6 +625,11 @@ function CheckOutView({ onDone, onBack }) {
         </CardContent>
       </Card>
       <SelfieCapture open={selfieOpen} onClose={() => setSelfieOpen(false)} onCaptured={(url) => { setSelfie(url); setSelfieOpen(false); }} />
+      <QrScanner
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+        onDecoded={(text) => { setQrValue(text); setQrOpen(false); }}
+      />
     </div>
   );
 }
