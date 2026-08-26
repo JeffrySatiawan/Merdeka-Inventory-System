@@ -11385,15 +11385,127 @@ frontend:
           - OwnerReportView table: added SO, Kerja Efektif, Alasan Lembur columns.
           - OwnerOvertimeView: shows alasan lembur + link foto aktivitas.
 
+  - task: "Absensi parseWitaHM hotfix — accept both dot and colon separators"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/absensi/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          HOTFIX — parseWitaHM regex updated to accept both dot "." and colon ":" separators.
+          
+          **BUG:** parseWitaHM only accepted colon ":" but backend witaClock() uses id-ID locale which emits dot "." (e.g., "15.35" instead of "15:35").
+          
+          **FIX:** Line 968 in service.js: regex changed from accepting only colon to `^(\d{1,2})[.:](\d{2})$` to accept both separators.
+          
+          **IMPACT:** Production data with DOT separator (from witaClock() id-ID locale) now parsed correctly in Excel export. Historical data with COLON separator still works (backward compatible).
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 8 TESTS PASSED (100%) - parseWitaHM hotfix FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for parseWitaHM regex hotfix
+          **TEST FILE:** /app/backend_test_parsewita_hotfix.py
+          **TEST METHOD:** Python requests + openpyxl + MongoDB seeding
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-09-11 to 2026-09-15
+          **CREDENTIALS:** owner / owner123
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: LOGIN AS OWNER (1/1 passed)
+             - POST /api/auth/login → 200 with token ✓
+          
+          ✅ TEST 2: GET CINDY'S USER_ID (1/1 passed)
+             - GET /api/employees → 200 ✓
+             - Found Cindy (id: 85dec2f1-3413-45cf-a4fc-f38963f2949d) ✓
+          
+          ✅ TEST 3: SEED 4 RECORDS WITH DOT FORMAT (1/1 passed)
+             - Seeded W1-W4 via mongosh with DOT separator (09.14, 17.55, 07.09, 15.19, 15.10, 22.03) ✓
+             - Production data format: actual_check_in_wita="09.14" (dot separator from id-ID locale) ✓
+          
+          ✅ TEST 4: EXPORT EXCEL REPORT (1/1 passed)
+             - GET /api/absensi/report/export?from=2026-09-11&to=2026-09-14 → 200 ✓
+             - File size: 32,135 bytes ✓
+          
+          ✅ TEST 5: VERIFY JAM KERJA SHEET - DOT FORMAT (4/4 passed)
+             - W1 (2026-09-11, 09.14→17.55): Aktual=8.68h (exp 8.68), Diakui=5.77h (exp 5.77) ✓
+             - W2 (2026-09-12, 15.35→22.02): Aktual=6.45h (exp 6.45), Diakui=0.00h (exp 0.00) ✓
+             - W3 (2026-09-13, 07.09→15.19): Aktual=8.17h (exp 8.17), Diakui=7.85h (exp 7.85) ✓
+             - W4 (2026-09-14, 15.10→22.03): Aktual=6.88h (exp 6.88), Diakui=6.83h (exp 6.83) ✓
+             - **CRITICAL SUCCESS:** All 4 records with DOT format parsed correctly ✓
+          
+          ✅ TEST 6: VERIFY REKAPITULASI SHEET (1/1 passed)
+             - Cindy's Total Jam Diakui: 20.45h (expected 20.45h, tolerance ±0.05) ✓
+             - Formula verified: 5.77 + 0.00 + 7.85 + 6.83 = 20.45h ✓
+             - **CRITICAL SUCCESS:** Total = Kerja + SO + Lembur (no double count) ✓
+          
+          ✅ TEST 7: REGRESSION - COLON FORMAT (1/1 passed)
+             - Seeded W_COLON with COLON separator (09:14, 17:55) ✓
+             - GET /api/absensi/report/export?from=2026-09-15&to=2026-09-15 → 200 ✓
+             - 2026-09-15 (colon): Aktual=8.68h (exp 8.68), Diakui=5.77h (exp 5.77) ✓
+             - **CRITICAL SUCCESS:** Colon format still works (backward compatibility verified) ✓
+          
+          ✅ TEST 8: CLEANUP (1/1 passed)
+             - Deleted W1-W4 and W_COLON via mongosh ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **DOT Format Parsing (VERIFIED):**
+             - Production data format: witaClock() with id-ID locale emits "15.35" (dot separator)
+             - parseWitaHM regex: `^(\d{1,2})[.:](\d{2})$` accepts both dot and colon
+             - All 4 test records with DOT format parsed correctly
+             - Calculations: Aktual and Diakui values match expected within ±0.02 tolerance
+          
+          2. **Backward Compatibility (VERIFIED):**
+             - Historical data format: manual entries or old code may use "15:35" (colon separator)
+             - Regression test with COLON format: same calculation as W1 (09:14→17:55)
+             - Result: Aktual=8.68h, Diakui=5.77h (identical to DOT format test)
+             - **CRITICAL SUCCESS:** Both formats produce identical results
+          
+          3. **Rekapitulasi Total (VERIFIED):**
+             - Formula: Total Jam Diakui = sum of all Kerja Diakui for Cindy
+             - Calculation: 5.77 + 0.00 + 7.85 + 6.83 = 20.45h
+             - Excel value: 20.45h (within ±0.05 tolerance)
+             - Total = Kerja + SO + Lembur (no double count)
+          
+          4. **Edge Cases Tested:**
+             - W1: Late arrival (09.14 > 07:00) → Diakui starts at check-in time (5.77h)
+             - W2: Arrived after shift ended (15.35 > 15:00) → NO overlap → Diakui = 0h
+             - W3: Slightly late (07.09 > 07:00) → Diakui = overlap 07:09-15:00 (7.85h)
+             - W4: Sore shift, slightly late (15.10 > 15:00) → Diakui = overlap 15:10-22:00 (6.83h)
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ DOT format (production data) parsed correctly (4/4 records)
+          ✅ COLON format (historical data) still works (backward compatible)
+          ✅ All Aktual values match expected within ±0.02 tolerance
+          ✅ All Diakui values match expected within ±0.02 tolerance
+          ✅ Rekapitulasi total correct: 20.45h (sum of 4 records)
+          ✅ Both formats produce identical results for same timestamps
+          ✅ Cleanup successful (no test artifacts left)
+          
+          **CONCLUSION:**
+          The parseWitaHM hotfix is FULLY WORKING. The regex change from accepting only colon ":" to accepting both dot "." and colon "[.:]" resolves the bug where production data (witaClock() with id-ID locale emits dot) was not being parsed correctly. Backward compatibility with colon format maintained - both formats produce identical calculation results.
+          
+          **KEY CHANGES:**
+          - OLD: `const m = s.match(/^(\d{1,2}):(\d{2})$/);` (colon only)
+          - NEW: `const m = s.match(/^(\d{1,2})[.:](\d{2})$/);` (dot or colon)
+          
+          Test file: /app/backend_test_parsewita_hotfix.py
+          All 8 tests passed (100%). Hotfix verified and working correctly.
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 3
+  test_sequence: 4
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Absensi Report Excel Multi-Sheet Export (7 sheets)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -11666,3 +11778,183 @@ agent_communication:
       - ✅ All backend tests passed - NO FIXES NEEDED
       - Please summarize and finish the task
       - YOU MUST ASK USER BEFORE DOING FRONTEND TESTING
+
+  - agent: "user"
+    message: |
+      Quick re-verify **Jam Kerja Diakui** logic pada Excel export Absensi. Patch sudah ada di `/app/lib/modules/absensi/service.js` (helper `deriveDiakui`). User ingin memastikan 4 contoh berikut cocok exact:
+      
+      Seed 4 record baru untuk cindy (username 'cindy'), delete dulu bila ada duplicate id/date:
+      - V1: date 2026-09-01, shift apotek_pagi (07:00-15:00), check-in 09:14, check-out 17:55, late 134m, worked 521m
+        Expected: Aktual 8.68h (8j41m), Diakui 5.77h (5j46m)
+      - V2: date 2026-09-02, shift apotek_pagi (07:00-15:00), check-in 15:35, check-out 22:02, late 515m, worked 387m
+        Expected: Aktual 6.45h (6j27m), Diakui 0.00h (0m)
+      - V3: date 2026-09-03, shift apotek_pagi (07:00-15:00), check-in 07:09, check-out 15:19, late 9m, worked 490m
+
+agent_communication:
+  - agent: "user"
+    message: |
+      Hotfix verification — bug `parseWitaHM` sebelumnya cuma menerima colon `":"` padahal backend `witaClock()` pakai locale id-ID yang emit titik `"."`. Sudah diperbaiki dengan regex `^(\d{1,2})[.:](\d{2})$`.
+
+      **File changed:** `/app/lib/modules/absensi/service.js` (helper `parseWitaHM` di dalam export path).
+
+      **Seed 4 record dengan format titik seperti data production:**
+      - W1 (09.14→17.55): Aktual **8.68**, Diakui **5.77**
+      - W2 (15.35→22.02): Aktual **6.45**, Diakui **0.00**
+      - W3 (07.09→15.19): Aktual **8.17**, Diakui **7.85**
+      - W4 sore (15.10→22.03): Aktual **6.88**, Diakui **6.83**
+
+      Sheet **Rekapitulasi** Cindy: Total Kerja Diakui = **20.45h** (±0.05).
+
+      **Regression**: repeat test using `":"` separator — logic harus tetap berfungsi (backward compat).
+
+  - agent: "testing"
+    message: |
+      ✅ HOTFIX VERIFICATION COMPLETE - parseWitaHM FULLY WORKING (8/8 tests passed, 100%).
+      
+      **HOTFIX TESTED:** parseWitaHM regex updated to accept both dot "." and colon ":" separators (line 968 in service.js).
+      
+      **TEST SUMMARY:**
+      - ✅ TEST 1: Login as owner - WORKING
+      - ✅ TEST 2: Get Cindy's user_id - WORKING
+      - ✅ TEST 3: Seed 4 records with DOT format (W1-W4) - WORKING
+      - ✅ TEST 4: Export Excel report - WORKING
+      - ✅ TEST 5: Verify Jam Kerja sheet (DOT format) - ALL 4 RECORDS MATCH EXPECTED VALUES
+      - ✅ TEST 6: Verify Rekapitulasi sheet - TOTAL 20.45h CORRECT
+      - ✅ TEST 7: Regression test (COLON format) - BACKWARD COMPATIBILITY VERIFIED
+      - ✅ TEST 8: Cleanup - WORKING
+      
+      **KEY FINDINGS:**
+      - DOT format (production): All 4 records parsed correctly
+        * W1 (09.14→17.55): Aktual 8.68h, Diakui 5.77h ✓
+        * W2 (15.35→22.02): Aktual 6.45h, Diakui 0.00h ✓
+        * W3 (07.09→15.19): Aktual 8.17h, Diakui 7.85h ✓
+        * W4 (15.10→22.03): Aktual 6.88h, Diakui 6.83h ✓
+      - Rekapitulasi: Total Jam Diakui = 20.45h (5.77 + 0.00 + 7.85 + 6.83) ✓
+      - COLON format (historical): Backward compatibility verified
+        * W_COLON (09:14→17:55): Aktual 8.68h, Diakui 5.77h ✓
+        * Same calculation as W1 (DOT format) - identical results ✓
+      
+      **VERIFICATION:**
+      - Regex: `^(\d{1,2})[.:](\d{2})$` accepts both dot and colon
+      - Production data (witaClock() id-ID locale emits dot) now parsed correctly
+      - Historical data (manual entries with colon) still works
+      - All calculations match expected values within ±0.02 tolerance
+      - Both formats produce identical results for same timestamps
+      
+      **CONCLUSION:**
+      The parseWitaHM hotfix is FULLY WORKING. The regex change resolves the bug where production data with DOT separator was not being parsed correctly. Backward compatibility with COLON format maintained.
+      
+      Test file: /app/backend_test_parsewita_hotfix.py
+      All 8 tests passed (100%). Hotfix verified and working correctly.
+
+        Expected: Aktual 8.17h (8j10m), Diakui 7.85h (7j51m)
+      - V4: date 2026-09-04, shift apotek_sore (15:00-22:00), check-in 15:10, check-out 22:03, late 10m, worked 413m
+        Expected: Aktual 6.88h (6j53m), Diakui 6.83h (6j50m)
+      
+      Sheet **Jam Kerja** — verify tiap baris (nilai jam desimal, toleransi ±0.02).
+      Sheet **Rekapitulasi** row untuk Cindy: Total Kerja Diakui = 5.77 + 0 + 7.85 + 6.83 = **20.45** (±0.05).
+      
+      Cleanup: hapus V1-V4 setelah test. Jangan sentuh module lain.
+
+  - agent: "testing"
+    message: |
+      ✅ QUICK RE-VERIFICATION COMPLETE - Jam Kerja Diakui logic FULLY WORKING (7/7 tests passed, 100%).
+      
+      **TEST SCOPE:** Quick re-verification of `deriveDiakui()` helper function with 4 specific edge cases
+      **TEST FILE:** /app/backend_test_jam_diakui.py
+      **TEST METHOD:** Python requests + openpyxl + MongoDB seeding
+      **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+      **TEST DATE:** 2026-09-01 to 2026-09-04
+      **CREDENTIALS:** owner / owner123
+      
+      **TEST RESULTS:**
+      
+      ✅ TEST 1: LOGIN AS OWNER (1/1 passed)
+         - POST /api/auth/login → 200 with token ✓
+      
+      ✅ TEST 2: GET CINDY'S USER_ID (1/1 passed)
+         - GET /api/employees → 200 ✓
+         - Found Cindy (id: 85dec2f1-3413-45cf-a4fc-f38963f2949d, name: Cindy) ✓
+      
+      ✅ TEST 3: SEED 4 TEST RECORDS VIA MONGODB (1/1 passed)
+         - Seeded V1-V4 for Cindy via mongosh ✓
+         - MongoDB output: "Inserted 4 records" ✓
+      
+      ✅ TEST 4: EXPORT EXCEL REPORT (1/1 passed)
+         - GET /api/absensi/report/export?from=2026-09-01&to=2026-09-04 → 200 ✓
+         - File size: 32,135 bytes ✓
+      
+      ✅ TEST 5: VERIFY JAM KERJA SHEET (4/4 passed)
+         - Sheet 'Jam Kerja' found ✓
+         - Found all 4 rows (V1-V4) ✓
+         - V1 (2026-09-01): Aktual=8.68h (exp 8.68), Diakui=5.77h (exp 5.77) ✓
+         - V2 (2026-09-02): Aktual=6.45h (exp 6.45), Diakui=0.00h (exp 0.00) ✓
+         - V3 (2026-09-03): Aktual=8.17h (exp 8.17), Diakui=7.85h (exp 7.85) ✓
+         - V4 (2026-09-04): Aktual=6.88h (exp 6.88), Diakui=6.83h (exp 6.83) ✓
+         - **CRITICAL SUCCESS:** All 4 records match expected values within ±0.02 tolerance ✓
+      
+      ✅ TEST 6: VERIFY REKAPITULASI SHEET (1/1 passed)
+         - Sheet 'Rekapitulasi' found ✓
+         - Cindy's row found ✓
+         - Total Jam Diakui: 20.45h (expected 20.45h, tolerance ±0.05) ✓
+         - **CRITICAL SUCCESS:** Total = 5.77 + 0.00 + 7.85 + 6.83 = 20.45h ✓
+      
+      ✅ TEST 7: CLEANUP (1/1 passed)
+         - Deleted V1-V4 via mongosh ✓
+      
+      **VERIFICATION DETAILS:**
+      
+      1. **V1 (2026-09-01) - Late arrival, worked past shift end:**
+         - Shift: apotek_pagi 07:00-15:00 (420-900 mins)
+         - Check-in: 09:14 (554 mins), Check-out: 17:55 (1075 mins)
+         - Aktual: 1075 - 554 = 521 mins = 8.68h ✓
+         - Diakui: max(0, min(1075, 900) - max(554, 420)) = 900 - 554 = 346 mins = 5.77h ✓
+         - **LOGIC VERIFIED:** Late arrival (09:14 > 07:00) → Diakui starts at 09:14, not 07:00 ✓
+      
+      2. **V2 (2026-09-02) - Arrived after shift ended:**
+         - Shift: apotek_pagi 07:00-15:00 (420-900 mins)
+         - Check-in: 15:35 (935 mins), Check-out: 22:02 (1322 mins)
+         - Aktual: 1322 - 935 = 387 mins = 6.45h ✓
+         - Diakui: max(0, min(1322, 900) - max(935, 420)) = 900 - 935 = -35 → 0 mins = 0.00h ✓
+         - **LOGIC VERIFIED:** Check-in after shift end (15:35 > 15:00) → NO overlap → Diakui = 0h ✓
+      
+      3. **V3 (2026-09-03) - Slightly late, left slightly after shift:**
+         - Shift: apotek_pagi 07:00-15:00 (420-900 mins)
+         - Check-in: 07:09 (429 mins), Check-out: 15:19 (919 mins)
+         - Aktual: 919 - 429 = 490 mins = 8.17h ✓
+         - Diakui: max(0, min(919, 900) - max(429, 420)) = 900 - 429 = 471 mins = 7.85h ✓
+         - **LOGIC VERIFIED:** Overlap 07:09-15:00 = 471 mins = 7.85h ✓
+      
+      4. **V4 (2026-09-04) - Sore shift, slightly late:**
+         - Shift: apotek_sore 15:00-22:00 (900-1320 mins)
+         - Check-in: 15:10 (910 mins), Check-out: 22:03 (1323 mins)
+         - Aktual: 1323 - 910 = 413 mins = 6.88h ✓
+         - Diakui: max(0, min(1323, 1320) - max(910, 900)) = 1320 - 910 = 410 mins = 6.83h ✓
+         - **LOGIC VERIFIED:** Overlap 15:10-22:00 = 410 mins = 6.83h ✓
+      
+      5. **Rekapitulasi Total (VERIFIED):**
+         - Formula: Total Jam Diakui = sum of all Kerja Diakui for Cindy
+         - Calculation: 5.77 + 0.00 + 7.85 + 6.83 = 20.45h ✓
+         - Excel value: 20.45h (within ±0.05 tolerance) ✓
+      
+      **CRITICAL SUCCESS CRITERIA (ALL MET):**
+      ✅ V1: Aktual 8.68h, Diakui 5.77h (late arrival → Diakui starts at check-in time)
+      ✅ V2: Aktual 6.45h, Diakui 0.00h (arrived after shift ended → NO overlap)
+      ✅ V3: Aktual 8.17h, Diakui 7.85h (slightly late → Diakui = overlap 07:09-15:00)
+      ✅ V4: Aktual 6.88h, Diakui 6.83h (sore shift, slightly late → Diakui = overlap 15:10-22:00)
+      ✅ Rekapitulasi: Total Jam Diakui = 20.45h (sum of 4 records)
+      ✅ All values within tolerance (±0.02 for per-record, ±0.05 for total)
+      ✅ Cleanup successful (V1-V4 deleted)
+      
+      **CONCLUSION:**
+      The `deriveDiakui()` helper function is FULLY WORKING. All 4 edge cases verified:
+      1. Late arrival → Diakui starts at actual check-in time (not shift start)
+      2. Arrived after shift ended → NO overlap → Diakui = 0h
+      3. Slightly late + left after shift → Diakui = overlap with shift normal time
+      4. Sore shift, slightly late → Diakui = overlap with shift normal time
+      
+      Rekapitulasi total correct: 5.77 + 0.00 + 7.85 + 6.83 = 20.45h.
+      
+      Test file: /app/backend_test_jam_diakui.py
+      All 7 tests passed (100%). Quick re-verification complete.
+
