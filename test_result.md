@@ -10908,6 +10908,190 @@ user_problem_statement: |
      Potensi/Status/Mulai/Selesai/Durasi/Alasan/Approver Lembur, Foto Lembur).
 
 backend:
+  - task: "Absensi Report Excel Multi-Sheet Export (7 sheets)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/absensi/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          REWRITE — GET /api/absensi/report/export now produces multi-sheet workbook:
+          Changed from single-sheet Excel to 7-sheet workbook in exact order:
+          1. Rekapitulasi (per-staff summary: work hours, SO hours, OT hours, total)
+          2. Identitas (date, name, role, shift, schedule)
+          3. Absensi (date, name, shift, schedule, check-in/out, status, late minutes)
+          4. Jam Kerja (date, name, normal/actual/diakui hours)
+          5. Stock Opname (only so_selected=true records, effective SO time range)
+          6. Lembur (only overtime_requested=true, Diakui=0 for rejected/pending)
+          7. Verifikasi (GPS + photo status for check-in/out)
+          
+          All sheets reuse same filtered data source. Calculations:
+          - Rekapitulasi: Work = worked_minutes - approved_OT, SO = subset of work, OT = approved only, Total = Work + OT
+          - Jam Kerja: Normal = shift duration, Aktual = timestamp diff, Diakui = worked_minutes
+          - Lembur: Diakui = overtime_minutes only if status='approved', else 0
+          - Verifikasi: GPS status = 'Valid' if distance_m <= radius_m (default 50m)
+          
+          Filter params unchanged: from, to, user_id, shift_key, status.
+          JSON report endpoint (/api/absensi/report) unchanged.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 12 TESTS PASSED (100%) - Absensi Excel Multi-Sheet Export FULLY WORKING.
+          
+          **TEST ENVIRONMENT:**
+          - URL: https://absensi-foundation.preview.emergentagent.com
+          - Test date: 2026-08-27
+          - Credentials: owner/owner123
+          - Test file: /app/backend_test_absensi_excel_multisheet.py
+          - Test data: 3 records for Cindy (T1, T2, T3) covering 2026-08-20 to 2026-08-22
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: XLSX BINARY RESPONSE (3/3 passed)
+             - GET /api/absensi/report/export?from=2026-08-01&to=2026-08-31 → 200 ✓
+             - Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet ✓
+             - File size: 31,004 bytes ✓
+          
+          ✅ TEST 2: SHEET ORDER AND NAMES (1/1 passed)
+             - Sheet names: ['Rekapitulasi', 'Identitas', 'Absensi', 'Jam Kerja', 'Stock Opname', 'Lembur', 'Verifikasi'] ✓
+             - All 7 sheets present in exact order as specified ✓
+          
+          ✅ TEST 3: REKAPITULASI SHEET (6/6 passed)
+             - Header: ['Nama Staff', 'Total Jam Kerja Diakui (jam)', 'Total Jam SO Diakui (jam)', 'Total Jam Lembur Diakui (jam)', 'Total Jam Diakui (jam)'] ✓
+             - Cindy's row: ['Cindy', 23, 8, 2, 25] ✓
+             - Work hours: 23h (T1: 8h + T2: 8h + T3: 7h) ✓
+             - SO hours: 8h (T2 only) ✓
+             - OT hours: 2h (T3 approved: 120 mins) ✓
+             - Total hours: 25h (work + OT = 23 + 2) ✓
+             - Sum equation verified: Total ≈ Work + OT ✓
+          
+          ✅ TEST 4: IDENTITAS SHEET (2/2 passed)
+             - Header: ['Tanggal', 'Nama Staff', 'Role/Bagian', 'Shift', 'Jadwal Shift'] ✓
+             - Row count: 3 (T1, T2, T3) ✓
+          
+          ✅ TEST 5: ABSENSI SHEET (3/3 passed)
+             - Header: ['Tanggal', 'Nama Staff', 'Shift', 'Jadwal Shift', 'Jam Masuk', 'Jam Keluar', 'Status Kehadiran', 'Menit Terlambat'] ✓
+             - T1 status: 'Terlambat' (late_minutes=60) ✓
+             - T2 status: 'Tepat Waktu' (late_minutes=0) ✓
+          
+          ✅ TEST 6: JAM KERJA SHEET (4/4 passed)
+             - Header: ['Tanggal', 'Nama Staff', 'Jam Kerja Normal (jam)', 'Jam Kerja Aktual (jam)', 'Jam Kerja Diakui (jam)'] ✓
+             - T1 Normal: 8h (shift duration: 15:00 - 07:00) ✓
+             - T1 Aktual: 8h (calculated from timestamps) ✓
+             - T1 Diakui: 8h (worked_minutes=480) ✓
+          
+          ✅ TEST 7: STOCK OPNAME SHEET (4/4 passed)
+             - Header: ['Tanggal', 'Nama Staff', 'Shift', 'Status SO', 'Jam Masuk SO', 'Jam Kerja Efektif SO', 'Jam SO Diakui (jam)'] ✓
+             - Row count: 1 (only T2 with so_selected=true) ✓
+             - T2 Status SO: 'Ya' ✓
+             - T2 Efektif SO: '14:00-22:00' (check-in to check-out) ✓
+          
+          ✅ TEST 8: LEMBUR SHEET (4/4 passed)
+             - Header: ['Tanggal', 'Nama Staff', 'Shift', 'Jam Selesai Shift', 'Jam Mulai Lembur', 'Jam Selesai Lembur', 'Potensi Lembur (jam)', 'Alasan', 'Status Approval', 'Approver', 'Jam Lembur Diakui (jam)'] (11 columns) ✓
+             - Row count: 1 (only T3 with approved OT) ✓
+             - T3 Alasan: 'tutup toko' ✓
+             - T3 Status: 'approved' ✓
+             - T3 Diakui: 2h (120 mins approved) ✓
+          
+          ✅ TEST 9: VERIFIKASI SHEET (3/3 passed)
+             - Header includes: 'Status Foto Masuk', 'Latitude Masuk', 'Longitude Masuk', 'Jarak Masuk (m)', 'Radius Masuk (m)', 'Status GPS Masuk', 'Status Foto Keluar', 'Latitude Keluar', 'Longitude Keluar', 'Jarak Keluar (m)', 'Radius Keluar (m)', 'Status GPS Keluar' ✓
+             - T1 GPS In: 'Valid' (distance=20m <= radius=50m) ✓
+             - T1 GPS Out: 'Valid' (distance=25m <= radius=50m) ✓
+          
+          ✅ TEST 10: FILTER CONSISTENCY (5/5 passed)
+             - GET with user_id=fake-user-id-12345 → 200 ✓
+             - All 7 sheets still exist (empty data) ✓
+             - Rekap: 1 row (header only) ✓
+             - Identitas: 1 row (header only) ✓
+             - SO/Lembur: 2 rows (header + placeholder '-') ✓
+          
+          ✅ TEST 11: REGRESSION - JSON REPORT (3/3 passed)
+             - GET /api/absensi/report → 200 ✓
+             - Response has: items, filter, total, location fields ✓
+             - Items count: 3 (T1, T2, T3) ✓
+          
+          ✅ TEST 12: LEMBUR REJECTED/PENDING (4/4 passed)
+             - Added T4 (rejected) and T5 (pending) records ✓
+             - Lembur sheet now has 3 rows (T3 approved, T4 rejected, T5 pending) ✓
+             - T4 (rejected) Diakui: 0 (overtime_status='rejected' → Diakui=0) ✓
+             - T5 (pending) Diakui: 0 (overtime_status='pending' → Diakui=0) ✓
+             - T3 (approved) Diakui: 2h (only approved OT counted) ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Sheet Order (VERIFIED):**
+             - Workbook contains exactly 7 sheets in specified order
+             - Sheet names match exactly: Rekapitulasi, Identitas, Absensi, Jam Kerja, Stock Opname, Lembur, Verifikasi
+          
+          2. **Rekapitulasi Calculations (VERIFIED):**
+             - Work hours = SUM(worked_minutes - approved_OT) / 60
+             - SO hours = SUM(worked_minutes for so_selected=true) / 60
+             - OT hours = SUM(overtime_minutes for status='approved') / 60
+             - Total hours = Work + OT (SO is subset of Work, not added separately)
+             - All calculations match expected values with <0.5h tolerance
+          
+          3. **Identitas Sheet (VERIFIED):**
+             - Contains all records in filter (3 records)
+             - Header includes: Tanggal, Nama Staff, Role/Bagian, Shift, Jadwal Shift
+          
+          4. **Absensi Sheet (VERIFIED):**
+             - Status text correct: 'Terlambat' for late_minutes > 0, 'Tepat Waktu' for late_minutes <= 0
+             - All required columns present
+          
+          5. **Jam Kerja Sheet (VERIFIED):**
+             - Normal = shift_end_mins - shift_start_mins (in hours)
+             - Aktual = (actual_check_out - actual_check_in) in hours
+             - Diakui = worked_minutes / 60
+             - All calculations correct
+          
+          6. **Stock Opname Sheet (VERIFIED):**
+             - Only records with so_selected=true appear
+             - Efektif SO shows time range: so_effective_start_mins to actual_check_out_wita
+             - T2 (SO record) shows '14:00-22:00' correctly
+          
+          7. **Lembur Sheet (VERIFIED):**
+             - Includes all records with overtime_requested=true OR overtime_minutes > 0
+             - Diakui column = overtime_minutes only if status='approved', else 0
+             - Rejected and pending OT show Diakui=0 as expected
+             - Approved OT shows correct Diakui value (2h for T3)
+          
+          8. **Verifikasi Sheet (VERIFIED):**
+             - GPS status = 'Valid' when distance_m <= radius_m (default 50m)
+             - T1 check-in: distance=20m <= 50m → 'Valid'
+             - T1 check-out: distance=25m <= 50m → 'Valid'
+             - All GPS and photo columns present
+          
+          9. **Filter Consistency (VERIFIED):**
+             - Empty filter (no matching records) still produces all 7 sheets
+             - Rekap and Identitas have header-only (no data rows)
+             - SO and Lembur have placeholder row with '-' values
+          
+          10. **Regression (VERIFIED):**
+              - JSON report endpoint unchanged (GET /api/absensi/report)
+              - Returns same structure: items, filter, total, location
+              - No breaking changes to existing endpoints
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ 7 sheets in exact order: Rekapitulasi, Identitas, Absensi, Jam Kerja, Stock Opname, Lembur, Verifikasi
+          ✅ All sheet headers match specification
+          ✅ Rekapitulasi calculations correct (work, SO, OT, total)
+          ✅ Jam Kerja calculations correct (normal, actual, diakui)
+          ✅ Stock Opname only shows so_selected=true records
+          ✅ Lembur Diakui=0 for rejected/pending, >0 only for approved
+          ✅ Verifikasi GPS status validation working (Valid when distance <= radius)
+          ✅ Filter consistency: empty filter produces all sheets with headers
+          ✅ JSON report endpoint unchanged (regression test passed)
+          
+          **CONCLUSION:**
+          The Absensi Report Excel Multi-Sheet Export rewrite is FULLY WORKING. All 7 sheets are generated in the correct order with accurate headers and data. Calculations for Rekapitulasi, Jam Kerja, and Lembur are correct. Stock Opname and Lembur sheets correctly filter records. Verifikasi GPS validation working. Zero regressions in JSON report endpoint.
+          
+          Test file: /app/backend_test_absensi_excel_multisheet.py
+          All 12 tests passed (100%). Task marked as working=true, needs_retesting=false.
+
   - task: "Absensi Lembur Submit + SO Mode + Check-out Rewrite + Excel Export"
     implemented: true
     working: true
@@ -11209,7 +11393,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Absensi Lembur Submit + SO Mode + Check-out Rewrite + Excel Export"
+    - "Absensi Report Excel Multi-Sheet Export (7 sheets)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -11217,98 +11401,62 @@ test_plan:
 agent_communication:
   - agent: "main"
     message: |
-      Please test the new endpoints & behavior changes for Absensi Lembur + SO Mode.
-      Cindy / cindy123 (staff) and owner / owner123 (owner) are available.
-
-      1) SETTINGS
-         - Login as owner. GET /api/absensi/settings → assert defaults include
-           overtime_request_threshold_min=15 and so_mode_enabled=false (may be
-           overridden if previously set).
-         - PUT /api/absensi/settings body {so_mode_enabled: true, overtime_request_threshold_min: 15}.
-           Expect 200.
-         - Staff GET /api/absensi/today should now include settings.so_mode_enabled=true
-           and settings.overtime_request_threshold_min=15.
-
-      2) SO MODE + SHIFT SORE (effective check-in = actual)
-         - Login as cindy. Ensure no absensi_records for today (delete via mongo if
-           needed). Then POST /api/absensi/check-in with so_selected=true and
-           shift_key='apotek_sore'. Provide qr_value (owner GET /api/absensi/qr),
-           lat/lng from settings.location, photo_data_url (small webp).
-         - Assert: record.so_selected=true, effective_check_in_mins == nowMins
-           (WITA), so_effective_start_mins == effective_check_in_mins. (This test
-           will only be meaningful if run before sore shift start — otherwise
-           the effective mins equals now which is >= shift_start anyway.)
-         - Repeat with shift_key='apotek_pagi' + so_selected=true. Assert
-           so_selected=true BUT effective_check_in_mins == max(now, shift_start)
-           (i.e., no early credit for pagi + SO).
-
-      3) LEMBUR SUBMIT
-         - Before check-in: POST /api/absensi/lembur/submit body {reason:"x"} →
-           expect 400 "belum absen masuk hari ini".
-         - Reset & check-in (any shift) as cindy. Then immediately
-           POST /api/absensi/lembur/submit → expect 400 with message
-           "Pengajuan lembur baru boleh dikirim ..." (because now < shift_end + 15).
-         - Manually update the record so shift_end_mins is set to nowMins - 20
-           (via direct mongo). Then POST /api/absensi/lembur/submit body
-           {reason:"stock opname"} → expect 200, record.overtime_requested=true,
-           overtime_status='pending', overtime_reason='stock opname'.
-         - POST again → expect 400 "sudah dikirim".
-         - Reason < 3 chars → expect 400 "wajib diisi".
-
-      4) LEMBUR PHOTO
-         - Submit lembur with tiny photo_data_url (small webp base64). Then
-           GET /api/absensi/lembur/<rec.id>/photo as owner → 200 image bytes.
-         - GET same as different staff (create dummy) → 403.
-
-      5) CHECK-OUT NEW BEHAVIOR
-         - Fresh cindy record without overtime_requested → check-out past shift_end
-           → assert overtime_status='none', overtime_minutes=0, overtime_raw_minutes>0.
-         - Another fresh cindy record with overtime_requested=true (submit lembur
-           first) → check-out past shift_end → assert overtime_status='pending',
-           overtime_minutes = raw (>=30) or 0 if under threshold.
-
-      6) OWNER OVERTIME LIST & APPROVE/REJECT
-         - GET /api/absensi/overtime?status=pending → items include the requested
-           record.
-         - POST /api/absensi/overtime/<id>/reject → assert overtime_status='rejected',
-           overtime_minutes=0 (verify with GET again).
-         - Submit new lembur & approve → overtime_status='approved',
-           overtime_minutes preserved.
-
-      7) EXPORT EXCEL
-         - GET /api/absensi/report?format=xlsx (as owner) → downloadable xlsx.
-           Verify header row contains 'Mode SO', 'Jam Absen Masuk SO',
-           'Jam Kerja Efektif SO', 'Alasan Lembur', 'Approver', 'Foto Lembur'.
-
-      8) REGRESSION
-         - Points/leaderboard, points/history, points/trend endpoints unchanged.
-         - QR gate on check-in & check-out still rejects missing/invalid QR.
-         - OMS, Cycle Count, MIS Faktur endpoints NOT touched.
-
+      Test the rewritten Absensi Excel export — now produces a multi-sheet workbook.
+      
+      **File changed:** `/app/lib/modules/absensi/service.js` — the `GET /api/absensi/report/export` (and `subPath === 'report/export'`) branch now emits 7 sheets in order: **Rekapitulasi, Identitas, Absensi, Jam Kerja, Stock Opname, Lembur, Verifikasi**.
+      
+      **Setup**: Login as owner (owner/owner123). Seed test records for Cindy (T1, T2, T3) covering 2026-08-20 to 2026-08-22.
+      
+      **Tests (parse .xlsx with openpyxl):**
+      1. GET /api/absensi/report/export?from=2026-08-01&to=2026-08-31 as owner → HTTP 200 with content-type xlsx
+      2. Sheet order + names: exactly ['Rekapitulasi','Identitas','Absensi','Jam Kerja','Stock Opname','Lembur','Verifikasi']
+      3. Rekapitulasi: verify header, Cindy's row calculations (work, SO, OT, total hours)
+      4. Identitas: verify header, row count matches records
+      5. Absensi: verify header, status text (Terlambat, Tepat Waktu)
+      6. Jam Kerja: verify header, calculations (Normal, Aktual, Diakui)
+      7. Stock Opname: verify header, only SO records, effective SO time range
+      8. Lembur: verify header, only requested OT, Diakui=0 for rejected/pending
+      9. Verifikasi: verify header, GPS status validation (Valid when distance <= radius)
+      10. Filter consistency: with user_id filter, all sheets exist but empty
+      11. Regression: JSON report endpoint unchanged
+      12. Add rejected/pending OT records, verify Diakui=0
+      
+      **Do NOT touch**: OMS, Cycle Count, MIS Faktur endpoints.
 
   - agent: "testing"
     message: |
-      ✅ BACKEND TESTING COMPLETE - All 8 sections tested successfully.
+      ✅ BACKEND TESTING COMPLETE - Absensi Excel Multi-Sheet Export FULLY WORKING (12/12 tests passed, 100%).
       
       **SUMMARY:**
-      - ✅ Section 1: Settings (overtime_request_threshold_min, so_mode_enabled) - WORKING
-      - ✅ Section 2: SO Mode + Shift Sore (effective check-in = actual) - WORKING
-      - ✅ Section 3: Lembur Submit (validations, threshold, photo) - WORKING
-      - ✅ Section 4: Lembur Photo (upload, retrieval, access control) - WORKING
-      - ✅ Section 5: Check-out new behavior (overtime_status based on overtime_requested) - WORKING
-      - ✅ Section 6: Owner overtime list & approve/reject - WORKING
-      - ✅ Section 7: Excel export (new SO + Lembur columns) - WORKING
-      - ✅ Section 8: Regression (points, QR gate, other modules) - WORKING
+      - ✅ TEST 1: XLSX binary response (200, correct content-type, 31KB file) - WORKING
+      - ✅ TEST 2: Sheet order and names (7 sheets in exact order) - WORKING
+      - ✅ TEST 3: Rekapitulasi sheet (headers, calculations: 23h work, 8h SO, 2h OT, 25h total) - WORKING
+      - ✅ TEST 4: Identitas sheet (headers, 3 rows) - WORKING
+      - ✅ TEST 5: Absensi sheet (headers, status text: Terlambat, Tepat Waktu) - WORKING
+      - ✅ TEST 6: Jam Kerja sheet (headers, calculations: Normal=8h, Aktual=8h, Diakui=8h) - WORKING
+      - ✅ TEST 7: Stock Opname sheet (headers, 1 SO record, effective time 14:00-22:00) - WORKING
+      - ✅ TEST 8: Lembur sheet (headers, 1 approved OT, Diakui=2h) - WORKING
+      - ✅ TEST 9: Verifikasi sheet (headers, GPS status Valid for distance <= radius) - WORKING
+      - ✅ TEST 10: Filter consistency (empty filter produces all 7 sheets with headers) - WORKING
+      - ✅ TEST 11: Regression (JSON report endpoint unchanged) - WORKING
+      - ✅ TEST 12: Lembur rejected/pending (Diakui=0 for non-approved OT) - WORKING
       
       **KEY FINDINGS:**
-      - All critical functionality verified and working correctly
-      - Zero breaking changes to existing endpoints
-      - All new fields and endpoints behave as specified
-      - Excel export includes all required columns
-      - Access control working correctly (owner vs staff)
+      - All 7 sheets generated in correct order with accurate headers and data
+      - Rekapitulasi calculations correct: Work = worked_minutes - approved_OT, SO = subset of work, OT = approved only, Total = Work + OT
+      - Jam Kerja calculations correct: Normal = shift duration, Aktual = timestamp diff, Diakui = worked_minutes
+      - Stock Opname correctly filters so_selected=true records and shows effective time range
+      - Lembur correctly shows Diakui=0 for rejected/pending, >0 only for approved
+      - Verifikasi GPS validation working: Valid when distance_m <= radius_m (50m default)
+      - Filter consistency: empty filter produces all sheets with headers (no data rows)
+      - Zero regressions: JSON report endpoint unchanged
       
-      **MINOR NOTE:**
-      - One test timing constraint: At 20:11 WITA, apotek_pagi shift (07:00-15:00) ended 5 hours ago, so couldn't verify the "baru boleh dikirim X menit lagi" rejection message. However, the threshold logic code (lines 787-792) is correct and the validation works when threshold is not yet met (verified by MongoDB manipulation test).
+      **VERIFICATION:**
+      - Test file: /app/backend_test_absensi_excel_multisheet.py
+      - Test data: 3 records (T1, T2, T3) + 2 additional (T4 rejected, T5 pending) for OT test
+      - All calculations verified with <0.5h tolerance
+      - All sheet headers match specification exactly
+      - GPS status validation: 20m, 25m distances <= 50m radius → Valid
       
       **ACTION ITEMS FOR MAIN AGENT:**
       - ✅ All backend tests passed - NO FIXES NEEDED
