@@ -11462,3 +11462,207 @@ agent_communication:
       - ✅ All backend tests passed - NO FIXES NEEDED
       - Please summarize and finish the task
       - YOU MUST ASK USER BEFORE DOING FRONTEND TESTING
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ PATCH VERIFIED (9/9 tests passed, 100%) - Jam Kerja Diakui logic patch FULLY WORKING.
+          
+          **PATCH TESTED:** New `deriveDiakui()` helper function introduced in `/app/lib/modules/absensi/service.js` (lines 968-991).
+          
+          **PATCH SUMMARY:**
+          Changed Jam Kerja Diakui calculation from simple `worked_minutes` to intersection-based logic:
+          - **Kerja Diakui (mnt)** = `max(0, min(out, shiftEnd) − max(in, shiftStart))` (intersection of actual ∩ shift normal)
+          - **SO Diakui (mnt)** = only if `so_selected=true` AND `in < shiftStart`: `max(0, min(out, shiftStart) − in)` (early arrival portion)
+          - **Lembur Diakui (mnt)** = `overtime_status === 'approved' ? overtime_minutes : 0`
+          - **Total Diakui** = Kerja + SO + Lembur (no double count)
+          
+          **TEST ENVIRONMENT:**
+          - URL: https://absensi-foundation.preview.emergentagent.com
+          - Test date: 2026-08-27
+          - Credentials: owner/owner123
+          - Test file: /app/backend_test_absensi_diakui_patch.py
+          - Test data: 7 records for Cindy (C1-C7) covering 2026-08-19 to 2026-08-25
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: LOGIN AS OWNER (1/1 passed)
+             - POST /api/auth/login → 200 with token ✓
+          
+          ✅ TEST 2: EXCEL EXPORT ENDPOINT (2/2 passed)
+             - GET /api/absensi/report/export?from=2026-08-19&to=2026-08-25 → 200 ✓
+             - Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet ✓
+             - File size: 36,595 bytes ✓
+          
+          ✅ TEST 3: SHEET ORDER (1/1 passed)
+             - Sheet names: ['Rekapitulasi', 'Identitas', 'Absensi', 'Jam Kerja', 'Stock Opname', 'Lembur', 'Verifikasi'] ✓
+          
+          ✅ TEST 4: JAM KERJA SHEET - PER-RECORD DIAKUI VALUES (7/7 passed)
+             - C1 (2026-08-19): Pagi 07:00-15:00, Masuk 15:35 Keluar 22:02, NO lembur
+               * Aktual: 6.45h (expected 6.45h) ✓
+               * Kerja Diakui: 0.00h (expected 0.00h) ✓ — NO overlap with shift (15:35 > 15:00)
+             - C2 (2026-08-20): Pagi 07:00-15:00, Masuk 09:14 Keluar 17:55, Lembur REJECTED
+               * Aktual: 8.68h (expected 8.68h) ✓
+               * Kerja Diakui: 5.77h (expected 5.77h) ✓ — Overlap 09:14-15:00 = 346 mins = 5.77h
+             - C3 (2026-08-21): Pagi 07:00-15:00, Masuk 07:09 Keluar 15:19, NO lembur
+               * Aktual: 8.17h (expected 8.17h) ✓
+               * Kerja Diakui: 7.85h (expected 7.85h) ✓ — Overlap 07:09-15:00 = 471 mins = 7.85h
+             - C4 (2026-08-22): Sore 15:00-22:00, Masuk 14:00 Keluar 22:00, SO mode
+               * Aktual: 8.00h (expected 8.00h) ✓
+               * Kerja Diakui: 7.00h (expected 7.00h) ✓ — Overlap 15:00-22:00 = 7h
+             - C5 (2026-08-23): Sore 15:00-22:00, Masuk 13:00 Keluar 22:00, SO mode
+               * Aktual: 9.00h (expected 9.00h) ✓
+               * Kerja Diakui: 7.00h (expected 7.00h) ✓ — Overlap 15:00-22:00 = 7h
+             - C6 (2026-08-24): Pagi 07:00-15:00, Masuk 07:00 Keluar 17:00, Lembur APPROVED (120 mnt)
+               * Aktual: 10.00h (expected 10.00h) ✓
+               * Kerja Diakui: 8.00h (expected 8.00h) ✓ — Overlap 07:00-15:00 = 8h
+             - C7 (2026-08-25): Pagi 07:00-15:00, Masuk 07:00 Keluar 17:00, Lembur REJECTED
+               * Aktual: 10.00h (expected 10.00h) ✓
+               * Kerja Diakui: 8.00h (expected 8.00h) ✓ — Overlap 07:00-15:00 = 8h
+             - **CRITICAL SUCCESS:** All per-record values match within ±0.02 tolerance ✓
+          
+          ✅ TEST 5: REKAPITULASI SHEET - TOTALS (5/5 passed)
+             - Cindy's row: ('Cindy', 43.62, 3, 2, 48.62) ✓
+             - Total Jam Kerja Diakui: 43.62h (expected 43.62h) ✓
+               * Calculation: 0 + 5.77 + 7.85 + 7.00 + 7.00 + 8.00 + 8.00 = 43.62h ✓
+             - Total Jam SO Diakui: 3.00h (expected 3.00h) ✓
+               * C4: 14:00-15:00 = 1h, C5: 13:00-15:00 = 2h, Total = 3h ✓
+             - Total Jam Lembur Diakui: 2.00h (expected 2.00h) ✓
+               * Only C6 approved (120 mins = 2h), C2 and C7 rejected = 0h ✓
+             - Total Jam Diakui: 48.62h (expected 48.62h) ✓
+               * Formula verified: 43.62 + 3.00 + 2.00 = 48.62h ✓
+             - **CRITICAL SUCCESS:** Total Diakui = Kerja + SO + Lembur (no double count) ✓
+          
+          ✅ TEST 6: STOCK OPNAME SHEET (3/3 passed)
+             - Row count: 2 (C4, C5 with so_selected=true) ✓
+             - SO Diakui values: [1.0, 2.0] hours ✓
+             - **CRITICAL SUCCESS:** SO Diakui calculated correctly for early arrivals ✓
+          
+          ✅ TEST 7: LEMBUR SHEET (4/4 passed)
+             - Row count: 3 (C2, C6, C7 with overtime_requested=true) ✓
+             - C2 (2026-08-20, rejected): Lembur Diakui = 0.00h (expected 0.00h) ✓
+             - C6 (2026-08-24, approved): Lembur Diakui = 2.00h (expected 2.00h) ✓
+             - C7 (2026-08-25, rejected): Lembur Diakui = 0.00h (expected 0.00h) ✓
+             - **CRITICAL SUCCESS:** Only approved overtime counted in Diakui ✓
+          
+          ✅ TEST 8: ABSENSI SHEET - LATE MINUTES (8/8 passed)
+             - C1 (2026-08-19): 515 minutes (expected 515) ✓
+             - C2 (2026-08-20): 134 minutes (expected 134) ✓
+             - C3 (2026-08-21): 9 minutes (expected 9) ✓
+             - C4 (2026-08-22): 0 minutes (expected 0) ✓
+             - C5 (2026-08-23): 0 minutes (expected 0) ✓
+             - C6 (2026-08-24): 0 minutes (expected 0) ✓
+             - C7 (2026-08-25): 0 minutes (expected 0) ✓
+             - All late minutes match expected values ✓
+          
+          ✅ TEST 9: REGRESSION - JSON REPORT ENDPOINT (1/1 passed)
+             - GET /api/absensi/report?from=2026-08-19&to=2026-08-25 → 200 ✓
+             - Response has: items, filter fields ✓
+             - Items count: 7 (C1-C7) ✓
+             - **CRITICAL SUCCESS:** JSON report endpoint unaffected by patch ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Kerja Diakui Calculation (VERIFIED):**
+             - Formula: `max(0, min(out, shiftEnd) − max(in, shiftStart))`
+             - C1: 15:35-22:02 vs 07:00-15:00 → NO overlap → 0h ✓
+             - C2: 09:14-17:55 vs 07:00-15:00 → Overlap 09:14-15:00 → 5.77h ✓
+             - C3: 07:09-15:19 vs 07:00-15:00 → Overlap 07:09-15:00 → 7.85h ✓
+             - C4: 14:00-22:00 vs 15:00-22:00 → Overlap 15:00-22:00 → 7h ✓
+             - C5: 13:00-22:00 vs 15:00-22:00 → Overlap 15:00-22:00 → 7h ✓
+             - C6: 07:00-17:00 vs 07:00-15:00 → Overlap 07:00-15:00 → 8h ✓
+             - C7: 07:00-17:00 vs 07:00-15:00 → Overlap 07:00-15:00 → 8h ✓
+          
+          2. **SO Diakui Calculation (VERIFIED):**
+             - Formula: `max(0, min(out, shiftStart) − in)` only if `so_selected=true` AND `in < shiftStart`
+             - C4: so_selected=true, 14:00 < 15:00 → SO Diakui = 15:00 - 14:00 = 1h ✓
+             - C5: so_selected=true, 13:00 < 15:00 → SO Diakui = 15:00 - 13:00 = 2h ✓
+             - C1-C3, C6-C7: so_selected=false → SO Diakui = 0h ✓
+          
+          3. **Lembur Diakui Calculation (VERIFIED):**
+             - Formula: `overtime_status === 'approved' ? overtime_minutes : 0`
+             - C2: overtime_status='rejected' → Lembur Diakui = 0h ✓
+             - C6: overtime_status='approved', overtime_minutes=120 → Lembur Diakui = 2h ✓
+             - C7: overtime_status='rejected' → Lembur Diakui = 0h ✓
+          
+          4. **Total Diakui Formula (VERIFIED):**
+             - Formula: Kerja + SO + Lembur (no double count)
+             - Cindy's total: 43.62 + 3.00 + 2.00 = 48.62h ✓
+             - SO is NOT double-counted (SO time is OUTSIDE shift normal time) ✓
+          
+          5. **Regression Testing (VERIFIED):**
+             - JSON report endpoint unchanged (GET /api/absensi/report) ✓
+             - All 7 sheets still generated in correct order ✓
+             - Sheet headers unchanged ✓
+             - No breaking changes to existing endpoints ✓
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Kerja Diakui = intersection of actual ∩ shift normal (not simple worked_minutes)
+          ✅ SO Diakui = early arrival time (before shift start) when so_selected=true
+          ✅ Lembur Diakui = only approved overtime counted (rejected/pending = 0)
+          ✅ Total Diakui = Kerja + SO + Lembur (no double count)
+          ✅ All 7 per-record values match expected (within ±0.02 tolerance)
+          ✅ Rekapitulasi totals correct: 43.62h Kerja + 3.00h SO + 2.00h Lembur = 48.62h Total
+          ✅ Stock Opname sheet: 2 records with correct SO Diakui (1.00h, 2.00h)
+          ✅ Lembur sheet: 3 records with correct Diakui (C2=0, C6=2.00, C7=0)
+          ✅ Absensi sheet: late minutes correct for all records
+          ✅ JSON report endpoint: no regression
+          
+          **CONCLUSION:**
+          The Jam Kerja Diakui patch is FULLY WORKING. The new `deriveDiakui()` helper function correctly calculates:
+          1. Kerja Diakui as intersection of actual time with shift normal time (not simple worked_minutes)
+          2. SO Diakui as early arrival time (before shift start) when so_selected=true
+          3. Lembur Diakui as only approved overtime (rejected/pending = 0)
+          4. Total Diakui as Kerja + SO + Lembur with no double counting
+          
+          All 7 test records (C1-C7) verified with expected values matching within ±0.02 tolerance. Rekapitulasi totals correct. Zero regressions in JSON report endpoint or other sheets.
+          
+          **KEY CHANGES FROM PREVIOUS VERSION:**
+          - OLD: Kerja Diakui = worked_minutes (simple duration)
+          - NEW: Kerja Diakui = intersection of actual ∩ shift normal (handles late arrivals and early departures correctly)
+          - Example: C1 arrived at 15:35 (after shift ended at 15:00) → OLD would count 6.45h, NEW correctly counts 0h
+          
+          Test file: /app/backend_test_absensi_diakui_patch.py
+          All 9 tests passed (100%). Patch verified and working correctly.
+
+
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE - Jam Kerja Diakui patch FULLY WORKING (9/9 tests passed, 100%).
+      
+      **PATCH SUMMARY:**
+      Tested the new `deriveDiakui()` helper function that changes Jam Kerja Diakui calculation from simple `worked_minutes` to intersection-based logic:
+      - Kerja Diakui = intersection of actual ∩ shift normal (handles late arrivals correctly)
+      - SO Diakui = early arrival time (before shift start) when so_selected=true
+      - Lembur Diakui = only approved overtime counted
+      - Total Diakui = Kerja + SO + Lembur (no double count)
+      
+      **TEST RESULTS:**
+      - ✅ TEST 1: Login as owner - WORKING
+      - ✅ TEST 2: Excel export endpoint (200, correct content-type) - WORKING
+      - ✅ TEST 3: Sheet order (7 sheets in exact order) - WORKING
+      - ✅ TEST 4: Jam Kerja sheet per-record Diakui values (7/7 records match expected) - WORKING
+      - ✅ TEST 5: Rekapitulasi totals (43.62h Kerja + 3.00h SO + 2.00h Lembur = 48.62h Total) - WORKING
+      - ✅ TEST 6: Stock Opname sheet (2 records, SO Diakui 1.00h and 2.00h) - WORKING
+      - ✅ TEST 7: Lembur sheet (3 records, Diakui: C2=0, C6=2.00, C7=0) - WORKING
+      - ✅ TEST 8: Absensi sheet late minutes (all 7 records match expected) - WORKING
+      - ✅ TEST 9: Regression - JSON report endpoint unchanged - WORKING
+      
+      **KEY FINDINGS:**
+      - All 7 per-record values match expected (within ±0.02 tolerance)
+      - Rekapitulasi totals correct: 43.62h Kerja + 3.00h SO + 2.00h Lembur = 48.62h Total
+      - Total Diakui formula verified: Kerja + SO + Lembur (no double count)
+      - Example: C1 arrived at 15:35 (after shift ended at 15:00) → Kerja Diakui correctly = 0h (no overlap)
+      - Example: C2 arrived at 09:14, left at 17:55 (shift 07:00-15:00) → Kerja Diakui = 5.77h (overlap 09:14-15:00)
+      - Example: C4 SO mode, arrived at 14:00 (shift 15:00-22:00) → Kerja Diakui = 7h, SO Diakui = 1h
+      - Zero regressions: JSON report endpoint unchanged
+      
+      **VERIFICATION:**
+      - Test file: /app/backend_test_absensi_diakui_patch.py
+      - Test data: 7 records (C1-C7) covering 2026-08-19 to 2026-08-25
+      - All calculations verified with ±0.02 tolerance
+      - All sheet headers and structure unchanged
+      
+      **ACTION ITEMS FOR MAIN AGENT:**
+      - ✅ All backend tests passed - NO FIXES NEEDED
+      - Please summarize and finish the task
+      - YOU MUST ASK USER BEFORE DOING FRONTEND TESTING
