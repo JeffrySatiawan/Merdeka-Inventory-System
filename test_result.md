@@ -10610,3 +10610,285 @@ agent_communication:
       
       Test file: /app/backend_test.py (comprehensive backend test with MongoDB cleanup)
 
+
+---
+
+user_problem_statement: |
+  Grafik Tren Ranking di Live Board Absensi: Y-axis = ranking (#1 di atas),
+  tampilkan semua staff dengan garis user login di-highlight. Reuse recharts.
+
+backend:
+  - task: "Absensi Points Trend Endpoint"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/absensi/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New endpoint GET /api/absensi/points/trend?period=YYYY-MM. Returns
+          { period_key, period_range, days: [YYYY-MM-DD...], total_users,
+            series: [{ user_id, user_name, ranks: [...], balances: [...] }] }.
+          Uses same tiebreaker as computeLeaderboard (balance desc, name asc)
+          for strict 1..N ranks — mirrors leaderboard. Public (staff + owner),
+          no rupiah_per_point. Iterates from period.from to min(today, period.to)
+          inclusive; accumulates ledger deltas per user per day and clamps
+          balance to [max_negative, max_positive] before ranking.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 10 TESTS PASSED (100%) - Absensi Points Trend endpoint FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for GET /api/absensi/points/trend endpoint
+          **TEST FILE:** /app/backend_test_absensi_trend.py
+          **TEST METHOD:** Python requests library with real API calls
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-08-26 (first day of period 2026-09)
+          **CREDENTIALS:** owner/owner123, cindy/cindy123
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: AUTH - OWNER LOGIN (1/1 passed)
+             - Login as owner/owner123 → 200 with token ✓
+             - User role: owner ✓
+          
+          ✅ TEST 2: AUTH - STAFF LOGIN (1/1 passed)
+             - Login as cindy/cindy123 → 200 with token ✓
+             - User role: staff ✓
+          
+          ✅ TEST 3: DEFAULT PERIOD CALL (NO QUERY PARAM) - OWNER (15/15 checks passed)
+             - GET /api/absensi/points/trend (no period param) → 200 ✓
+             - Response has all required keys: period_key, period_range, days, total_users, series ✓
+             - period_key: "2026-09" (matches expected current period) ✓
+             - period_range: {from: "2026-08-26", to: "2026-09-25"} ✓
+             - days array: length=1, first="2026-08-26", last="2026-08-26" ✓
+             - First day equals period_range.from ✓
+             - Last day <= period_range.to ✓
+             - total_users: 2 (non-negative integer) ✓
+             - series: array with 2 entries ✓
+             - All series entries have required keys: user_id, user_name, ranks, balances ✓
+             - All series: ranks.length == balances.length == days.length (1) ✓
+             - All ranks are integers in [1, 2] ✓
+             - No duplicate ranks within any single day (strict rank verified) ✓
+             - Sample: Cindy (user_id: 85dec2f1-...) rank=[1], balance=[100] ✓
+             - **CRITICAL SUCCESS:** Strict 1..N ranking with no duplicates per day ✓
+          
+          ✅ TEST 4: CROSS-CHECK WITH LEADERBOARD (CONSISTENCY) (3/3 checks passed)
+             - GET /api/absensi/points/leaderboard?period=2026-09 → 200 ✓
+             - Leaderboard items: 2 users ✓
+             - Leaderboard rank map: {Cindy: 1, other: 2} ✓
+             - **CRITICAL CHECK:** Last-day ranks from trend MATCH leaderboard ranks exactly ✓
+             - Cindy: trend rank=1, leaderboard rank=1 ✓
+             - Other user: trend rank=2, leaderboard rank=2 ✓
+             - **CRITICAL SUCCESS:** Trend endpoint mirrors leaderboard ranking exactly ✓
+          
+          ✅ TEST 5: EXPLICIT PERIOD PARAM (CURRENT) (2/2 checks passed)
+             - GET /api/absensi/points/trend?period=2026-09 → 200 ✓
+             - period_key: "2026-09" (matches requested period) ✓
+          
+          ✅ TEST 6: EXPLICIT PERIOD PARAM (PAST) (4/4 checks passed)
+             - GET /api/absensi/points/trend?period=2025-01 → 200 ✓
+             - period_key: "2025-01" ✓
+             - days array: length=31 (full month, likely empty ledger) ✓
+             - series: 2 entries ✓
+             - All ranks valid (integers in [1, 2]) ✓
+             - **CRITICAL SUCCESS:** Past period with empty ledger returns valid ranks (strict rank by name tiebreaker) ✓
+          
+          ✅ TEST 7: EXPLICIT PERIOD PARAM (FUTURE) (3/3 checks passed)
+             - GET /api/absensi/points/trend?period=2030-01 → 200 ✓
+             - period_key: "2030-01" ✓
+             - days array: length=0 (from > today, no days to iterate) ✓
+             - series: 2 entries (users still present, just no days) ✓
+             - **CRITICAL SUCCESS:** Future period returns safely without errors ✓
+          
+          ✅ TEST 8: STAFF ACCESS (CINDY) (3/3 checks passed)
+             - Login as cindy (staff) → 200 ✓
+             - GET /api/absensi/points/trend → 200 ✓
+             - period_key: "2026-09" ✓
+             - series: 2 entries ✓
+             - **CRITICAL SUCCESS:** Staff can access trend endpoint (not owner-only) ✓
+          
+          ✅ TEST 9: REGRESSION - LEADERBOARD ENDPOINT (5/5 checks passed)
+             - GET /api/absensi/points/leaderboard → 200 ✓
+             - Response has all expected keys: period_key, period_range, settings, items ✓
+             - settings has 'late_tiers' field ✓
+             - items: 2 entries ✓
+             - items[0] has required keys: rank, user_id, user_name, balance ✓
+             - **CRITICAL SUCCESS:** Leaderboard endpoint unchanged, no regressions ✓
+          
+          ✅ TEST 10: REGRESSION - HISTORY ENDPOINT (3/3 checks passed)
+             - GET /api/absensi/points/history?period=2026-09 → 200 ✓
+             - Response has 'items' key ✓
+             - items: 8 entries ✓
+             - **CRITICAL SUCCESS:** History endpoint unchanged, no regressions ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Auth (VERIFIED):**
+             - Both owner and staff can access the endpoint (200 OK)
+             - No 401 or 403 errors
+             - Public endpoint (staff + owner), as designed
+          
+          2. **Default Period Call (VERIFIED):**
+             - No period param defaults to current period (2026-09)
+             - Current period calculated correctly based on WITA timezone (26th cycle)
+             - Today is 2026-08-26 → period is 2026-09 (from 2026-08-26 to 2026-09-25)
+             - days array starts from period_range.from (2026-08-26)
+             - days array ends at min(today WITA, period_range.to) = 2026-08-26
+             - days array length = 1 (only today, first day of period)
+          
+          3. **Response Structure (VERIFIED):**
+             - All required keys present: period_key, period_range, days, total_users, series
+             - period_range has 'from' and 'to' fields
+             - days is array of YYYY-MM-DD strings
+             - total_users is non-negative integer (2)
+             - series is array of objects with user_id, user_name, ranks, balances
+             - ranks.length == balances.length == days.length for all users
+          
+          4. **Strict Ranking (VERIFIED):**
+             - All ranks are integers in [1, total_users]
+             - No duplicate ranks within any single day
+             - Ranks use same tiebreaker as leaderboard (balance desc, name asc)
+             - For day 2026-08-26: ranks are [1, 2] (no duplicates)
+          
+          5. **Leaderboard Consistency (VERIFIED):**
+             - Last-day ranks from trend MATCH leaderboard ranks exactly
+             - Cindy: trend rank=1, leaderboard rank=1
+             - Other user: trend rank=2, leaderboard rank=2
+             - Trend endpoint mirrors leaderboard ranking (same tiebreaker logic)
+          
+          6. **Period Params (VERIFIED):**
+             - Current period (2026-09): 200, days=1
+             - Past period (2025-01): 200, days=31 (full month)
+             - Future period (2030-01): 200, days=0 (from > today)
+             - All periods return valid responses without errors
+          
+          7. **Staff Access (VERIFIED):**
+             - Staff (cindy) can access trend endpoint
+             - Returns same data as owner (public endpoint)
+             - No rupiah_per_point exposed (as designed)
+          
+          8. **Regression Testing (VERIFIED):**
+             - GET /api/absensi/points/leaderboard still works (200)
+             - Leaderboard has all expected fields: period_key, period_range, settings, items
+             - settings.late_tiers present
+             - GET /api/absensi/points/history still works (200)
+             - History has 'items' key with 8 entries
+             - No breaking changes to existing endpoints
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Owner and staff can access (200 OK)
+          ✅ Default period call returns current period (2026-09)
+          ✅ period_range.from = 26th of previous month (2026-08-26)
+          ✅ period_range.to = 25th of current month (2026-09-25)
+          ✅ days array: first = from, last = min(today, to)
+          ✅ total_users >= 0 (2 users)
+          ✅ series[i]: ranks.length == balances.length == days.length
+          ✅ All ranks are integers in [1, total_users]
+          ✅ No duplicate ranks within any single day (strict rank)
+          ✅ Last-day ranks MATCH leaderboard ranks (consistency verified)
+          ✅ Explicit period params work (current, past, future)
+          ✅ Staff can access endpoint
+          ✅ Leaderboard endpoint unchanged (no regressions)
+          ✅ History endpoint unchanged (no regressions)
+          
+          **CONCLUSION:**
+          The Absensi Points Trend endpoint is FULLY WORKING. All requirements met:
+          1. Auth: Both owner and staff can access (200 OK)
+          2. Default period call returns correct structure with current period
+          3. Response structure verified: all required fields present
+          4. Strict 1..N ranking with no duplicates per day
+          5. Last-day ranks match leaderboard ranks exactly (consistency verified)
+          6. Explicit period params work (current, past, future)
+          7. Staff access verified
+          8. Zero regressions in leaderboard and history endpoints
+          
+          Test file: /app/backend_test_absensi_trend.py
+          All 10 tests passed (100%). Task marked as working=true, needs_retesting=false.
+
+frontend:
+  - task: "Absensi Live Board Ranking Trend Chart"
+    implemented: true
+    working: "NA"
+    file: "/app/components/modules/absensi/AbsensiModule.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Added RankingTrendChart card to PointsBoardView between amber header
+          and ranking list. Uses recharts (dynamic import) with Y-axis reversed
+          so #1 is on top. Logged-in user's line drawn thicker (3px) in amber
+          with dots; other users at 1.75px with 70% opacity. Legend chips
+          highlight the current user with "ANDA" badge. Screenshot verified
+          for cindy (#1) and hayu (#2) — matches leaderboard.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 2
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Please backend-test the new GET /api/absensi/points/trend endpoint:
+      1) Login as owner (owner/owner123) OR staff (cindy/cindy123) — both roles
+         should have access.
+      2) GET /api/absensi/points/trend?period=<current_period>. If no period
+         supplied, defaults to current period.
+      3) Assert response shape:
+         - period_key = current period like "2026-09"
+         - period_range = { from: "2026-08-26", to: "2026-09-25" }
+         - days is an array of "YYYY-MM-DD" strings, first == from, last ==
+           min(today, to) inclusive.
+         - total_users equals number of active staff (excl. owner).
+         - series is an array; each entry has { user_id, user_name, ranks,
+           balances } with ranks.length == balances.length == days.length.
+         - All ranks are integers in [1, total_users], no duplicates within a
+           single day (strict rank, matches computeLeaderboard tiebreaker).
+         - The last-day ranks in series should MATCH GET /api/absensi/points/leaderboard
+           items[].rank when compared by user_id.
+      4) Try with a future/invalid period — should still return safely.
+      5) Regression: verify GET /api/absensi/points/leaderboard still works
+         unchanged and returns same fields as before plus settings.late_tiers.
+      6) DO NOT touch OMS, Cycle Count, MIS Faktur endpoints.
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE - ALL 10 TESTS PASSED (100%)
+      
+      **Absensi Points Trend Endpoint** is FULLY WORKING.
+      
+      **Test Results:**
+      - ✅ Auth: Both owner and staff can access (200 OK)
+      - ✅ Default period call: Returns current period (2026-09) with correct structure
+      - ✅ Response structure: All required fields present (period_key, period_range, days, total_users, series)
+      - ✅ Strict ranking: All ranks are integers in [1, total_users], no duplicates per day
+      - ✅ Leaderboard consistency: Last-day ranks MATCH leaderboard ranks exactly (Cindy rank=1 in both)
+      - ✅ Period params: Current (2026-09), past (2025-01), and future (2030-01) all work correctly
+      - ✅ Staff access: Cindy (staff) can access endpoint
+      - ✅ Regression: Leaderboard and history endpoints unchanged, no breaking changes
+      
+      **Key Findings:**
+      - Today is 2026-08-26 (first day of period 2026-09)
+      - Period range: 2026-08-26 to 2026-09-25 (26th cycle)
+      - days array: 1 day (only today, as expected)
+      - total_users: 2 (Cindy + 1 other staff)
+      - Ranks: [1, 2] (strict, no duplicates)
+      - Balances: [100, 100] (initial balance, no deltas yet)
+      - Trend ranks match leaderboard ranks exactly (consistency verified)
+      
+      **Test file:** /app/backend_test_absensi_trend.py
+      
+      **No issues found.** All requirements met. Task marked as working=true, needs_retesting=false.
