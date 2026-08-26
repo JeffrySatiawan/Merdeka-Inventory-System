@@ -1313,8 +1313,6 @@ function VerifikasiDetailModal({ open, rec, radiusM, onClose }) {
   const gpsInValid = distIn != null && distIn <= radiusM;
   const gpsOutValid = distOut != null && distOut <= radiusM;
   const retensiHapus = !!rec.selfie_deleted;
-  const token = typeof window !== 'undefined' ? (localStorage.getItem('cc_token') || '') : '';
-  const selfieUrl = (which) => `/api/absensi/record/${rec.id}/selfie/${which}?_t=${encodeURIComponent(token).slice(0, 6)}`;
   const fmtCoord = (v) => (v == null ? '—' : Number(v).toFixed(6));
 
   const Section = ({ title, wita, lat, lng, dist, valid, hasPhoto, which }) => (
@@ -1345,24 +1343,12 @@ function VerifikasiDetailModal({ open, rec, radiusM, onClose }) {
           )}
         </div>
         <div className="flex flex-col items-center justify-center">
-          {retensiHapus ? (
-            <div className="w-full aspect-square rounded-md border border-dashed border-white/10 bg-white/[0.02] flex items-center justify-center text-center px-3 text-[11px] text-muted-foreground">
-              Foto sudah tidak tersedia<br /><span className="text-[10px]">(retensi telah lewat)</span>
-            </div>
-          ) : hasPhoto ? (
-            <a href={selfieUrl(which)} target="_blank" rel="noreferrer" className="block w-full">
-              <img
-                src={selfieUrl(which)}
-                alt={`selfie-${which}`}
-                className="w-full aspect-square object-cover rounded-md border border-white/10 hover:border-indigo-400/60 transition-colors"
-              />
-              <div className="text-[10px] text-muted-foreground text-center mt-1">Klik untuk perbesar</div>
-            </a>
-          ) : (
-            <div className="w-full aspect-square rounded-md border border-dashed border-white/10 bg-white/[0.02] flex items-center justify-center text-[11px] text-muted-foreground">
-              Belum ada foto
-            </div>
-          )}
+          <AuthenticatedSelfie
+            recId={rec.id}
+            which={which}
+            retensiHapus={retensiHapus}
+            hasPhoto={hasPhoto}
+          />
         </div>
       </div>
     </div>
@@ -1394,6 +1380,97 @@ function VerifikasiDetailModal({ open, rec, radiusM, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ============================================================================
+//  AuthenticatedSelfie — fetch foto via authenticated fetch (Bearer token),
+//  bikin blob URL, tampilkan di <img>. Endpoint tetap protected — token dikirim
+//  di Authorization header (bukan cookie), jadi <img src=...> langsung tidak
+//  bisa autentikasi. Reuse endpoint existing /api/absensi/record/:id/selfie/(in|out).
+// ============================================================================
+function AuthenticatedSelfie({ recId, which, retensiHapus, hasPhoto }) {
+  const [url, setUrl] = useState(null);
+  const [state, setState] = useState('idle'); // idle | loading | ok | error
+  const [lightbox, setLightbox] = useState(false);
+  useEffect(() => {
+    if (retensiHapus || !hasPhoto || !recId) return;
+    let cancelled = false;
+    let objectUrl = null;
+    (async () => {
+      try {
+        setState('loading');
+        const token = typeof window !== 'undefined' ? (localStorage.getItem('cc_token') || '') : '';
+        const res = await fetch(`/api/absensi/record/${recId}/selfie/${which}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+        setState('ok');
+      } catch (e) {
+        if (!cancelled) setState('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [recId, which, retensiHapus, hasPhoto]);
+
+  if (retensiHapus) {
+    return (
+      <div className="w-full aspect-square rounded-md border border-dashed border-white/10 bg-white/[0.02] flex items-center justify-center text-center px-3 text-[11px] text-muted-foreground">
+        Foto sudah tidak tersedia<br /><span className="text-[10px]">(retensi telah lewat)</span>
+      </div>
+    );
+  }
+  if (!hasPhoto) {
+    return (
+      <div className="w-full aspect-square rounded-md border border-dashed border-white/10 bg-white/[0.02] flex items-center justify-center text-[11px] text-muted-foreground">
+        Belum ada foto
+      </div>
+    );
+  }
+  if (state === 'error') {
+    return (
+      <div className="w-full aspect-square rounded-md border border-dashed border-rose-500/30 bg-rose-500/[0.03] flex items-center justify-center text-[11px] text-rose-300 text-center px-3">
+        Gagal memuat foto
+      </div>
+    );
+  }
+  if (state === 'loading' || !url) {
+    return <Skeleton className="w-full aspect-square rounded-md" />;
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setLightbox(true)}
+        className="block w-full"
+      >
+        <img
+          src={url}
+          alt={`selfie-${which}`}
+          className="w-full aspect-square object-cover rounded-md border border-white/10 hover:border-indigo-400/60 transition-colors"
+        />
+        <div className="text-[10px] text-muted-foreground text-center mt-1">Klik untuk perbesar</div>
+      </button>
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setLightbox(false)}
+        >
+          <img src={url} alt={`selfie-${which}-large`} className="max-w-full max-h-full object-contain rounded-lg" />
+          <button
+            className="absolute top-4 right-4 text-white/80 text-2xl leading-none"
+            onClick={() => setLightbox(false)}
+          >×</button>
+        </div>
+      )}
+    </>
   );
 }
 
