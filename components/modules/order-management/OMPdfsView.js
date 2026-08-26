@@ -870,7 +870,7 @@ export default function OMPdfsView({ user }) {
                     </div>
                     <div className="flex-1">
                       <div className="text-sm font-medium">Popup In-App</div>
-                      <div className="text-[10px] text-muted-foreground">Popup di pojok kanan bawah</div>
+                      <div className="text-[10px] text-muted-foreground">Popup di pojok kanan atas</div>
                     </div>
                     <div className={`w-9 h-5 rounded-full relative transition-colors ${notifSettings.popup ? 'bg-emerald-500' : 'bg-white/10'}`}>
                       <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${notifSettings.popup ? 'translate-x-4' : 'translate-x-0.5'}`} />

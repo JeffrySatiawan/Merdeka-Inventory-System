@@ -305,7 +305,7 @@ function popupNewPdf(item) {
         </div>
       </div>
     ),
-    { duration: 5000, position: 'bottom-right' }
+    { duration: 5000, position: 'top-right' }
   );
 }
 
