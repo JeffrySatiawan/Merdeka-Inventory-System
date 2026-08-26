@@ -1488,10 +1488,17 @@ function PointsBarChart({ items, meId, periodKey, settings }) {
     balance: Number(r.balance || 0),
     isMe: r.user_id === meId,
   }));
-  // Domain: dari max_negative sampai max_positive supaya batas terlihat konsisten.
-  const yMin = Math.min(0, Number(settings?.max_negative ?? 0));
-  const yMaxPref = Number(settings?.max_positive ?? 150);
-  const yMax = Math.max(yMaxPref, ...rows.map((r) => r.balance));
+  // Domain X: dari max_negative sampai max_positive supaya batas terlihat konsisten.
+  const xMin = Math.min(0, Number(settings?.max_negative ?? 0));
+  const xMaxPref = Number(settings?.max_positive ?? 150);
+  const xMax = Math.max(xMaxPref, ...rows.map((r) => r.balance));
+  // Tinggi grafik ikut jumlah staff (36px per baris + padding) supaya nama
+  // tidak overlap baik di web maupun PWA/mobile.
+  const rowH = 36;
+  const chartHeight = Math.max(160, rows.length * rowH + 40);
+  // Lebar sumbu Y ikut nama terpanjang (kira-kira 8px per karakter, cap di 200).
+  const longestName = rows.reduce((m, r) => Math.max(m, r.name.length), 0);
+  const yAxisWidth = Math.min(200, Math.max(80, longestName * 7 + 12));
   return (
     <Card className="bg-[#0a0a0b] border-white/10">
       <CardContent className="pt-4">
@@ -1506,11 +1513,11 @@ function PointsBarChart({ items, meId, periodKey, settings }) {
             </div>
           </div>
           <div className="text-[10px] text-muted-foreground hidden sm:block">
-            Y = jumlah poin · X = nama staff
+            X = jumlah poin · Y = nama staff
           </div>
         </div>
-        <div className="w-full h-64">
-          <PointsBarInner rows={rows} yMin={yMin} yMax={yMax} />
+        <div className="w-full" style={{ height: chartHeight }}>
+          <PointsBarInner rows={rows} xMin={xMin} xMax={xMax} yAxisWidth={yAxisWidth} />
         </div>
       </CardContent>
     </Card>
@@ -1518,7 +1525,7 @@ function PointsBarChart({ items, meId, periodKey, settings }) {
 }
 
 // Recharts diimpor secara dinamis supaya first-paint modul Absensi tetap ringan.
-function PointsBarInner({ rows, yMin, yMax }) {
+function PointsBarInner({ rows, xMin, xMax, yAxisWidth }) {
   const [R, setR] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -1537,7 +1544,9 @@ function PointsBarInner({ rows, yMin, yMax }) {
     const row = p.payload;
     return (
       <div className={`rounded-lg border bg-black/90 backdrop-blur px-3 py-2 text-[11px] shadow-xl ${row.isMe ? 'border-amber-500/60' : 'border-white/10'}`}>
-        <div className={`text-xs font-semibold ${row.isMe ? 'text-amber-200' : ''}`}>{row.name}{row.isMe && <span className="ml-1 text-[9px] uppercase tracking-widest">Anda</span>}</div>
+        <div className={`text-xs font-semibold ${row.isMe ? 'text-amber-200' : ''}`}>
+          {row.name}{row.isMe && <span className="ml-1 text-[9px] uppercase tracking-widest">Anda</span>}
+        </div>
         <div className="mt-0.5">Poin: <b className="tabular-nums">{row.balance}</b></div>
       </div>
     );
@@ -1545,28 +1554,31 @@ function PointsBarInner({ rows, yMin, yMax }) {
 
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={rows} margin={{ top: 16, right: 12, left: 0, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+      <BarChart
+        data={rows}
+        layout="vertical"
+        margin={{ top: 8, right: 40, left: 4, bottom: 8 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
         <XAxis
-          dataKey="name"
-          tick={{ fill: '#cbd5e1', fontSize: 11 }}
-          tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          interval={0}
-          angle={rows.length > 6 ? -20 : 0}
-          textAnchor={rows.length > 6 ? 'end' : 'middle'}
-          height={rows.length > 6 ? 48 : 28}
-        />
-        <YAxis
+          type="number"
+          domain={[xMin, xMax]}
           allowDecimals={false}
-          domain={[yMin, yMax]}
           tick={{ fill: '#94a3b8', fontSize: 10 }}
           tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
           axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-          width={40}
+        />
+        <YAxis
+          type="category"
+          dataKey="name"
+          width={yAxisWidth}
+          tick={{ fill: '#e2e8f0', fontSize: 11 }}
+          tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+          axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+          interval={0}
         />
         <Tooltip cursor={{ fill: 'rgba(255,255,255,0.04)' }} content={<TooltipContent />} />
-        <Bar dataKey="balance" radius={[6, 6, 0, 0]} isAnimationActive={false}>
+        <Bar dataKey="balance" radius={[0, 6, 6, 0]} isAnimationActive={false} barSize={20}>
           {rows.map((row) => (
             <Cell
               key={row.user_id}
@@ -1575,7 +1587,13 @@ function PointsBarInner({ rows, yMin, yMax }) {
               strokeWidth={row.isMe ? 2 : 0}
             />
           ))}
-          <LabelList dataKey="balance" position="top" fill="#e2e8f0" fontSize={11} />
+          <LabelList
+            dataKey="balance"
+            position="right"
+            fill="#e2e8f0"
+            fontSize={11}
+            formatter={(v) => v}
+          />
         </Bar>
       </BarChart>
     </ResponsiveContainer>
