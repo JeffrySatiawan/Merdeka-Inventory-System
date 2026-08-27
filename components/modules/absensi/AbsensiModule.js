@@ -864,10 +864,10 @@ function ShiftConfirmDialog({ open, shift, onConfirm, onCancel }) {
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-[85] bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+      className="fixed inset-0 z-[85] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onCancel?.(); }}
     >
-      <div className="w-full sm:max-w-sm bg-[#0a0a0b] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl">
+      <div className="w-full max-w-sm bg-[#0a0a0b] border border-white/10 rounded-2xl shadow-2xl">
         <div className="p-4 border-b border-white/5 flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-indigo-400" />
           <div className="text-base font-semibold">Pastikan Shift Anda</div>
