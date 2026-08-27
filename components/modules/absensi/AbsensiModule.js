@@ -684,6 +684,8 @@ function LemburSubmitDialog({ open, onClose, rec, onDone }) {
 function CheckInView({ onDone, onBack, soSelected = false }) {
   const [today, setToday] = useState(null);
   const [shiftKey, setShiftKey] = useState('');
+  const [shiftConfirmed, setShiftConfirmed] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [selfie, setSelfie] = useState(null);
   const [qrValue, setQrValue] = useState('');
   const [selfieOpen, setSelfieOpen] = useState(false);
@@ -696,15 +698,37 @@ function CheckInView({ onDone, onBack, soSelected = false }) {
       try {
         const d = await absApi('today');
         setToday(d);
-        if (d?.suggested_shift_key) setShiftKey(d.suggested_shift_key);
+        // Shift yang disugesti backend WAJIB dikonfirmasi juga oleh staff —
+        // jangan auto-confirm supaya bug "salah pilih shift" tidak terulang.
+        if (d?.suggested_shift_key) {
+          setShiftKey(d.suggested_shift_key);
+          setShiftConfirmed(false);
+          setConfirmOpen(true);
+        }
       } catch (e) { toast.error(e.message); }
     })();
   }, []);
 
+  // Dipanggil saat user memilih shift dari dropdown. Buka modal konfirmasi.
+  const handleShiftChange = (v) => {
+    setShiftKey(v);
+    setShiftConfirmed(false);
+    if (v) setConfirmOpen(true);
+  };
+  const handleShiftConfirm = () => { setShiftConfirmed(true); setConfirmOpen(false); };
+  const handleShiftCancel = () => {
+    // Kembali ke pilihan shift — reset supaya staff harus pilih ulang.
+    setShiftConfirmed(false);
+    setShiftKey('');
+    setConfirmOpen(false);
+  };
+
+  const selectedShift = (today?.shifts || []).find((s) => s.key === shiftKey);
+
   const submit = async () => {
+    if (!shiftKey || !shiftConfirmed) { toast.error('Konfirmasi shift terlebih dahulu'); return; }
     if (!selfie) { toast.error('Ambil selfie terlebih dahulu'); return; }
     if (!qrValue) { toast.error('Scan QR Absensi terlebih dahulu'); return; }
-    if (!shiftKey) { toast.error('Pilih shift'); return; }
     if (!geo.coords) { toast.error('Ambil lokasi GPS terlebih dahulu'); return; }
     setSubmitting(true);
     try {
@@ -743,7 +767,7 @@ function CheckInView({ onDone, onBack, soSelected = false }) {
           {/* Shift */}
           <div>
             <Label className="text-xs">Shift <span className="text-rose-400">*</span></Label>
-            <Select value={shiftKey} onValueChange={setShiftKey}>
+            <Select value={shiftKey} onValueChange={handleShiftChange}>
               <SelectTrigger><SelectValue placeholder="Pilih shift" /></SelectTrigger>
               <SelectContent>
                 {(today?.shifts || []).map((s) => (
@@ -751,6 +775,21 @@ function CheckInView({ onDone, onBack, soSelected = false }) {
                 ))}
               </SelectContent>
             </Select>
+            {shiftKey && !shiftConfirmed && (
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(true)}
+                className="mt-1 text-[11px] text-amber-300 hover:underline"
+              >
+                Shift belum dikonfirmasi — klik untuk konfirmasi
+              </button>
+            )}
+            {shiftKey && shiftConfirmed && selectedShift && (
+              <div className="mt-1 text-[11px] text-emerald-300 inline-flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                Terkonfirmasi: {selectedShift.name} · {selectedShift.start}–{selectedShift.end}
+              </div>
+            )}
           </div>
 
           {/* QR */}
@@ -787,7 +826,7 @@ function CheckInView({ onDone, onBack, soSelected = false }) {
 
           <Button
             onClick={submit}
-            disabled={submitting || !selfie || !qrValue || !shiftKey || !geo.coords}
+            disabled={submitting || !selfie || !qrValue || !shiftKey || !shiftConfirmed || !geo.coords}
             className="w-full h-11 bg-emerald-600 hover:bg-emerald-500 gap-2"
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
@@ -806,9 +845,63 @@ function CheckInView({ onDone, onBack, soSelected = false }) {
         onClose={() => setQrOpen(false)}
         onDecoded={(text) => { setQrValue(text); setQrOpen(false); }}
       />
+      <ShiftConfirmDialog
+        open={confirmOpen}
+        shift={selectedShift}
+        onConfirm={handleShiftConfirm}
+        onCancel={handleShiftCancel}
+      />
+
     </div>
   );
 }
+
+// ============================================================================
+//  ShiftConfirmDialog — konfirmasi pilihan shift sebelum lanjut Absen Masuk.
+//  Modal kecil, responsif Web/PWA. Tidak menyentuh workflow QR/Selfie/GPS.
+// ============================================================================
+function ShiftConfirmDialog({ open, shift, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-[85] bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel?.(); }}
+    >
+      <div className="w-full sm:max-w-sm bg-[#0a0a0b] border border-white/10 rounded-t-2xl sm:rounded-2xl shadow-2xl">
+        <div className="p-4 border-b border-white/5 flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-indigo-400" />
+          <div className="text-base font-semibold">Pastikan Shift Anda</div>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/[0.08] p-4 text-center">
+            <div className="text-lg font-bold">{shift?.name || 'Shift belum dipilih'}</div>
+            {shift?.start && shift?.end && (
+              <div className="text-2xl font-black tabular-nums text-indigo-200 mt-1">
+                {shift.start}–{shift.end}
+              </div>
+            )}
+          </div>
+          <div className="text-center text-sm text-muted-foreground">
+            Apakah shift ini sudah benar?
+          </div>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <Button variant="outline" onClick={onCancel} className="h-10">
+              Batal
+            </Button>
+            <Button
+              onClick={onConfirm}
+              disabled={!shift}
+              className="h-10 bg-emerald-600 hover:bg-emerald-500 gap-2"
+            >
+              <CheckCircle2 className="w-4 h-4" /> Ya, Sudah Benar
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ============================================================================
 //  Sub-view: Check-Out Flow (selfie → GPS → submit)
