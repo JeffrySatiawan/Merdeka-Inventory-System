@@ -1173,6 +1173,9 @@ function OwnerReportView() {
   const [exporting, setExporting] = useState(false);
   // Radius berlaku (di-echo backend dari settings) untuk badge GPS di detail.
   const [radiusM, setRadiusM] = useState(50);
+  // Poin real-time per user_id — sinkron dengan Live Board (period berjalan).
+  const [pointsByUser, setPointsByUser] = useState({});
+  const [pointsPeriod, setPointsPeriod] = useState(null);
   // Rec yang sedang dibuka di modal Verifikasi (null = tertutup).
   const [detailRec, setDetailRec] = useState(null);
 
@@ -1192,6 +1195,8 @@ function OwnerReportView() {
       const d = await absApi(`report?${buildQS()}`);
       setItems(d.items || []);
       if (d.location?.radius_m) setRadiusM(Number(d.location.radius_m));
+      setPointsByUser(d.points_by_user || {});
+      setPointsPeriod(d.points_period || null);
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
@@ -1318,7 +1323,7 @@ function OwnerReportView() {
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground border-b border-white/10">
                   <tr>
-                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur', 'Verifikasi'].map((h) => (
+                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur', 'Poin', 'Verifikasi'].map((h) => (
                       <th key={h} className="text-left py-2 px-2 font-medium">{h}</th>
                     ))}
                   </tr>
@@ -1362,6 +1367,25 @@ function OwnerReportView() {
                         </td>
                         <td className="py-2 px-2 max-w-[220px] truncate" title={r.overtime_reason || ''}>
                           {r.overtime_reason || '-'}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums">
+                          {(() => {
+                            const p = pointsByUser[r.user_id];
+                            if (!p) return <span className="text-muted-foreground">-</span>;
+                            const bal = Number(p.balance || 0);
+                            const tone = bal >= 100
+                              ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
+                              : (bal <= 0 ? 'text-rose-300 border-rose-500/30 bg-rose-500/10' : 'text-amber-300 border-amber-500/30 bg-amber-500/10');
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${tone}`}
+                                title={`Rank #${p.rank || '-'}${p.capped ? ' · capped' : ''}${pointsPeriod ? ` · periode ${pointsPeriod}` : ''}`}
+                              >
+                                <Trophy className="w-3 h-3" />
+                                {bal}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="py-2 px-2">
                           <Button
