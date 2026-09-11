@@ -1368,12 +1368,11 @@ function OMScanDeliveryView({ user }) {
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
-  // Ekspedisi (loaded sekali). Picker disaring berdasarkan service_type resi.
+  // Ekspedisi master (loaded sekali).
   const [expeditions, setExpeditions] = useState([]);
-  // Resi yang sedang menunggu pilihan ekspedisi (dari backend needs_expedition).
-  const [pending, setPending] = useState(null); // { tracking, service_type }
-  const [expChoice, setExpChoice] = useState('');
-  const [confirming, setConfirming] = useState(false);
+  // UX BARU: pilih ekspedisi SATU KALI di awal, lalu scanner aktif untuk banyak resi.
+  const [expChoice, setExpChoice] = useState(''); // id yang sedang dipilih pada dropdown
+  const [expObj, setExpObj] = useState(null);     // ekspedisi terkonfirmasi (aktif)
 
   useEffect(() => {
     refreshStats();
@@ -1388,26 +1387,13 @@ function OMScanDeliveryView({ user }) {
     } catch {}
   }
 
-  async function submitDeliver(v, expId) {
+  async function submitDeliver(v) {
+    if (!expObj) return;
     try {
       const resp = await omApi('scan/deliver', {
         method: 'POST',
-        body: JSON.stringify({ tracking_number: v, ...(expId ? { expedition_id: expId } : {}) }),
+        body: JSON.stringify({ tracking_number: v, expedition_id: expObj.id }),
       });
-      // Kalau backend minta ekspedisi (needs_expedition) → buka picker.
-      if (resp.needs_expedition) {
-        const stLabel = String(resp.shipment.service_type || 'reguler').toUpperCase();
-        setPending({ tracking: v, service_type: resp.shipment.service_type || 'reguler' });
-        setExpChoice('');
-        feedback('warn');
-        addQueue({
-          type: 'warn',
-          tracking: v,
-          title: `PILIH EKSPEDISI ${stLabel}`,
-          message: `Kategori ${stLabel} · pilih ekspedisi aktual di bawah`,
-        });
-        return;
-      }
       feedback('ok');
       addQueue({
         type: 'ok',
@@ -1416,7 +1402,6 @@ function OMScanDeliveryView({ user }) {
         message: `Diserahkan · ${resp.shipment.expedition_name}`,
       });
       setStats((s) => ({ ...s, delivered: (s.delivered || 0) + 1 }));
-      setPending(null);
     } catch (e) {
       if (e.status === 409) {
         const dup = e?.data?.duplicate;
@@ -1439,6 +1424,10 @@ function OMScanDeliveryView({ user }) {
       } else if (e.status === 404) {
         feedback('err');
         addQueue({ type: 'err', tracking: v, title: 'RESI TIDAK DITEMUKAN', message: e.message || 'Resi tidak ditemukan' });
+      } else if (e.status === 400 && /kategori/i.test(e.message || '')) {
+        // Kategori tidak sesuai (backend sudah kirim pesan detail INSTAN vs REGULER)
+        feedback('warn');
+        addQueue({ type: 'warn', tracking: v, title: 'KATEGORI TIDAK SESUAI', message: e.message });
       } else {
         feedback('err');
         addQueue({ type: 'err', tracking: v, title: 'ERROR', message: e.message || 'Error' });
@@ -1449,36 +1438,25 @@ function OMScanDeliveryView({ user }) {
   async function process(value) {
     if (processingRef.current) return;
     const v = String(value || '').trim();
-    if (!v) return;
-    // Kalau lagi menunggu pilihan ekspedisi untuk resi sebelumnya, abaikan scan baru.
-    if (pending) {
-      feedback('warn');
-      addQueue({ type: 'warn', tracking: v, title: 'MENUNGGU', message: 'Selesaikan pilihan ekspedisi terlebih dahulu' });
-      return;
-    }
+    if (!v || !expObj) return;
     processingRef.current = true;
     try {
-      await submitDeliver(v, null);
+      await submitDeliver(v);
     } finally {
       processingRef.current = false;
     }
   }
 
-  async function confirmExpedition() {
-    if (!pending || !expChoice) return;
-    setConfirming(true);
-    try {
-      await submitDeliver(pending.tracking, expChoice);
-    } finally {
-      setConfirming(false);
-    }
-  }
+  const activeExps = expeditions.filter((e) => e.active);
 
-  // Filter picker sesuai kategori resi.
-  const stFilter = pending?.service_type || null;
-  const expOptions = expeditions
-    .filter((e) => e.active)
-    .filter((e) => !stFilter || (e.service_type || 'reguler') === stFilter);
+  function confirmPick() {
+    const found = activeExps.find((e) => e.id === expChoice);
+    if (found) setExpObj(found);
+  }
+  function resetPick() {
+    setExpObj(null);
+    setExpChoice('');
+  }
 
   return (
     <ScannerShell
@@ -1492,56 +1470,68 @@ function OMScanDeliveryView({ user }) {
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
       onScanDecoded={(v) => process(v)}
-      disabled={!!pending}
+      disabled={!expObj}
       queue={queue}
       alert={alert}
     >
-      {pending && (
-        <div className={`rounded-xl border p-3 space-y-2 ${pending.service_type === 'instan' ? 'border-orange-500/60 bg-orange-500/10' : 'border-indigo-500/60 bg-indigo-500/10'}`}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Pilih ekspedisi untuk resi</div>
-              <div className="font-mono text-base font-semibold">{pending.tracking}</div>
-            </div>
-            <div className={`text-xs font-bold px-2 py-1 rounded ${pending.service_type === 'instan' ? 'bg-orange-500/30 text-orange-100' : 'bg-indigo-500/30 text-indigo-100'}`}>
-              {String(pending.service_type).toUpperCase()}
+      {!expObj ? (
+        <div className="rounded-xl border border-indigo-500/60 bg-indigo-500/10 p-4 space-y-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Langkah 1</div>
+            <div className="font-semibold text-base">Pilih Ekspedisi</div>
+            <div className="text-xs text-muted-foreground">
+              Pilih sekali di awal. Setelah aktif, scanner akan menerima banyak resi berturut-turut
+              tanpa perlu pilih dropdown lagi. Resi yang kategorinya tidak sesuai akan otomatis ditolak.
             </div>
           </div>
           <Select value={expChoice} onValueChange={setExpChoice}>
             <SelectTrigger className="h-12 text-base font-semibold">
-              <SelectValue placeholder={`Pilih ekspedisi ${String(pending.service_type).toUpperCase()}`} />
+              <SelectValue placeholder="Pilih ekspedisi..." />
             </SelectTrigger>
             <SelectContent>
-              {expOptions.length === 0 && (
-                <div className="px-3 py-2 text-xs text-muted-foreground">
-                  Belum ada ekspedisi kategori {String(pending.service_type).toUpperCase()} di Master Ekspedisi.
-                </div>
+              {activeExps.length === 0 && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">Belum ada ekspedisi aktif.</div>
               )}
-              {expOptions.map((e) => (
+              {activeExps.map((e) => (
                 <SelectItem key={e.id} value={e.id} className="text-base py-3">
+                  <span className={`mr-2 text-[10px] font-bold px-1.5 py-0.5 rounded ${(e.service_type || 'reguler') === 'instan' ? 'bg-orange-500/30 text-orange-100' : 'bg-indigo-500/30 text-indigo-100'}`}>
+                    {String(e.service_type || 'reguler').toUpperCase()}
+                  </span>
                   {e.name} {e.code && `· ${e.code}`}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => { setPending(null); setExpChoice(''); }}
-              disabled={confirming}
-              className="h-11 rounded-lg border border-white/10 bg-white/[0.02] text-sm hover:bg-white/[0.06]"
-            >
-              Batal
-            </button>
-            <button
-              type="button"
-              onClick={confirmExpedition}
-              disabled={confirming || !expChoice}
-              className="h-11 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold disabled:opacity-40"
-            >
-              {confirming ? 'Menyerahkan…' : 'Serahkan ke Kurir'}
-            </button>
+          <button
+            type="button"
+            onClick={confirmPick}
+            disabled={!expChoice}
+            className="w-full h-12 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold disabled:opacity-40"
+          >
+            Aktifkan Scanner
+          </button>
+        </div>
+      ) : (
+        <div className={`rounded-xl border p-3 flex items-center justify-between gap-3 ${(expObj.service_type || 'reguler') === 'instan' ? 'border-orange-500/60 bg-orange-500/10' : 'border-indigo-500/60 bg-indigo-500/10'}`}>
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Ekspedisi Aktif</div>
+            <div className="font-semibold text-base flex items-center gap-2 flex-wrap">
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${(expObj.service_type || 'reguler') === 'instan' ? 'bg-orange-500/30 text-orange-100' : 'bg-indigo-500/30 text-indigo-100'}`}>
+                {String(expObj.service_type || 'reguler').toUpperCase()}
+              </span>
+              <span className="truncate">{expObj.name}{expObj.code ? ` · ${expObj.code}` : ''}</span>
+            </div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">
+              Hanya menerima scan resi kategori {String(expObj.service_type || 'reguler').toUpperCase()}.
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={resetPick}
+            className="h-9 px-3 rounded-lg border border-white/10 bg-white/[0.02] text-xs font-medium hover:bg-white/[0.06] whitespace-nowrap flex-shrink-0"
+          >
+            Ganti Ekspedisi
+          </button>
         </div>
       )}
     </ScannerShell>
