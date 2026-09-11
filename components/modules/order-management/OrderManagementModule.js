@@ -826,18 +826,14 @@ function fmtDuplicateMsg(prefix, dup) {
 // - Batch mode: pilih ekspedisi sekali, scan banyak resi
 // ============================================================
 function OMScanPrintView({ user }) {
-  const [expeditions, setExpeditions] = useState([]);
-  const [expeditionId, setExpeditionId] = useState('');
+  // Ganti dari dropdown ekspedisi → toggle INSTAN / REGULER.
+  // Ekspedisi aktual dipilih di menu Scan Serah Terima Kurir.
+  const [serviceType, setServiceType] = useState('reguler');
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
 
   useEffect(() => {
-    omApi('expeditions').then((d) => {
-      const list = d.items || [];
-      setExpeditions(list);
-      if (list[0]) setExpeditionId(list[0].id);
-    }).catch(() => {});
     refreshStats();
     const t = setInterval(refreshStats, 8000);
     return () => clearInterval(t);
@@ -854,23 +850,24 @@ function OMScanPrintView({ user }) {
     if (processingRef.current) return;
     const v = String(value || '').trim();
     if (!v) return;
-    if (!expeditionId) {
+    if (!serviceType) {
       feedback('warn');
-      addQueue({ type: 'warn', tracking: v, title: 'PILIH EKSPEDISI', message: 'Pilih ekspedisi terlebih dahulu' });
+      addQueue({ type: 'warn', tracking: v, title: 'PILIH KATEGORI', message: 'Pilih INSTAN atau REGULER terlebih dahulu' });
       return;
     }
     processingRef.current = true;
     try {
       const resp = await omApi('scan/print', {
         method: 'POST',
-        body: JSON.stringify({ tracking_number: v, expedition_id: expeditionId }),
+        body: JSON.stringify({ tracking_number: v, service_type: serviceType }),
       });
+      const stLabel = String(resp.shipment.service_type || serviceType).toUpperCase();
       feedback('ok');
       addQueue({
         type: 'ok',
         tracking: v,
-        expedition: resp.shipment.expedition_name,
-        message: `Cetak · ${resp.shipment.expedition_name}`,
+        expedition: stLabel,
+        message: `Cetak · ${stLabel}`,
       });
       setStats((s) => ({ ...s, printed: (s.printed || 0) + 1 }));
     } catch (e) {
@@ -913,27 +910,42 @@ function OMScanPrintView({ user }) {
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
       onScanDecoded={(v) => process(v)}
-      disabled={!expeditionId}
+      disabled={!serviceType}
       queue={queue}
       alert={alert}
     >
-      {/* Batch expedition selector */}
+      {/* Batch service_type selector — pilih sekali, scan banyak resi */}
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
         <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          Ekspedisi (pilih sekali, scan banyak resi)
+          Jenis Pengiriman (pilih sekali, scan banyak resi)
         </Label>
-        <Select value={expeditionId} onValueChange={setExpeditionId}>
-          <SelectTrigger className="h-12 text-base font-semibold">
-            <SelectValue placeholder="Pilih ekspedisi" />
-          </SelectTrigger>
-          <SelectContent>
-            {expeditions.filter((e) => e.active).map((e) => (
-              <SelectItem key={e.id} value={e.id} className="text-base py-3">
-                {e.name} {e.code && `· ${e.code}`}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => setServiceType('instan')}
+            className={`h-14 rounded-lg border font-bold text-base transition-colors ${
+              serviceType === 'instan'
+                ? 'border-orange-500/60 bg-orange-500/20 text-orange-200'
+                : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:text-white'
+            }`}
+          >
+            INSTAN
+          </button>
+          <button
+            type="button"
+            onClick={() => setServiceType('reguler')}
+            className={`h-14 rounded-lg border font-bold text-base transition-colors ${
+              serviceType === 'reguler'
+                ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:text-white'
+            }`}
+          >
+            REGULER
+          </button>
+        </div>
+        <div className="text-[10px] text-muted-foreground">
+          Ekspedisi aktual dipilih di menu Serah Terima Kurir.
+        </div>
       </div>
     </ScannerShell>
   );
@@ -1356,9 +1368,16 @@ function OMScanDeliveryView({ user }) {
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
+  // Ekspedisi (loaded sekali). Picker disaring berdasarkan service_type resi.
+  const [expeditions, setExpeditions] = useState([]);
+  // Resi yang sedang menunggu pilihan ekspedisi (dari backend needs_expedition).
+  const [pending, setPending] = useState(null); // { tracking, service_type }
+  const [expChoice, setExpChoice] = useState('');
+  const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
     refreshStats();
+    omApi('expeditions').then((d) => setExpeditions(d.items || [])).catch(() => {});
     const t = setInterval(refreshStats, 8000);
     return () => clearInterval(t);
   }, []);
@@ -1369,16 +1388,26 @@ function OMScanDeliveryView({ user }) {
     } catch {}
   }
 
-  async function process(value) {
-    if (processingRef.current) return;
-    const v = String(value || '').trim();
-    if (!v) return;
-    processingRef.current = true;
+  async function submitDeliver(v, expId) {
     try {
       const resp = await omApi('scan/deliver', {
         method: 'POST',
-        body: JSON.stringify({ tracking_number: v }),
+        body: JSON.stringify({ tracking_number: v, ...(expId ? { expedition_id: expId } : {}) }),
       });
+      // Kalau backend minta ekspedisi (needs_expedition) → buka picker.
+      if (resp.needs_expedition) {
+        const stLabel = String(resp.shipment.service_type || 'reguler').toUpperCase();
+        setPending({ tracking: v, service_type: resp.shipment.service_type || 'reguler' });
+        setExpChoice('');
+        feedback('warn');
+        addQueue({
+          type: 'warn',
+          tracking: v,
+          title: `PILIH EKSPEDISI ${stLabel}`,
+          message: `Kategori ${stLabel} · pilih ekspedisi aktual di bawah`,
+        });
+        return;
+      }
       feedback('ok');
       addQueue({
         type: 'ok',
@@ -1387,11 +1416,11 @@ function OMScanDeliveryView({ user }) {
         message: `Diserahkan · ${resp.shipment.expedition_name}`,
       });
       setStats((s) => ({ ...s, delivered: (s.delivered || 0) + 1 }));
+      setPending(null);
     } catch (e) {
       if (e.status === 409) {
         const dup = e?.data?.duplicate;
         if (dup) {
-          // Real duplicate (already delivered)
           feedback('dup');
           addQueue({
             type: 'dup',
@@ -1404,36 +1433,52 @@ function OMScanDeliveryView({ user }) {
             message: fmtDuplicateMsg('Sudah diserahkan', dup),
           });
         } else {
-          // Workflow issue — belum packing / belum cetak resi
           feedback('warn');
-          addQueue({
-            type: 'warn',
-            tracking: v,
-            title: 'BELUM SIAP KIRIM',
-            message: e.message || 'Belum melalui Packing',
-          });
+          addQueue({ type: 'warn', tracking: v, title: 'BELUM SIAP KIRIM', message: e.message || 'Belum melalui Packing' });
         }
       } else if (e.status === 404) {
         feedback('err');
-        addQueue({
-          type: 'err',
-          tracking: v,
-          title: 'RESI TIDAK DITEMUKAN',
-          message: e.message || 'Resi tidak ditemukan',
-        });
+        addQueue({ type: 'err', tracking: v, title: 'RESI TIDAK DITEMUKAN', message: e.message || 'Resi tidak ditemukan' });
       } else {
         feedback('err');
-        addQueue({
-          type: 'err',
-          tracking: v,
-          title: 'ERROR',
-          message: e.message || 'Error',
-        });
+        addQueue({ type: 'err', tracking: v, title: 'ERROR', message: e.message || 'Error' });
       }
+    }
+  }
+
+  async function process(value) {
+    if (processingRef.current) return;
+    const v = String(value || '').trim();
+    if (!v) return;
+    // Kalau lagi menunggu pilihan ekspedisi untuk resi sebelumnya, abaikan scan baru.
+    if (pending) {
+      feedback('warn');
+      addQueue({ type: 'warn', tracking: v, title: 'MENUNGGU', message: 'Selesaikan pilihan ekspedisi terlebih dahulu' });
+      return;
+    }
+    processingRef.current = true;
+    try {
+      await submitDeliver(v, null);
     } finally {
       processingRef.current = false;
     }
   }
+
+  async function confirmExpedition() {
+    if (!pending || !expChoice) return;
+    setConfirming(true);
+    try {
+      await submitDeliver(pending.tracking, expChoice);
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  // Filter picker sesuai kategori resi.
+  const stFilter = pending?.service_type || null;
+  const expOptions = expeditions
+    .filter((e) => e.active)
+    .filter((e) => !stFilter || (e.service_type || 'reguler') === stFilter);
 
   return (
     <ScannerShell
@@ -1447,8 +1492,59 @@ function OMScanDeliveryView({ user }) {
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
       onScanDecoded={(v) => process(v)}
+      disabled={!!pending}
       queue={queue}
-    />
+      alert={alert}
+    >
+      {pending && (
+        <div className={`rounded-xl border p-3 space-y-2 ${pending.service_type === 'instan' ? 'border-orange-500/60 bg-orange-500/10' : 'border-indigo-500/60 bg-indigo-500/10'}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Pilih ekspedisi untuk resi</div>
+              <div className="font-mono text-base font-semibold">{pending.tracking}</div>
+            </div>
+            <div className={`text-xs font-bold px-2 py-1 rounded ${pending.service_type === 'instan' ? 'bg-orange-500/30 text-orange-100' : 'bg-indigo-500/30 text-indigo-100'}`}>
+              {String(pending.service_type).toUpperCase()}
+            </div>
+          </div>
+          <Select value={expChoice} onValueChange={setExpChoice}>
+            <SelectTrigger className="h-12 text-base font-semibold">
+              <SelectValue placeholder={`Pilih ekspedisi ${String(pending.service_type).toUpperCase()}`} />
+            </SelectTrigger>
+            <SelectContent>
+              {expOptions.length === 0 && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">
+                  Belum ada ekspedisi kategori {String(pending.service_type).toUpperCase()} di Master Ekspedisi.
+                </div>
+              )}
+              {expOptions.map((e) => (
+                <SelectItem key={e.id} value={e.id} className="text-base py-3">
+                  {e.name} {e.code && `· ${e.code}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => { setPending(null); setExpChoice(''); }}
+              disabled={confirming}
+              className="h-11 rounded-lg border border-white/10 bg-white/[0.02] text-sm hover:bg-white/[0.06]"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={confirmExpedition}
+              disabled={confirming || !expChoice}
+              className="h-11 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold disabled:opacity-40"
+            >
+              {confirming ? 'Menyerahkan…' : 'Serahkan ke Kurir'}
+            </button>
+          </div>
+        </div>
+      )}
+    </ScannerShell>
   );
 }
 
@@ -1526,6 +1622,9 @@ function OMExpeditionsView({ isOwner }) {
                     <div className="flex items-center gap-2 flex-wrap">
                       <div className="font-semibold">{e.name}</div>
                       {e.code && <Badge variant="outline" className="text-[9px]">{e.code}</Badge>}
+                      <Badge className={`text-[9px] ${((e.service_type || 'reguler') === 'instan') ? 'bg-orange-500/20 text-orange-200 border-orange-500/40' : 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'}`}>
+                        {(e.service_type || 'reguler').toUpperCase()}
+                      </Badge>
                       {!e.active && <Badge variant="outline" className="border-rose-500/40 text-rose-400 text-[9px]">NON-AKTIF</Badge>}
                     </div>
                     <div className="text-xs text-muted-foreground">Sort: {e.sort_order}</div>
@@ -1561,13 +1660,13 @@ function OMExpeditionsView({ isOwner }) {
 }
 
 function ExpeditionForm({ open, onClose, editing, onSaved }) {
-  const [form, setForm] = useState({ name: '', code: '', active: true, sort_order: 99 });
+  const [form, setForm] = useState({ name: '', code: '', active: true, sort_order: 99, service_type: 'reguler' });
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     if (open) {
       setForm(editing
-        ? { name: editing.name, code: editing.code || '', active: editing.active, sort_order: editing.sort_order || 99 }
-        : { name: '', code: '', active: true, sort_order: 99 });
+        ? { name: editing.name, code: editing.code || '', active: editing.active, sort_order: editing.sort_order || 99, service_type: editing.service_type || 'reguler' }
+        : { name: '', code: '', active: true, sort_order: 99, service_type: 'reguler' });
     }
   }, [open, editing]);
   async function submit(e) {
@@ -1597,6 +1696,29 @@ function ExpeditionForm({ open, onClose, editing, onSaved }) {
               <Input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Sort Order</Label>
               <Input type="number" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: Number(e.target.value) })} /></div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Jenis Pengiriman</Label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, service_type: 'instan' })}
+                className={`h-11 rounded-md border font-semibold text-sm transition-colors ${
+                  form.service_type === 'instan'
+                    ? 'border-orange-500/60 bg-orange-500/15 text-orange-200'
+                    : 'border-white/10 bg-white/[0.02] text-muted-foreground'
+                }`}
+              >INSTAN</button>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, service_type: 'reguler' })}
+                className={`h-11 rounded-md border font-semibold text-sm transition-colors ${
+                  form.service_type === 'reguler'
+                    ? 'border-indigo-500/60 bg-indigo-500/15 text-indigo-200'
+                    : 'border-white/10 bg-white/[0.02] text-muted-foreground'
+                }`}
+              >REGULER</button>
+            </div>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} className="w-4 h-4 accent-blue-500" />
