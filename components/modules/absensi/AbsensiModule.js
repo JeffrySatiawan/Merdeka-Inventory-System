@@ -1173,9 +1173,10 @@ function OwnerReportView() {
   const [exporting, setExporting] = useState(false);
   // Radius berlaku (di-echo backend dari settings) untuk badge GPS di detail.
   const [radiusM, setRadiusM] = useState(50);
-  // Poin real-time per user_id — sinkron dengan Live Board (period berjalan).
+  // Snapshot poin frozen historic — per record (utama) & per user (fallback
+  // utk baris tanpa id / rekap). Sumber: absensi_point_ledger via backend.
   const [pointsByUser, setPointsByUser] = useState({});
-  const [pointsPeriod, setPointsPeriod] = useState(null);
+  const [pointsByRecord, setPointsByRecord] = useState({});
   // Rec yang sedang dibuka di modal Verifikasi (null = tertutup).
   const [detailRec, setDetailRec] = useState(null);
 
@@ -1196,7 +1197,7 @@ function OwnerReportView() {
       setItems(d.items || []);
       if (d.location?.radius_m) setRadiusM(Number(d.location.radius_m));
       setPointsByUser(d.points_by_user || {});
-      setPointsPeriod(d.points_period || null);
+      setPointsByRecord(d.points_by_record || {});
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   };
@@ -1323,7 +1324,7 @@ function OwnerReportView() {
               <table className="w-full text-xs">
                 <thead className="text-muted-foreground border-b border-white/10">
                   <tr>
-                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur', 'Poin', 'Verifikasi'].map((h) => (
+                    {['Tanggal', 'Staff', 'Shift', 'SO', 'Masuk', 'Kerja Efektif', 'Keluar', 'Status', 'Terlambat', 'Lembur', 'Alasan Lembur', 'Poin Saat Absen', 'Verifikasi'].map((h) => (
                       <th key={h} className="text-left py-2 px-2 font-medium">{h}</th>
                     ))}
                   </tr>
@@ -1370,7 +1371,10 @@ function OwnerReportView() {
                         </td>
                         <td className="py-2 px-2 tabular-nums">
                           {(() => {
-                            const p = pointsByUser[r.user_id];
+                            // Poin Saat Absen — snapshot per record (frozen
+                            // historic). Fallback ke per-user bila record
+                            // belum memiliki id / entri ledger.
+                            const p = pointsByRecord[r.id] || pointsByUser[r.user_id];
                             if (!p) return <span className="text-muted-foreground">-</span>;
                             const bal = Number(p.balance || 0);
                             const tone = bal >= 100
@@ -1379,7 +1383,7 @@ function OwnerReportView() {
                             return (
                               <span
                                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${tone}`}
-                                title={`Rank #${p.rank || '-'}${p.capped ? ' · capped' : ''}${pointsPeriod ? ` · periode ${pointsPeriod}` : ''}`}
+                                title={`Poin saat absen · ${r.date || ''}${p.capped ? ' · capped' : ''}`}
                               >
                                 <Trophy className="w-3 h-3" />
                                 {bal}

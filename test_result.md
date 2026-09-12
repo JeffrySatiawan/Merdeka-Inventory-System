@@ -109,6 +109,14 @@ user_problem_statement: |
   SKUs from a simple list, owner sees realtime dashboard with per-employee progress and
   backlog. MVP built with Next.js + MongoDB (Supabase/Tauri deferred).
 
+## LATEST PATCH — Absensi Poin Saat Absen (Feb 2026)
+- Column "Poin Saat Ini" pada Laporan Absensi (JSON + Excel Rekap) diubah menjadi "Poin Saat Absen"
+- Sumber data: `absensi_point_ledger` existing (Riwayat Poin) — snapshot balance dihitung dari initial_balance + cumulative delta ledger `event_date <= record.date` per user (kemudian di-clamp oleh `max_positive`/`max_negative`)
+- Response `GET /api/absensi/report` sekarang mengembalikan `points_by_record` (utama, per record id) DAN `points_by_user` (rekap = snapshot record TERAKHIR dalam filter). Field `points_period` dihilangkan.
+- Perubahan poin setelah tanggal absensi TIDAK boleh mempengaruhi angka pada laporan historis (frozen historic).
+- Files: `/app/lib/modules/absensi/service.js` (report handler), `/app/components/modules/absensi/AbsensiModule.js` (tabel & header)
+
+
 backend:
   - task: "Auth (login/logout/me) with session token"
     implemented: true
@@ -11817,6 +11825,203 @@ frontend:
           
           Test file: /app/backend_test_absensi_realtime_points.py
           All 8 tests passed (100%). Feature verified and working correctly.
+
+  - task: "Absensi Report — Poin Saat Absen (frozen historic snapshot)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/absensi/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          PATCH — Absensi "Poin Saat Absen" (frozen historic snapshot).
+          
+          **CONTEXT:**
+          `GET /api/absensi/report` previously returned `points_by_user` = live leaderboard balance (period berjalan). 
+          Bug: laporan historis tampil poin TERBARU, bukan poin saat absensi terjadi.
+          
+          **PATCH CHANGES:**
+          - Response now returns `points_by_record` (dict record_id → { balance, capped }) AND `points_by_user` (rekap: snapshot of LAST record per user in filter).
+          - Field `points_period` DIHAPUS.
+          - Balance dihitung dari `absensi_point_ledger` existing: `clamp(initial_balance + Σ ledger.points where event_date <= record.date AND user_id = record.user_id)`.
+          - Excel export sheet "Rekapitulasi" kolom terakhir sekarang berjudul **"Poin Saat Absen"** (bukan "Poin Saat Ini").
+          
+          **IMPLEMENTATION:**
+          - Lines 929-993: Compute points_by_record and points_by_user from absensi_point_ledger
+          - Lines 996-1007: JSON report response includes points_by_record and points_by_user (points_period removed)
+          - Line 1107: Excel Rekapitulasi header changed to "Poin Saat Absen"
+          - Lines 1098-1104: Excel Rekapitulasi rows use pointsByUser (frozen historic)
+          
+          **CRITICAL FEATURE:**
+          - FROZEN HISTORIC: Perubahan poin setelah tanggal absensi TIDAK boleh mempengaruhi angka pada laporan historis.
+          - Balance is snapshot at record.date, not current balance.
+          - Backdated adjustments (event_date <= record.date) DO affect historical balance.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 21 TESTS PASSED (100%) - Absensi Poin Saat Absen patch FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for Absensi "Poin Saat Absen" patch (frozen historic snapshot)
+          **TEST FILE:** /app/backend_test_absensi_poin_saat_absen.py
+          **TEST METHOD:** Python requests + MongoDB direct manipulation + openpyxl for Excel parsing
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-02-10 to 2026-02-20
+          **CREDENTIALS:** owner / owner123, cindy / cindy123
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: LOGIN AS OWNER (1/1 passed)
+             - POST /api/auth/login → 200 with token ✓
+             - Owner ID: dd76938b-768f-4264-a925-57f319750c70 ✓
+          
+          ✅ TEST 2: GET POINT SETTINGS (1/1 passed)
+             - GET /api/absensi/points/settings → 200 ✓
+             - initial_balance: 100, max_positive: 150, max_negative: -50 ✓
+          
+          ✅ TEST 3: GET CINDY USER ID (1/1 passed)
+             - GET /api/employees → 200 ✓
+             - Cindy found: ID 85dec2f1-3413-45cf-a4fc-f38963f2949d ✓
+          
+          ✅ TEST 4: SEED ABSENSI RECORDS + LEDGER ENTRIES (1/1 passed)
+             - Inserted 3 absensi records for Cindy (2026-02-10, 2026-02-15, 2026-02-20) ✓
+             - Inserted 4 ledger entries:
+               * 2026-02-05 → +10 points (before record1)
+               * 2026-02-10 → +5 points (checkin for record1)
+               * 2026-02-12 → -3 points (between record1 and record2)
+               * 2026-02-15 → +5 points (checkin for record2)
+             - Expected balances calculated:
+               * Record 1 (2026-02-10): 100 + 10 + 5 = 115
+               * Record 2 (2026-02-15): 100 + 10 + 5 - 3 + 5 = 117
+               * Record 3 (2026-02-20): 100 + 10 + 5 - 3 + 5 = 117
+          
+          ✅ TEST 5: GET /api/absensi/report - VERIFY RESPONSE STRUCTURE (6/6 passed)
+             - GET /api/absensi/report?from=2026-02-01&to=2026-02-28 → 200 ✓
+             - Response contains 'points_by_record' field (dict) ✓
+             - Response contains 'points_by_user' field (dict) ✓
+             - Response DOES NOT contain 'points_period' field (correctly removed) ✓
+             - points_by_record is an object (dict) ✓
+             - points_by_user is an object (dict) ✓
+             - Response contains 'items' array with 3 records ✓
+          
+          ✅ TEST 6: VERIFY points_by_record CALCULATION (3/3 passed)
+             - Record 1 (2026-02-10): balance = 115 (expected 115) ✓
+             - Record 2 (2026-02-15): balance = 117 (expected 117) ✓
+             - Record 3 (2026-02-20): balance = 117 (expected 117) ✓
+             - **CRITICAL SUCCESS:** Balance calculation from ledger working correctly ✓
+          
+          ✅ TEST 7: VERIFY points_by_user (LAST RECORD SNAPSHOT) (1/1 passed)
+             - points_by_user[cindy].balance = 117 (matches last record) ✓
+             - **CRITICAL SUCCESS:** points_by_user is snapshot of LAST record in filter ✓
+          
+          ✅ TEST 8: FROZEN HISTORIC TEST - Insert ledger AFTER record date (1/1 passed)
+             - Record 1 balance BEFORE: 115 ✓
+             - Inserted ledger entry: 2026-02-25 → +50 points (AFTER all records) ✓
+             - Record 1 balance AFTER: 115 (UNCHANGED) ✓
+             - **CRITICAL SUCCESS:** Future ledger entry (2026-02-25) correctly ignored for historical record (2026-02-10) ✓
+             - **FROZEN HISTORIC VERIFIED:** Points after record.date DO NOT affect historical report ✓
+          
+          ✅ TEST 9: BACKDATED LEDGER TEST - Insert ledger BEFORE record date (1/1 passed)
+             - Record 1 balance BEFORE: 115 ✓
+             - Inserted backdated ledger entry: 2026-02-08 → +7 points (BEFORE record1) ✓
+             - Record 1 balance AFTER: 122 (UPDATED) ✓
+             - **CRITICAL SUCCESS:** Backdated ledger entry (2026-02-08) correctly applied to record (2026-02-10) ✓
+             - **BACKDATED ADJUSTMENT VERIFIED:** Ledger entries with event_date <= record.date DO affect historical balance ✓
+          
+          ✅ TEST 10: EXCEL EXPORT VERIFICATION (2/2 passed)
+             - GET /api/absensi/report/export?from=2026-02-01&to=2026-02-28 → 200 ✓
+             - Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet ✓
+             - File size: 31,032 bytes ✓
+             - Rekapitulasi header: ['Nama Staff', 'Total Jam Kerja Diakui (jam)', 'Total Jam SO Diakui (jam)', 'Total Jam Lembur Diakui (jam)', 'Total Jam Diakui (jam)', 'Poin Saat Absen'] ✓
+             - Column 'Poin Saat Absen' found in Rekapitulasi sheet (column 6) ✓
+             - 'Poin Saat Absen' is the last column ✓
+             - **CRITICAL SUCCESS:** Excel column renamed from "Poin Saat Ini" to "Poin Saat Absen" ✓
+          
+          ✅ TEST 11: EMPTY CASE - Filter yielding zero rows (1/1 passed)
+             - GET /api/absensi/report?from=2025-01-01&to=2025-01-31 → 200 ✓
+             - points_by_record = {} (empty dict) ✓
+             - points_by_user = {} (empty dict) ✓
+             - **CRITICAL SUCCESS:** Empty case handled without crash ✓
+          
+          ✅ TEST 12: REGRESSION - Leaderboard endpoint still works (1/1 passed)
+             - GET /api/absensi/points/leaderboard → 200 ✓
+             - Period: None, Items: 2 ✓
+             - **NO REGRESSIONS DETECTED** ✓
+          
+          ✅ TEST 13: REGRESSION - Points history endpoint still works (1/1 passed)
+             - GET /api/absensi/points/history?user_id={cindy_id}&period=2026-02 → 200 ✓
+             - Items: 7 ✓
+             - **NO REGRESSIONS DETECTED** ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Response Structure (VERIFIED):**
+             - GET /api/absensi/report returns points_by_record (dict) and points_by_user (dict)
+             - Field points_period REMOVED (no longer in response)
+             - points_by_record maps record_id → { balance, capped }
+             - points_by_user maps user_id → { balance, capped } (snapshot of LAST record in filter)
+          
+          2. **Balance Calculation (VERIFIED):**
+             - Balance calculated from absensi_point_ledger: clamp(initial_balance + Σ ledger.points where event_date <= record.date)
+             - Clamp bounds from point settings: max_positive=150, max_negative=-50
+             - Cumulative sum working correctly across multiple ledger entries
+             - Binary search optimization for finding cumulative balance at date
+          
+          3. **Frozen Historic (VERIFIED - CRITICAL):**
+             - Inserting ledger entry AFTER record.date (2026-02-25) does NOT change historical balance (2026-02-10)
+             - Record 1 balance remained 115 after inserting +50 points on 2026-02-25
+             - This is the CORE FIX: historical reports are now frozen snapshots, not live balances
+          
+          4. **Backdated Adjustments (VERIFIED):**
+             - Inserting ledger entry BEFORE record.date (2026-02-08) DOES update historical balance
+             - Record 1 balance changed from 115 to 122 after inserting +7 points on 2026-02-08
+             - This allows owner to make backdated corrections that affect historical reports
+          
+          5. **Excel Export (VERIFIED):**
+             - Rekapitulasi sheet has "Poin Saat Absen" column (not "Poin Saat Ini")
+             - Column is last column (column F, index 5)
+             - Excel export returns 200 with correct Content-Type
+             - File size: 31,032 bytes (valid XLSX)
+          
+          6. **Empty Case (VERIFIED):**
+             - Filter yielding zero rows returns empty dicts: points_by_record={}, points_by_user={}
+             - No crash or error
+          
+          7. **Regression Testing (VERIFIED):**
+             - Leaderboard endpoint working (GET /api/absensi/points/leaderboard)
+             - Points history endpoint working (GET /api/absensi/points/history)
+             - No breaking changes to existing endpoints
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Response contains points_by_record (per record id)
+          ✅ Response contains points_by_user (recap, last record snapshot)
+          ✅ Field points_period REMOVED
+          ✅ Balance calculated from ledger with event_date <= record.date
+          ✅ FROZEN HISTORIC: Future ledger entries DO NOT affect historical balance
+          ✅ BACKDATED ADJUSTMENTS: Past ledger entries DO affect historical balance
+          ✅ Excel column renamed to "Poin Saat Absen"
+          ✅ Empty case handled without crash
+          ✅ Zero regressions in other endpoints
+          
+          **CONCLUSION:**
+          The Absensi "Poin Saat Absen" patch is FULLY WORKING. All requirements met:
+          1. Response structure changed: points_by_record + points_by_user (points_period removed)
+          2. Balance calculation from ledger working correctly (cumulative sum with clamp)
+          3. FROZEN HISTORIC verified: future ledger entries do NOT affect historical reports
+          4. Backdated adjustments working: past ledger entries DO affect historical reports
+          5. Excel column renamed from "Poin Saat Ini" to "Poin Saat Absen"
+          6. Empty case handled gracefully
+          7. Zero regressions in leaderboard and history endpoints
+          
+          **BUG FIX VERIFIED:**
+          The original bug (laporan historis tampil poin TERBARU, bukan poin saat absensi terjadi) is RESOLVED.
+          Historical reports now show frozen snapshots of points at the time of attendance, not current live balance.
+          
+          Test file: /app/backend_test_absensi_poin_saat_absen.py
+          All 21 tests passed (100%). Patch verified and working correctly.
+
 
 metadata:
   created_by: "main_agent"
