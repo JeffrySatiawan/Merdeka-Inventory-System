@@ -1820,9 +1820,46 @@ function OwnerSettingsView() {
   const save = async () => {
     setSaving(true);
     try {
+      // Normalisasi baris shift baru: auto-generate key dari Nama Shift bila
+      // owner lupa mengisi (backend akan menolak/drop baris tanpa key). Juga
+      // beri feedback jelas bila ada baris baru tanpa nama.
+      const slugKey = (s) => String(s || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 40);
+      // Normalisasi jam ke format HH:MM. Sebagian browser/locale (id-ID)
+      // menampilkan / mengeluarkan value time dgn pemisah titik ("22.00")
+      // sehingga backend regex `/^\d{2}:\d{2}$/` men-drop baris tsb tanpa
+      // notifikasi. Normalisasi di sini menjamin save selalu sukses.
+      const normHM = (v) => {
+        const m = String(v || '').trim().match(/^(\d{1,2})[.:](\d{2})$/);
+        if (!m) return String(v || '').trim();
+        const h = Math.min(23, Math.max(0, parseInt(m[1], 10)));
+        const mm = Math.min(59, Math.max(0, parseInt(m[2], 10)));
+        return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+      };
+      const rawShifts = Array.isArray(settings.shifts) ? settings.shifts : [];
+      const emptyNewIdx = rawShifts.findIndex((sh) => sh._isNew && !String(sh.name || '').trim());
+      if (emptyNewIdx >= 0) {
+        toast.error(`Baris shift baru #${emptyNewIdx + 1} belum diberi Nama Shift`);
+        setSaving(false);
+        return;
+      }
+      const cleanShifts = rawShifts.map((sh) => {
+        const out = {
+          ...sh,
+          start: normHM(sh.start),
+          end: normHM(sh.end),
+        };
+        if (sh._isNew && !String(out.key || '').trim() && out.name) {
+          out.key = slugKey(out.name);
+        }
+        return out;
+      });
       const d = await absApi('settings', { method: 'PUT', body: JSON.stringify({
         location: settings.location,
-        shifts: settings.shifts,
+        shifts: cleanShifts,
         overtime_min_minutes: settings.overtime_min_minutes,
         overtime_request_threshold_min: settings.overtime_request_threshold_min,
         so_mode_enabled: settings.so_mode_enabled,
@@ -1901,15 +1938,64 @@ function OwnerSettingsView() {
           <CardTitle className="text-sm flex items-center gap-2"><Clock className="w-4 h-4"/>Shift</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
+          {/* Header kolom — memudahkan owner mengisi baris baru. */}
+          <div className="grid grid-cols-6 gap-2 items-center text-[10px] uppercase tracking-wide text-muted-foreground pb-1">
+            <div className="col-span-2">Nama Shift</div>
+            <div>Bagian</div>
+            <div>Mulai</div>
+            <div>Selesai</div>
+            <div>Key/Code</div>
+          </div>
           {settings.shifts.map((sh, i) => (
-            <div key={sh.key} className="grid grid-cols-6 gap-2 items-center">
+            <div key={sh._tmpId || sh.key || `new-${i}`} className="grid grid-cols-6 gap-2 items-center">
               <Input value={sh.name} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, name: e.target.value }; return { ...s, shifts: arr };})} className="col-span-2" />
               <Input value={sh.category} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, category: e.target.value }; return { ...s, shifts: arr };})} />
               <Input type="time" value={sh.start} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, start: e.target.value }; return { ...s, shifts: arr };})} />
               <Input type="time" value={sh.end} onChange={(e) => setSettings((s) => { const arr = [...s.shifts]; arr[i] = { ...sh, end: e.target.value }; return { ...s, shifts: arr };})} />
-              <div className="text-[10px] text-muted-foreground font-mono truncate">{sh.key}</div>
+              {sh._isNew ? (
+                <Input
+                  value={sh.key}
+                  placeholder="mis. apotek_malam"
+                  onChange={(e) => setSettings((s) => {
+                    const arr = [...s.shifts];
+                    arr[i] = { ...sh, key: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 40) };
+                    return { ...s, shifts: arr };
+                  })}
+                  className="text-[11px] font-mono h-9"
+                />
+              ) : (
+                <div className="text-[10px] text-muted-foreground font-mono truncate">{sh.key}</div>
+              )}
             </div>
           ))}
+          {/* + Tambah Shift — REUSE row + save logic existing. Baris baru
+              ditambahkan ke settings.shifts dan ikut disimpan lewat PUT
+              /api/absensi/settings pada tombol "Simpan Pengaturan" existing. */}
+          <div className="pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setSettings((s) => ({
+                ...s,
+                shifts: [
+                  ...(s.shifts || []),
+                  {
+                    key: '',
+                    name: '',
+                    category: 'apotek',
+                    start: '08:00',
+                    end: '16:00',
+                    _isNew: true,
+                    _tmpId: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  },
+                ],
+              }))}
+              className="gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" /> Tambah Shift
+            </Button>
+          </div>
           <div className="grid grid-cols-2 gap-3 pt-1">
             <div>
               <Label className="text-xs">Min. menit lembur</Label>

@@ -55,6 +55,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
 import {
@@ -89,6 +90,7 @@ function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
@@ -166,6 +168,15 @@ function LoginScreen({ onLogin }) {
                 {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                 Masuk
               </Button>
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  onClick={() => setRecoveryOpen(true)}
+                  className="text-xs text-muted-foreground hover:text-blue-300 underline underline-offset-2"
+                >
+                  Lupa Password? (Owner)
+                </button>
+              </div>
             </form>
           </CardContent>
         </Card>
@@ -174,7 +185,181 @@ function LoginScreen({ onLogin }) {
           Merdeka Inventory System
         </div>
       </motion.div>
+
+      <OwnerRecoveryDialog
+        open={recoveryOpen}
+        onClose={() => setRecoveryOpen(false)}
+        onRecovered={(payload) => {
+          setRecoveryOpen(false);
+          localStorage.setItem('cc_token', payload.token);
+          onLogin(payload.user);
+          toast.success('Password Owner berhasil di-reset. Anda otomatis login.');
+        }}
+      />
     </div>
+  );
+}
+
+// ============================================================
+// Owner Password Recovery Dialog (no email/OTP/telegram) — 3 pertanyaan + PIN.
+// ============================================================
+function OwnerRecoveryDialog({ open, onClose, onRecovered }) {
+  const [step, setStep] = useState(1); // 1: username, 2: answers+pin, 3: new password
+  const [username, setUsername] = useState('');
+  const [questions, setQuestions] = useState([]); // [{q}, {q}, {q}]
+  const [answers, setAnswers] = useState(['', '', '']);
+  const [pin, setPin] = useState('');
+  const [recoveryToken, setRecoveryToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setStep(1);
+      setUsername('');
+      setQuestions([]);
+      setAnswers(['', '', '']);
+      setPin('');
+      setRecoveryToken('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setBusy(false);
+    }
+  }, [open]);
+
+  async function step1_fetchQuestions() {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) { toast.error('Isi username terlebih dahulu'); return; }
+    setBusy(true);
+    try {
+      const d = await api(`auth/owner/recovery-status?username=${encodeURIComponent(uname)}`);
+      if (!d.exists) throw new Error('Username tidak dikenal atau bukan Owner');
+      if (!d.has_recovery) throw new Error('Recovery Owner belum di-setup. Silakan login manual lalu setup dari User Management.');
+      setQuestions(d.questions || []);
+      setStep(2);
+    } catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function step2_verify() {
+    if (answers.some((a) => !a.trim())) { toast.error('Semua jawaban wajib diisi'); return; }
+    if (!/^\d{6}$/.test(pin)) { toast.error('PIN harus 6 digit angka'); return; }
+    setBusy(true);
+    try {
+      const d = await api('auth/owner/recovery/verify', {
+        method: 'POST',
+        body: JSON.stringify({ username: username.trim().toLowerCase(), answers, pin }),
+      });
+      setRecoveryToken(d.recovery_token);
+      setStep(3);
+    } catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function step3_reset() {
+    if (newPassword.length < 6) { toast.error('Password baru minimal 6 karakter'); return; }
+    if (newPassword !== confirmPassword) { toast.error('Konfirmasi password tidak cocok'); return; }
+    setBusy(true);
+    try {
+      const d = await api('auth/owner/recovery/reset', {
+        method: 'POST',
+        body: JSON.stringify({ recovery_token: recoveryToken, new_password: newPassword }),
+      });
+      onRecovered({ token: d.token, user: d.user });
+    } catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Recovery Password Owner</DialogTitle>
+          <DialogDescription>
+            Jawab 3 pertanyaan keamanan + PIN 6 digit yang telah di-setup oleh Owner.
+          </DialogDescription>
+        </DialogHeader>
+
+        {step === 1 && (
+          <div className="space-y-3">
+            <Label>Username Owner</Label>
+            <Input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="username Owner"
+              autoFocus
+            />
+            <Button className="w-full" disabled={busy} onClick={step1_fetchQuestions}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Lanjut
+            </Button>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-3">
+            {questions.map((qq, i) => (
+              <div key={i} className="space-y-1">
+                <Label className="text-xs">{i + 1}. {qq.q}</Label>
+                <Input
+                  value={answers[i] || ''}
+                  onChange={(e) => setAnswers((a) => { const c = [...a]; c[i] = e.target.value; return c; })}
+                  placeholder="Jawaban Anda"
+                />
+              </div>
+            ))}
+            <div className="space-y-1 pt-1">
+              <Label className="text-xs">PIN 6 digit</Label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="••••••"
+              />
+            </div>
+            <Button className="w-full" disabled={busy} onClick={step2_verify}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Verifikasi
+            </Button>
+            <div className="text-[10px] text-muted-foreground text-center">
+              Maks. 5 percobaan gagal dalam 15 menit.
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div className="space-y-3">
+            <div className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded p-2">
+              Verifikasi berhasil. Silakan buat password baru.
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Password baru (min. 6 karakter)</Label>
+              <Input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Konfirmasi password baru</Label>
+              <Input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </div>
+            <Button className="w-full" disabled={busy} onClick={step3_reset}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Reset Password & Login
+            </Button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1508,6 +1693,8 @@ function EmployeesView() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [ownerProfileOpen, setOwnerProfileOpen] = useState(false);
+  const [ownerRecoveryOpen, setOwnerRecoveryOpen] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -1615,6 +1802,26 @@ function EmployeesView() {
                       )}
                     </div>
                   </div>
+                  {e.role === 'owner' && (
+                    <div className="flex gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 border-purple-500/40 text-purple-200 text-[11px]"
+                        onClick={() => setOwnerProfileOpen(true)}
+                      >
+                        <Pencil className="w-3 h-3" /> Kredensial
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 border-amber-500/40 text-amber-200 text-[11px]"
+                        onClick={() => setOwnerRecoveryOpen(true)}
+                      >
+                        <Shield className="w-3 h-3" /> Recovery
+                      </Button>
+                    </div>
+                  )}
                   {e.role !== 'owner' && (
                     <div className="text-right">
                       <div className="text-xs text-muted-foreground">Bobot</div>
@@ -1659,9 +1866,212 @@ function EmployeesView() {
           load();
         }}
       />
+      <OwnerProfileDialog
+        open={ownerProfileOpen}
+        onClose={() => setOwnerProfileOpen(false)}
+        onSaved={() => { setOwnerProfileOpen(false); load(); }}
+      />
+      <OwnerRecoverySetupDialog
+        open={ownerRecoveryOpen}
+        onClose={() => setOwnerRecoveryOpen(false)}
+      />
     </div>
   );
 }
+
+// ============================================================
+// Owner Profile Dialog — self ubah username/password (butuh password lama).
+// ============================================================
+function OwnerProfileDialog({ open, onClose, onSaved }) {
+  const [cur, setCur] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setCur(''); setNewUsername(''); setNewPassword(''); setConfirmPassword(''); setSaving(false);
+    }
+  }, [open]);
+
+  async function submit() {
+    if (!cur) { toast.error('Password saat ini wajib diisi'); return; }
+    if (!newUsername && !newPassword) { toast.error('Isi minimal salah satu: username baru atau password baru'); return; }
+    if (newPassword && newPassword !== confirmPassword) { toast.error('Konfirmasi password tidak cocok'); return; }
+    setSaving(true);
+    try {
+      const payload = { current_password: cur };
+      if (newUsername) payload.new_username = newUsername;
+      if (newPassword) payload.new_password = newPassword;
+      await api('auth/owner/profile', { method: 'PUT', body: JSON.stringify(payload) });
+      toast.success('Kredensial Owner diperbarui');
+      onSaved?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Ubah Kredensial Owner</DialogTitle>
+          <DialogDescription>
+            Konfirmasi password saat ini, lalu isi username baru dan/atau password baru.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label className="text-xs">Password saat ini</Label>
+            <Input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoFocus />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Username baru <span className="text-muted-foreground">(opsional)</span></Label>
+            <Input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="a-z, 0-9, _" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Password baru <span className="text-muted-foreground">(opsional, min. 6 karakter)</span></Label>
+            <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+          </div>
+          {newPassword && (
+            <div className="space-y-1">
+              <Label className="text-xs">Konfirmasi password baru</Label>
+              <Input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+            </div>
+          )}
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Batal</Button>
+          <Button onClick={submit} disabled={saving}>
+            {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+            Simpan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================
+// Owner Recovery Setup Dialog — 3 pertanyaan + PIN 6 digit.
+// ============================================================
+function OwnerRecoverySetupDialog({ open, onClose }) {
+  const [cur, setCur] = useState('');
+  const [qs, setQs] = useState([{ q: '', a: '' }, { q: '', a: '' }, { q: '', a: '' }]);
+  const [pin, setPin] = useState('');
+  const [pinConfirm, setPinConfirm] = useState('');
+  const [configured, setConfigured] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setCur(''); setPin(''); setPinConfirm(''); setSaving(false);
+    (async () => {
+      try {
+        const d = await api('auth/owner/recovery');
+        setConfigured(!!d.configured);
+        if (Array.isArray(d.questions) && d.questions.length === 3) {
+          setQs(d.questions.map((x) => ({ q: x.q || '', a: '' })));
+        } else {
+          setQs([{ q: '', a: '' }, { q: '', a: '' }, { q: '', a: '' }]);
+        }
+      } catch (e) { toast.error(e.message); }
+    })();
+  }, [open]);
+
+  async function submit() {
+    if (!cur) { toast.error('Password saat ini wajib diisi'); return; }
+    if (qs.some((x) => !x.q.trim() || !x.a.trim())) { toast.error('Semua pertanyaan & jawaban wajib diisi'); return; }
+    if (!/^\d{6}$/.test(pin)) { toast.error('PIN harus 6 digit angka'); return; }
+    if (pin !== pinConfirm) { toast.error('Konfirmasi PIN tidak cocok'); return; }
+    setSaving(true);
+    try {
+      await api('auth/owner/recovery', {
+        method: 'PUT',
+        body: JSON.stringify({ current_password: cur, questions: qs.map((x) => ({ q: x.q.trim(), a: x.a.trim() })), pin }),
+      });
+      toast.success('Recovery Owner tersimpan');
+      onClose?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Setup Recovery Password (Owner)</DialogTitle>
+          <DialogDescription>
+            Buat 3 pertanyaan keamanan + PIN 6 digit. Jawaban & PIN disimpan hashed. Digunakan saat &quot;Lupa Password?&quot; di halaman login.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {configured && (
+            <div className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded p-2">
+              Recovery sudah aktif. Anda dapat memperbarui pertanyaan / PIN di sini.
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label className="text-xs">Password saat ini</Label>
+            <Input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoFocus />
+          </div>
+          {qs.map((row, i) => (
+            <div key={i} className="grid grid-cols-1 gap-2 p-2 rounded border border-white/10 bg-white/[0.02]">
+              <div className="space-y-1">
+                <Label className="text-xs">Pertanyaan {i + 1}</Label>
+                <Input
+                  value={row.q}
+                  onChange={(e) => setQs((arr) => { const c = [...arr]; c[i] = { ...c[i], q: e.target.value }; return c; })}
+                  placeholder="mis. Nama SD Anda?"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Jawaban {i + 1}</Label>
+                <Input
+                  value={row.a}
+                  onChange={(e) => setQs((arr) => { const c = [...arr]; c[i] = { ...c[i], a: e.target.value }; return c; })}
+                  placeholder="Jawaban (case-insensitive)"
+                />
+              </div>
+            </div>
+          ))}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label className="text-xs">PIN 6 digit</Label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="••••••"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Konfirmasi PIN</Label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={pinConfirm}
+                onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="••••••"
+              />
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Batal</Button>
+          <Button onClick={submit} disabled={saving}>
+            {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+            {configured ? 'Perbarui Recovery' : 'Simpan Recovery'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 
 function EmployeeForm({ open, onClose, editing, onSaved }) {
   const [form, setForm] = useState({

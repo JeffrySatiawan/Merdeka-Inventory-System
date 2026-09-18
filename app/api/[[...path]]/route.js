@@ -66,6 +66,37 @@ function isSessionClosed(settings) {
   return cur < startM || cur >= endM;
 }
 
+// ---------- Owner Recovery: in-memory rate limiter (per-process) ----------
+// Best-effort: reset on server restart. Scope terbatas pada endpoint recovery
+// Owner sehingga tidak menyentuh login staff / auth-existing.
+const _ownerRecoveryAttempts = new Map(); // username -> { count, first_ms }
+const _ownerRecoveryTokens = new Map();   // recovery_token -> { owner_id, expires_ms }
+const RECOVERY_MAX_ATTEMPTS = 5;
+const RECOVERY_WINDOW_MS = 15 * 60 * 1000;
+const RECOVERY_TOKEN_TTL_MS = 15 * 60 * 1000;
+function _recoveryRateCheck(uname) {
+  const now = Date.now();
+  const s = _ownerRecoveryAttempts.get(uname);
+  if (s && (now - s.first_ms) > RECOVERY_WINDOW_MS) {
+    _ownerRecoveryAttempts.delete(uname);
+  }
+  const cur = _ownerRecoveryAttempts.get(uname);
+  if (cur && cur.count >= RECOVERY_MAX_ATTEMPTS) {
+    return { locked: true, waitMs: Math.max(0, RECOVERY_WINDOW_MS - (now - cur.first_ms)) };
+  }
+  return { locked: false };
+}
+function _recoveryRateFail(uname) {
+  const now = Date.now();
+  const cur = _ownerRecoveryAttempts.get(uname) || { count: 0, first_ms: now };
+  cur.count += 1;
+  if (!cur.first_ms) cur.first_ms = now;
+  _ownerRecoveryAttempts.set(uname, cur);
+}
+function _recoveryRateReset(uname) {
+  _ownerRecoveryAttempts.delete(uname);
+}
+
 async function getUserFromRequest(req) {
   // Primary: Authorization: Bearer <token> header (fetch/XHR calls).
   const auth = req.headers.get('authorization') || '';
@@ -502,6 +533,176 @@ async function handleRequest(req, path, method) {
         ? VALID_MODULE_KEYS.slice()
         : withGlobalModules(user, user.modules);
     return json({ user: { ...user, modules: effectiveModules } });
+  }
+
+  // ============================================================
+  // Owner Self-Service (profile edit + password recovery) — APPEND-ONLY.
+  // Staff auth / permissions / login-existing tidak disentuh.
+  // In-memory rate limiter & recovery-token store (per-process, reset saat
+  // supervisor restart — cukup untuk MVP owner-only recovery).
+  // ============================================================
+
+  // PUT /api/auth/owner/profile — Owner ubah username/password (self only).
+  if (path === 'auth/owner/profile' && method === 'PUT') {
+    const user = await getUserFromRequest(req);
+    if (!user || user.role !== 'owner') return err('unauthorized', 401);
+    const body = await req.json().catch(() => ({}));
+    const { current_password, new_username, new_password } = body || {};
+    if (!current_password) return err('Password saat ini wajib diisi');
+    const fresh = await db.collection('employees').findOne({ id: user.id });
+    if (!fresh) return err('User tidak ditemukan', 404);
+    if (fresh.password !== hashPassword(current_password)) return err('Password saat ini salah', 401);
+    const upd = { updatedAt: new Date() };
+    if (new_username && String(new_username).trim()) {
+      const uNew = String(new_username).toLowerCase().trim();
+      if (!/^[a-z0-9_]{3,32}$/.test(uNew)) return err('Username tidak valid (3-32 karakter: a-z, 0-9, _)');
+      if (uNew !== fresh.username) {
+        const clash = await db.collection('employees').findOne({ username: uNew });
+        if (clash) return err('Username sudah dipakai');
+        upd.username = uNew;
+      }
+    }
+    if (new_password && String(new_password).length > 0) {
+      if (String(new_password).length < 6) return err('Password baru minimal 6 karakter');
+      upd.password = hashPassword(String(new_password));
+    }
+    if (Object.keys(upd).length === 1) return err('Tidak ada perubahan');
+    await db.collection('employees').updateOne({ id: user.id }, { $set: upd });
+    return json({ ok: true, message: 'Kredensial Owner diperbarui' });
+  }
+
+  // GET /api/auth/owner/recovery — Owner lihat status setup recovery-nya.
+  if (path === 'auth/owner/recovery' && method === 'GET') {
+    const user = await getUserFromRequest(req);
+    if (!user || user.role !== 'owner') return err('unauthorized', 401);
+    const fresh = await db.collection('employees').findOne({ id: user.id });
+    const qs = Array.isArray(fresh?.recovery_questions) ? fresh.recovery_questions : [];
+    return json({
+      configured: qs.length === 3 && !!fresh?.recovery_pin_hash,
+      questions: qs.map((r) => ({ q: r.q })),
+      updated_at: fresh?.recovery_updated_at || null,
+    });
+  }
+
+  // PUT /api/auth/owner/recovery — Owner set 3 pertanyaan + PIN 6 digit.
+  // Jawaban & PIN disimpan hashed (SHA256, sama seperti password existing).
+  if (path === 'auth/owner/recovery' && method === 'PUT') {
+    const user = await getUserFromRequest(req);
+    if (!user || user.role !== 'owner') return err('unauthorized', 401);
+    const body = await req.json().catch(() => ({}));
+    const { current_password, questions, pin } = body || {};
+    if (!current_password) return err('Password saat ini wajib diisi');
+    const fresh = await db.collection('employees').findOne({ id: user.id });
+    if (!fresh) return err('User tidak ditemukan', 404);
+    if (fresh.password !== hashPassword(current_password)) return err('Password saat ini salah', 401);
+    if (!Array.isArray(questions) || questions.length !== 3) return err('Wajib 3 pertanyaan keamanan');
+    const cleaned = questions.map((it) => ({
+      q: String(it?.q || '').trim().slice(0, 200),
+      a: String(it?.a || '').trim().toLowerCase(),
+    }));
+    if (cleaned.some((x) => !x.q || !x.a)) return err('Setiap pertanyaan wajib punya jawaban');
+    if (!/^\d{6}$/.test(String(pin || ''))) return err('PIN harus 6 digit angka');
+    await db.collection('employees').updateOne(
+      { id: user.id },
+      {
+        $set: {
+          recovery_questions: cleaned.map((x) => ({ q: x.q, a_hash: hashPassword(x.a) })),
+          recovery_pin_hash: hashPassword(String(pin)),
+          recovery_updated_at: new Date(),
+        },
+      }
+    );
+    return json({ ok: true, message: 'Recovery Owner tersimpan' });
+  }
+
+  // GET /api/auth/owner/recovery-status?username=... — PUBLIC (unauth).
+  // Hanya mengungkap pertanyaan (tanpa jawaban/hash). Staff username selalu
+  // mengembalikan exists:false supaya tidak bocor daftar user.
+  if (path === 'auth/owner/recovery-status' && method === 'GET') {
+    const url = new URL(req.url);
+    const uname = String(url.searchParams.get('username') || '').toLowerCase().trim();
+    if (!uname) return json({ exists: false, has_recovery: false });
+    const owner = await db.collection('employees').findOne({ username: uname, role: 'owner' });
+    if (!owner) return json({ exists: false, has_recovery: false });
+    const qs = Array.isArray(owner.recovery_questions) ? owner.recovery_questions : [];
+    return json({
+      exists: true,
+      has_recovery: qs.length === 3 && !!owner.recovery_pin_hash,
+      questions: qs.map((r) => ({ q: r.q })),
+    });
+  }
+
+  // POST /api/auth/owner/recovery/verify — PUBLIC.
+  // Body: { username, answers:[a1,a2,a3], pin }. Rate-limited per-username.
+  if (path === 'auth/owner/recovery/verify' && method === 'POST') {
+    const body = await req.json().catch(() => ({}));
+    const uname = String(body?.username || '').toLowerCase().trim();
+    const answers = Array.isArray(body?.answers) ? body.answers : [];
+    const pin = String(body?.pin || '');
+    if (!uname) return err('Username wajib');
+    const rl = _recoveryRateCheck(uname);
+    if (rl.locked) return err(`Terlalu banyak percobaan. Coba lagi dalam ${Math.ceil(rl.waitMs / 60000)} menit.`, 429);
+    const owner = await db.collection('employees').findOne({ username: uname, role: 'owner' });
+    if (!owner) {
+      _recoveryRateFail(uname);
+      return err('Data recovery tidak cocok', 401);
+    }
+    const qs = Array.isArray(owner.recovery_questions) ? owner.recovery_questions : [];
+    if (qs.length !== 3 || !owner.recovery_pin_hash) {
+      return err('Recovery Owner belum di-setup. Login manual lalu setup dari User Management.', 400);
+    }
+    if (answers.length !== 3) {
+      _recoveryRateFail(uname);
+      return err('Data recovery tidak cocok', 401);
+    }
+    const ansOk = qs.every(
+      (row, i) => hashPassword(String(answers[i] || '').trim().toLowerCase()) === row.a_hash
+    );
+    const pinOk = hashPassword(pin) === owner.recovery_pin_hash;
+    if (!ansOk || !pinOk) {
+      _recoveryRateFail(uname);
+      const remaining = Math.max(0, RECOVERY_MAX_ATTEMPTS - (_ownerRecoveryAttempts.get(uname)?.count || 0));
+      return err(`Data recovery tidak cocok. Sisa percobaan: ${remaining}`, 401);
+    }
+    _recoveryRateReset(uname);
+    const rtoken = uuidv4();
+    _ownerRecoveryTokens.set(rtoken, {
+      owner_id: owner.id,
+      expires_ms: Date.now() + RECOVERY_TOKEN_TTL_MS,
+    });
+    return json({ ok: true, recovery_token: rtoken, expires_in_min: 15 });
+  }
+
+  // POST /api/auth/owner/recovery/reset — PUBLIC. Pakai recovery_token → set
+  // password baru → invalidate semua sesi Owner lama → issue token sesi baru
+  // (auto login). Tidak ada master password / backdoor.
+  if (path === 'auth/owner/recovery/reset' && method === 'POST') {
+    const body = await req.json().catch(() => ({}));
+    const { recovery_token, new_password } = body || {};
+    if (!recovery_token || !new_password) return err('recovery_token & new_password wajib');
+    const rec = _ownerRecoveryTokens.get(recovery_token);
+    if (!rec || rec.expires_ms < Date.now()) {
+      _ownerRecoveryTokens.delete(recovery_token);
+      return err('Token recovery kedaluwarsa, ulangi verifikasi', 401);
+    }
+    if (String(new_password).length < 6) return err('Password baru minimal 6 karakter');
+    const owner = await db.collection('employees').findOne({ id: rec.owner_id, role: 'owner' });
+    if (!owner) {
+      _ownerRecoveryTokens.delete(recovery_token);
+      return err('Owner tidak ditemukan', 404);
+    }
+    await db.collection('employees').updateOne(
+      { id: rec.owner_id, role: 'owner' },
+      { $set: { password: hashPassword(String(new_password)), updatedAt: new Date() } }
+    );
+    _ownerRecoveryTokens.delete(recovery_token);
+    // Invalidate semua sesi Owner lama, lalu issue token baru (auto login).
+    await db.collection('sessions').deleteMany({ employee_id: rec.owner_id });
+    const token = uuidv4();
+    await db.collection('sessions').insertOne({ token, employee_id: rec.owner_id, createdAt: new Date() });
+    const owner2 = await db.collection('employees').findOne({ id: rec.owner_id });
+    const { password: _pw, _id, ...safe } = owner2;
+    return json({ ok: true, token, user: { ...safe, modules: VALID_MODULE_KEYS.slice() } });
   }
 
   // ---------- MODULES REGISTRY ----------
