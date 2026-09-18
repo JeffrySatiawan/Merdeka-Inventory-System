@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import OrderManagementModule from '@/components/modules/order-management/OrderManagementModule';
 import FakturModule from '@/components/modules/faktur/FakturModule';
 import AbsensiModule from '@/components/modules/absensi/AbsensiModule';
+import PayrollModule from '@/components/modules/payroll/PayrollModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -43,6 +44,7 @@ import {
   Lock,
   Truck,
   Receipt,
+  Wallet,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -369,13 +371,20 @@ const MODULES_META = {
   order_management: { key: 'order_management', name: 'Order Management', icon: ShoppingCart, status: 'active' },
   absensi: { key: 'absensi', name: 'Absensi', icon: Clock, status: 'active' },
   faktur: { key: 'faktur', name: 'MIS Faktur', icon: Receipt, status: 'active' },
+  // OWNER ONLY — sidebar & module card di-render hanya bila user.role === 'owner'.
+  // Guard router `/api/payroll/*` juga menolak staff walau modules array mereka
+  // dimanipulasi (defense-in-depth).
+  payroll: { key: 'payroll', name: 'Payroll', icon: Wallet, status: 'active', ownerOnly: true },
 };
 
 // Compute allowed module keys for a user (owner has all)
 function userModules(user) {
   if (!user) return [];
   if (user.role === 'owner') return Object.keys(MODULES_META);
-  return Array.isArray(user.modules) ? user.modules : [];
+  // Non-owner: NEVER return ownerOnly modules, even if backend accidentally
+  // included them in user.modules (defense-in-depth mirroring backend guard).
+  const raw = Array.isArray(user.modules) ? user.modules : [];
+  return raw.filter((k) => MODULES_META[k] && !MODULES_META[k].ownerOnly);
 }
 function userHasModule(user, key) {
   return userModules(user).includes(key);
@@ -453,6 +462,20 @@ function buildNav(user) {
             { key: 'abs:owner:overtime', label: 'Approval Lembur', ownerOnly: true },
             { key: 'abs:points:settings', label: 'Pengaturan Poin', ownerOnly: true },
             { key: 'abs:owner:settings', label: 'Pengaturan Absensi', ownerOnly: true },
+          ],
+        },
+        {
+          // OWNER-ONLY. `module: 'payroll'` sudah owner-only via MODULES_META,
+          // ditambah `ownerOnly: true` sebagai extra hard-gate saat render.
+          key: 'mod:payroll',
+          label: 'Payroll',
+          icon: Wallet,
+          module: 'payroll',
+          ownerOnly: true,
+          children: [
+            { key: 'pay:period', label: 'Payroll Periode', ownerOnly: true },
+            { key: 'pay:employees', label: 'Data Karyawan', ownerOnly: true },
+            { key: 'pay:config', label: 'Pengaturan Payroll', ownerOnly: true },
           ],
         },
       ],
@@ -680,6 +703,7 @@ function getActiveModule(view) {
   if (view.startsWith('om:') || view === 'mod:order_management') return 'order_management';
   if (view.startsWith('fk:') || view === 'mod:faktur') return 'faktur';
   if (view.startsWith('abs:') || view === 'mod:absensi') return 'absensi';
+  if (view.startsWith('pay:') || view === 'mod:payroll') return 'payroll';
   return null; // no module context (e.g. ad:users)
 }
 
@@ -2211,7 +2235,7 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
                 Centang module yang boleh diakses user ini.
               </div>
               <div className="space-y-2 pt-1">
-                {Object.values(MODULES_META).map((m) => {
+                {Object.values(MODULES_META).filter((m) => !m.ownerOnly).map((m) => {
                   const Icon = m.icon;
                   const checked = form.modules.includes(m.key);
                   const disabled = m.status === 'coming_soon';
@@ -3336,6 +3360,21 @@ function ModulePickerScreen({ user, onPick, onLogout }) {
       stats: [],
     });
   }
+  if (mods.includes('payroll') && isOwner(user)) {
+    cards.push({
+      key: 'payroll',
+      name: 'Payroll',
+      subtitle: 'Penggajian karyawan · Private Owner',
+      icon: Wallet,
+      gradient: 'from-emerald-500/30 via-lime-500/20 to-transparent',
+      border: 'border-emerald-500/40 hover:border-emerald-500/70',
+      iconBg: 'bg-emerald-500/20 border-emerald-500/40',
+      iconColor: 'text-emerald-400',
+      accentText: 'text-emerald-300',
+      target: 'pay:period',
+      stats: [],
+    });
+  }
 
   const timeLabel = clock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
   const dateLabel = clock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -3627,6 +3666,11 @@ function App() {
         )}
         {(activeView.startsWith('abs:') || activeView === 'mod:absensi') && (
           <AbsensiModule user={user} initialView={activeView === 'mod:absensi' ? 'abs:home' : activeView} />
+        )}
+        {(activeView.startsWith('pay:') || activeView === 'mod:payroll') && (
+          isOwner(user)
+            ? <PayrollModule user={user} initialView={activeView === 'mod:payroll' ? 'pay:period' : activeView} />
+            : <div className="p-6 text-center text-rose-300 text-sm">Akses ditolak — halaman ini hanya untuk Owner.</div>
         )}
         {activeView === 'rp:history' && <ReportsHistoryView />}
         {activeView === 'ad:users' && <EmployeesView />}

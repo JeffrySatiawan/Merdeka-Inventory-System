@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { handleOMRequest } from '@/lib/modules/order-management/service';
 import { handleFakturRequest } from '@/lib/modules/faktur/service';
 import { handleAbsensiRequest } from '@/lib/modules/absensi/service';
+import { handlePayrollRequest } from '@/lib/modules/payroll/service';
 
 // ---------- Mongo ----------
 let cachedClient = null;
@@ -155,13 +156,29 @@ const AVAILABLE_MODULES = [
     icon: 'Receipt',
     status: 'active',
   },
+  {
+    // OWNER-ONLY. Tidak boleh muncul di module list staff. `normalizeModules`
+    // sengaja men-drop 'payroll' dari input staff (defense-in-depth).
+    key: 'payroll',
+    name: 'Payroll',
+    description: 'Penggajian karyawan (private Owner).',
+    icon: 'Wallet',
+    status: 'active',
+    owner_only: true,
+  },
 ];
 const VALID_MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
+const OWNER_ONLY_MODULES = new Set(AVAILABLE_MODULES.filter((m) => m.owner_only).map((m) => m.key));
 const VALID_ROLES = ['owner', 'supervisor', 'staff'];
 
 function normalizeModules(input) {
   if (!Array.isArray(input)) return null;
-  const set = new Set(input.filter((m) => VALID_MODULE_KEYS.includes(m)));
+  // Drop owner-only modules dari input staff (defense-in-depth: mustahil
+  // muncul di user.modules staff via seed/CRUD user, bahkan bila owner iseng
+  // menekan check di UI).
+  const set = new Set(
+    input.filter((m) => VALID_MODULE_KEYS.includes(m) && !OWNER_ONLY_MODULES.has(m))
+  );
   return Array.from(set);
 }
 
@@ -490,6 +507,24 @@ async function handleRequest(req, path, method) {
     }
     const sub = path === 'absensi' ? '' : path.slice('absensi/'.length);
     const resp = await handleAbsensiRequest(req, sub, method, { db, user });
+    if (resp) return resp;
+    return err('not found', 404);
+  }
+
+  // ============================================================
+  // Payroll — OWNER ONLY. Defense-in-depth: check role LANGSUNG di router,
+  // bukan hanya hasModule (yang mengembalikan true untuk owner). Setiap
+  // request payroll wajib role === 'owner'; staff dijamin 403 walau
+  // seandainya modules array mereka manipulated.
+  // ============================================================
+  if (path === 'payroll' || path.startsWith('payroll/')) {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    if (user.role !== 'owner') {
+      return err('forbidden — Payroll hanya untuk Owner', 403);
+    }
+    const sub = path === 'payroll' ? '' : path.slice('payroll/'.length);
+    const resp = await handlePayrollRequest(req, sub, method, { db, user });
     if (resp) return resp;
     return err('not found', 404);
   }
