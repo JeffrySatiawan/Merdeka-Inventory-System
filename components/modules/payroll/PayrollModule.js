@@ -52,9 +52,14 @@ const KOMPONEN_LABELS = {
 };
 const KOMPONEN_ORDER = Object.keys(KOMPONEN_LABELS);
 
-function nowPeriod() {
+function nowMonthRange() {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const first = new Date(y, m, 1);
+  const last = new Date(y, m + 1, 0);
+  const fmt = (dd) => `${dd.getFullYear()}-${String(dd.getMonth() + 1).padStart(2, '0')}-${String(dd.getDate()).padStart(2, '0')}`;
+  return { from: fmt(first), to: fmt(last) };
 }
 
 export default function PayrollModule({ user, initialView = 'pay:period' }) {
@@ -99,38 +104,55 @@ export default function PayrollModule({ user, initialView = 'pay:period' }) {
 // Tab 1 — Payroll Periode
 // ============================================================
 function PeriodView() {
-  const [period, setPeriod] = useState(nowPeriod());
+  const initRange = nowMonthRange();
+  const [from, setFrom] = useState(initRange.from);
+  const [to, setTo] = useState(initRange.to);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [data, setData] = useState(null); // { config, period, employees, breakdown }
 
-  async function load(pk = period) {
+  async function load(f = from, t = to) {
+    if (!f || !t) return;
+    if (f > t) { toast.error('Rentang tanggal tidak valid'); return; }
     setLoading(true);
     try {
-      const d = await api(`period?period=${encodeURIComponent(pk)}`);
+      const d = await api(`period?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
       setData(d);
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   }
-  useEffect(() => { load(period); /* eslint-disable-next-line */ }, [period]);
+  // Load only when both dates set & user commits (via button); tapi initial
+  // load pakai bulan berjalan supaya UX tidak kosong.
+  useEffect(() => { load(from, to); /* eslint-disable-next-line */ }, []);
 
-  // Local editable state (mirroring server for save).
+  // Local editable state.
   const [globals, setGlobals] = useState({});
   const [products, setProducts] = useState([]);
-  const [perUser, setPerUser] = useState({}); // { user_id: { komisi_kebersihan, adjustments } }
+  const [perUser, setPerUser] = useState({}); // { user_id: { komisi_kebersihan, finals: {komponen: number} } }
   useEffect(() => {
     if (!data) return;
     setGlobals(data.period?.globals || {});
     setProducts(Array.isArray(data.period?.products) ? [...data.period.products] : []);
-    setPerUser({ ...(data.period?.per_user || {}) });
+    // Migrasi transparan: kalau server masih menyimpan `adjustments` (legacy),
+    // abaikan — hanya baca `finals`. Semua nilai final di UI dihitung dari
+    // globals/N atau override.
+    const src = data.period?.per_user || {};
+    const pu = {};
+    for (const [uid, v] of Object.entries(src)) {
+      pu[uid] = {
+        komisi_kebersihan: Number(v?.komisi_kebersihan || 0),
+        finals: (v?.finals && typeof v.finals === 'object') ? { ...v.finals } : {},
+      };
+    }
+    setPerUser(pu);
   }, [data]);
 
   async function save() {
     setSaving(true);
     try {
-      const d = await api(`period/${encodeURIComponent(period)}`, {
+      const d = await api(`period`, {
         method: 'PUT',
-        body: JSON.stringify({ globals, products, per_user: perUser }),
+        body: JSON.stringify({ from, to, globals, products, per_user: perUser }),
       });
       setData(d);
       toast.success('Payroll periode disimpan');
@@ -142,32 +164,64 @@ function PeriodView() {
 
   const employees = data.employees || [];
   const breakdown = data.breakdown?.items || [];
-  const perHead = data.breakdown?.per_head || {};
 
-  const gTotal =
-    Number(globals.komisi_penjualan || 0) +
-    products.reduce((s, p) => s + Number(p.nilai || 0), 0) +
-    Number(globals.apresiasi_so || 0) +
-    Number(globals.tunjangan_kinerja || 0) +
-    Number(globals.bpjs_tk || 0) +
-    Number(globals.bpjs_kes || 0);
-  const grand = breakdown.reduce((s, x) => s + Number(x.total || 0), 0);
+  // Recompute defaults lokal supaya perubahan globals langsung terlihat pada
+  // sel-sel yang belum di-override. Sel dgn override menggunakan angka final
+  // yang Owner sudah tulis.
+  const N = Math.max(1, employees.length);
+  const productTotal = products.reduce((s, p) => s + Number(p.nilai || 0), 0);
+  const localDefaults = {
+    komisi_penjualan: Number(globals.komisi_penjualan || 0) / N,
+    komisi_produk_fokus: productTotal / N,
+    apresiasi_so: Number(globals.apresiasi_so || 0) / N,
+    tunjangan_kinerja: Number(globals.tunjangan_kinerja || 0) / N,
+    bpjs_tk: Number(globals.bpjs_tk || 0) / N,
+    bpjs_kes: Number(globals.bpjs_kes || 0) / N,
+  };
+
+  const finalOf = (uid, k) => {
+    const f = perUser[uid]?.finals || {};
+    return f[k] != null ? Number(f[k]) : (localDefaults[k] || 0);
+  };
+  const isOverride = (uid, k) => (perUser[uid]?.finals || {})[k] != null;
+
+  const rowTotal = (row) => {
+    const uid = row.user_id;
+    const kebersihan = perUser[uid]?.komisi_kebersihan != null
+      ? Number(perUser[uid].komisi_kebersihan)
+      : Number(row.komponen.komisi_kebersihan || 0);
+    return (
+      Number(row.komponen.gaji_jam_kerja || 0) +
+      finalOf(uid, 'komisi_penjualan') +
+      finalOf(uid, 'komisi_produk_fokus') +
+      kebersihan +
+      finalOf(uid, 'apresiasi_so') +
+      finalOf(uid, 'tunjangan_kinerja') +
+      Number(row.komponen.reward_poin || 0) +
+      finalOf(uid, 'bpjs_tk') +
+      finalOf(uid, 'bpjs_kes')
+    );
+  };
+  const grand = breakdown.reduce((s, r) => s + rowTotal(r), 0);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
-          <Label className="text-xs">Periode</Label>
-          <Input
-            type="month"
-            value={period}
-            onChange={(e) => setPeriod(e.target.value)}
-            className="h-9 max-w-[180px]"
-          />
+          <Label className="text-xs">Tanggal Mulai</Label>
+          <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-9 max-w-[170px]" />
         </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Tanggal Selesai</Label>
+          <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-9 max-w-[170px]" />
+        </div>
+        <Button variant="outline" onClick={() => load(from, to)} disabled={loading} className="gap-1">
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+          Muat Data
+        </Button>
         <Button onClick={save} disabled={saving} className="gap-1">
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          Simpan Payroll Periode
+          Simpan Payroll
         </Button>
         <div className="ml-auto text-right">
           <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Total Payroll</div>
@@ -179,7 +233,10 @@ function PeriodView() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Komponen Global (dibagi rata ke {employees.length || 0} karyawan)</CardTitle>
-          <CardDescription>Angka negatif otomatis mengurangi total. Adjustment per karyawan di tabel bawah.</CardDescription>
+          <CardDescription>
+            Nilai global otomatis menjadi default per karyawan. Kalau Owner mengubah nilai per baris di tabel bawah,
+            baris itu menjadi override (tidak berubah walau global berubah). Angka negatif otomatis mengurangi total.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -198,7 +255,7 @@ function PeriodView() {
                   onChange={(e) => setGlobals((g) => ({ ...g, [k]: Number(e.target.value) || 0 }))}
                 />
                 <div className="text-[10px] text-muted-foreground">
-                  ≈ {fmtIDR((Number(globals[k] || 0)) / Math.max(1, employees.length))} / karyawan
+                  ≈ {fmtIDR(localDefaults[k] || 0)} / karyawan (default)
                 </div>
               </div>
             ))}
@@ -208,7 +265,9 @@ function PeriodView() {
             <div className="flex items-center justify-between mb-2">
               <div>
                 <div className="text-sm font-semibold">Komisi Produk Fokus</div>
-                <div className="text-[11px] text-muted-foreground">Total semua produk dibagi rata ke {employees.length || 0} karyawan.</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Total produk = {fmtIDR(productTotal)} · default ≈ {fmtIDR(localDefaults.komisi_produk_fokus || 0)}/karyawan
+                </div>
               </div>
               <Button
                 type="button"
@@ -245,13 +304,14 @@ function PeriodView() {
         </CardContent>
       </Card>
 
-      {/* Tabel breakdown per karyawan */}
+      {/* Tabel breakdown per karyawan — nilai FINAL, tanpa kolom Adjustment */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Breakdown per Karyawan</CardTitle>
           <CardDescription>
-            Gaji Jam Kerja = Jam Diakui × Tarif · Reward Poin = Poin Periode × Nilai Rp/Poin ({fmtIDR(data.config?.poin_rupiah_per_point || 0)}/poin) ·
-            Komisi Kebersihan diatur manual per baris · Kolom kosong pada Adjustment berarti 0.
+            Semua nilai di sel adalah <b>nilai final</b> yang benar-benar akan diterima karyawan. Ubah langsung angkanya.
+            Sel dengan tanda <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 align-middle mx-0.5" /> berarti sudah di-override
+            (tidak ikut berubah walau global berubah); klik &quot;reset&quot; untuk kembali ke default.
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -272,96 +332,69 @@ function PeriodView() {
               </thead>
               <tbody>
                 {breakdown.map((row) => {
-                  const puAdj = (perUser[row.user_id]?.adjustments) || {};
-                  const kebersihan = perUser[row.user_id]?.komisi_kebersihan ?? row.komponen.komisi_kebersihan ?? 0;
+                  const uid = row.user_id;
+                  const kebersihan = perUser[uid]?.komisi_kebersihan != null
+                    ? perUser[uid].komisi_kebersihan
+                    : Number(row.komponen.komisi_kebersihan || 0);
                   return (
-                    <tr key={row.user_id} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 align-middle">
+                    <tr key={uid} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 align-middle">
                       <td className="sticky left-0 bg-background z-10 font-medium">{row.name}</td>
                       <td className="text-muted-foreground">{row.jabatan || '-'}</td>
                       <td className="tabular-nums">{row.jam_kerja_diakui_hours} jam</td>
                       <td className="tabular-nums">{row.poin_periode}</td>
-                      {/* Gaji Jam Kerja (computed) */}
-                      <td className="text-right tabular-nums">{fmtIDR(row.komponen.gaji_jam_kerja)}</td>
-                      {/* Komisi Penjualan (global + adj) */}
-                      <td className="text-right tabular-nums">
-                        <AdjInput
-                          computed={row.komponen.komisi_penjualan - Number(puAdj.komisi_penjualan || 0)}
-                          adj={puAdj.komisi_penjualan || 0}
-                          onChangeAdj={(v) => setAdj(setPerUser, row.user_id, 'komisi_penjualan', v)}
-                        />
-                      </td>
-                      {/* Komisi Produk Fokus (global + adj) */}
-                      <td className="text-right tabular-nums">
-                        <AdjInput
-                          computed={row.komponen.komisi_produk_fokus - Number(puAdj.komisi_produk_fokus || 0)}
-                          adj={puAdj.komisi_produk_fokus || 0}
-                          onChangeAdj={(v) => setAdj(setPerUser, row.user_id, 'komisi_produk_fokus', v)}
-                        />
-                      </td>
+                      {/* Gaji Jam Kerja (auto) — non-editable */}
+                      <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(row.komponen.gaji_jam_kerja)}</td>
+                      {/* 5 komponen global → editable final */}
+                      <FinalCell value={finalOf(uid, 'komisi_penjualan')} override={isOverride(uid, 'komisi_penjualan')}
+                        onChange={(v) => setFinal(setPerUser, uid, 'komisi_penjualan', v)}
+                        onReset={() => setFinal(setPerUser, uid, 'komisi_penjualan', null)} />
+                      <FinalCell value={finalOf(uid, 'komisi_produk_fokus')} override={isOverride(uid, 'komisi_produk_fokus')}
+                        onChange={(v) => setFinal(setPerUser, uid, 'komisi_produk_fokus', v)}
+                        onReset={() => setFinal(setPerUser, uid, 'komisi_produk_fokus', null)} />
                       {/* Komisi Kebersihan (manual per user) */}
                       <td className="text-right tabular-nums">
                         <Input
                           type="number"
                           value={kebersihan}
-                          onChange={(e) => setKebersihan(setPerUser, row.user_id, Number(e.target.value) || 0)}
+                          onChange={(e) => setKebersihan(setPerUser, uid, Number(e.target.value) || 0)}
                           className="h-7 text-xs text-right"
                         />
                       </td>
-                      {/* Apresiasi SO (global + adj) */}
-                      <td className="text-right tabular-nums">
-                        <AdjInput
-                          computed={row.komponen.apresiasi_so - Number(puAdj.apresiasi_so || 0)}
-                          adj={puAdj.apresiasi_so || 0}
-                          onChangeAdj={(v) => setAdj(setPerUser, row.user_id, 'apresiasi_so', v)}
-                        />
-                      </td>
-                      {/* Tunjangan Kinerja (global + adj) */}
-                      <td className="text-right tabular-nums">
-                        <AdjInput
-                          computed={row.komponen.tunjangan_kinerja - Number(puAdj.tunjangan_kinerja || 0)}
-                          adj={puAdj.tunjangan_kinerja || 0}
-                          onChangeAdj={(v) => setAdj(setPerUser, row.user_id, 'tunjangan_kinerja', v)}
-                        />
-                      </td>
-                      {/* Reward Poin (computed) */}
-                      <td className="text-right tabular-nums">{fmtIDR(row.komponen.reward_poin)}</td>
-                      {/* BPJS Ketenagakerjaan (global + adj) */}
-                      <td className="text-right tabular-nums">
-                        <AdjInput
-                          computed={row.komponen.bpjs_tk - Number(puAdj.bpjs_tk || 0)}
-                          adj={puAdj.bpjs_tk || 0}
-                          onChangeAdj={(v) => setAdj(setPerUser, row.user_id, 'bpjs_tk', v)}
-                        />
-                      </td>
-                      {/* BPJS Kesehatan (global + adj) */}
-                      <td className="text-right tabular-nums">
-                        <AdjInput
-                          computed={row.komponen.bpjs_kes - Number(puAdj.bpjs_kes || 0)}
-                          adj={puAdj.bpjs_kes || 0}
-                          onChangeAdj={(v) => setAdj(setPerUser, row.user_id, 'bpjs_kes', v)}
-                        />
-                      </td>
-                      <td className="text-right font-bold tabular-nums">{fmtIDR(row.total)}</td>
+                      <FinalCell value={finalOf(uid, 'apresiasi_so')} override={isOverride(uid, 'apresiasi_so')}
+                        onChange={(v) => setFinal(setPerUser, uid, 'apresiasi_so', v)}
+                        onReset={() => setFinal(setPerUser, uid, 'apresiasi_so', null)} />
+                      <FinalCell value={finalOf(uid, 'tunjangan_kinerja')} override={isOverride(uid, 'tunjangan_kinerja')}
+                        onChange={(v) => setFinal(setPerUser, uid, 'tunjangan_kinerja', v)}
+                        onReset={() => setFinal(setPerUser, uid, 'tunjangan_kinerja', null)} />
+                      {/* Reward Poin (auto) */}
+                      <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(row.komponen.reward_poin)}</td>
+                      <FinalCell value={finalOf(uid, 'bpjs_tk')} override={isOverride(uid, 'bpjs_tk')}
+                        onChange={(v) => setFinal(setPerUser, uid, 'bpjs_tk', v)}
+                        onReset={() => setFinal(setPerUser, uid, 'bpjs_tk', null)} />
+                      <FinalCell value={finalOf(uid, 'bpjs_kes')} override={isOverride(uid, 'bpjs_kes')}
+                        onChange={(v) => setFinal(setPerUser, uid, 'bpjs_kes', v)}
+                        onReset={() => setFinal(setPerUser, uid, 'bpjs_kes', null)} />
+                      <td className="text-right font-bold tabular-nums">{fmtIDR(rowTotal(row))}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           )}
-          <div className="text-[10px] text-muted-foreground mt-2">
-            *Adjustment (± Rp) di setiap kolom global menambah/mengurangi nilai default individual. Simpan untuk menerapkan.
-          </div>
         </CardContent>
       </Card>
     </div>
   );
 }
 
-function setAdj(setPerUser, uid, key, value) {
+// setFinal: null → hapus override (revert ke default global/N).
+function setFinal(setPerUser, uid, key, value) {
   setPerUser((pu) => {
     const cur = pu[uid] || {};
-    const adj = cur.adjustments || {};
-    return { ...pu, [uid]: { ...cur, adjustments: { ...adj, [key]: value } } };
+    const finals = { ...(cur.finals || {}) };
+    if (value == null) delete finals[key];
+    else finals[key] = value;
+    return { ...pu, [uid]: { ...cur, finals } };
   });
 }
 function setKebersihan(setPerUser, uid, value) {
@@ -371,20 +404,30 @@ function setKebersihan(setPerUser, uid, value) {
   });
 }
 
-// Small inline widget for editable "computed + adjustment" cells.
-function AdjInput({ computed, adj, onChangeAdj }) {
+// Editable "final value" cell — dengan tanda override & tombol reset kecil.
+function FinalCell({ value, override, onChange, onReset }) {
   return (
-    <div className="flex items-center gap-1 justify-end">
-      <span className="text-[10px] text-muted-foreground">{fmtIDR(computed)}</span>
-      <span className="text-muted-foreground">+</span>
-      <Input
-        type="number"
-        value={adj}
-        onChange={(e) => onChangeAdj(Number(e.target.value) || 0)}
-        className="h-7 text-xs text-right w-[90px]"
-        placeholder="0"
-      />
-    </div>
+    <td className="text-right tabular-nums">
+      <div className="flex items-center gap-1 justify-end">
+        {override && (
+          <button
+            type="button"
+            onClick={onReset}
+            title="Kembalikan ke default global"
+            className="text-[9px] text-amber-400 hover:text-amber-300 uppercase tracking-wider"
+          >
+            reset
+          </button>
+        )}
+        <Input
+          type="number"
+          value={Math.round(Number(value || 0))}
+          onChange={(e) => onChange(Number(e.target.value) || 0)}
+          className={`h-7 text-xs text-right w-[120px] ${override ? 'border-amber-500/50 bg-amber-500/5' : ''}`}
+        />
+        {override && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />}
+      </div>
+    </td>
   );
 }
 
