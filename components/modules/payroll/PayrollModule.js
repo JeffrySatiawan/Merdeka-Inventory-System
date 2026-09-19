@@ -24,6 +24,66 @@ import autoTable from 'jspdf-autotable';
 
 const fmtIDR = (n) => 'Rp ' + (Math.round(Number(n || 0))).toLocaleString('id-ID');
 
+// ============================================================
+// RupiahInput — text input dengan format pemisah ribuan id-ID.
+// - Tampilan berformat: 10.000.000, -1.428.571.
+// - Nilai internal (via onChange) tetap `number` sehingga logic perhitungan
+//   Payroll tidak berubah.
+// - Aman untuk angka negatif (leading `-`).
+// - Sinkron dengan parent saat value berubah dari luar (mis. default dari
+//   perubahan globals) — via useEffect.
+// ============================================================
+function formatRupiahDisplay(n) {
+  if (n == null || n === '' || isNaN(Number(n))) return '';
+  return Number(n).toLocaleString('id-ID');
+}
+function parseRupiahInput(raw) {
+  const s = String(raw || '');
+  // Deteksi minus di depan; sisanya ambil digit saja.
+  const isNeg = s.trim().startsWith('-');
+  const digits = s.replace(/\D+/g, '');
+  if (digits === '') return isNeg ? 0 : 0;
+  const num = Number(digits);
+  return isNeg ? -num : num;
+}
+function RupiahInput({ value, onChange, disabled, className = '', placeholder, ...rest }) {
+  const [display, setDisplay] = React.useState(formatRupiahDisplay(value));
+  React.useEffect(() => {
+    // Sync ketika parent men-set nilai baru (mis. default berubah karena
+    // globals di-edit). Hanya update display kalau angka underlying berbeda
+    // dari yg sedang diketik, biar cursor tidak melompat waktu user ketik.
+    const current = parseRupiahInput(display);
+    if (Number(value || 0) !== current) {
+      setDisplay(formatRupiahDisplay(value));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <Input
+      type="text"
+      inputMode="numeric"
+      value={display}
+      disabled={disabled}
+      placeholder={placeholder}
+      className={className}
+      onChange={(e) => {
+        const raw = e.target.value;
+        // Izinkan state "-" atau "" sebagai intermediate typing supaya user
+        // dapat mengetik angka negatif secara natural (ketik `-` dulu).
+        if (raw === '' || raw === '-') {
+          setDisplay(raw);
+          onChange?.(0);
+          return;
+        }
+        const num = parseRupiahInput(raw);
+        setDisplay(formatRupiahDisplay(num));
+        onChange?.(num);
+      }}
+      {...rest}
+    />
+  );
+}
+
 async function api(path, opts = {}) {
   const base = process.env.NEXT_PUBLIC_BASE_URL || '';
   const token = typeof window !== 'undefined' ? localStorage.getItem('cc_token') : null;
@@ -293,10 +353,9 @@ function PeriodView() {
             ].map(([k, label]) => (
               <div key={k} className="space-y-1">
                 <Label className="text-xs">{label} (Rp, total periode)</Label>
-                <Input
-                  type="number"
+                <RupiahInput
                   value={globals[k] ?? 0}
-                  onChange={(e) => setGlobals((g) => ({ ...g, [k]: Number(e.target.value) || 0 }))}
+                  onChange={(v) => setGlobals((g) => ({ ...g, [k]: v }))}
                   disabled={isFinal}
                 />
                 <div className="text-[10px] text-muted-foreground">
@@ -329,8 +388,8 @@ function PeriodView() {
                 <div key={i} className="grid grid-cols-[1fr,140px,40px] gap-2 items-center">
                   <Input placeholder="Nama produk" value={p.nama} disabled={isFinal}
                     onChange={(e) => setProducts((arr) => { const c=[...arr]; c[i]={...c[i],nama:e.target.value}; return c;})} />
-                  <Input type="number" placeholder="Nilai (Rp)" value={p.nilai} disabled={isFinal}
-                    onChange={(e) => setProducts((arr) => { const c=[...arr]; c[i]={...c[i],nilai:Number(e.target.value)||0}; return c;})} />
+                  <RupiahInput value={p.nilai} disabled={isFinal} placeholder="Nilai (Rp)"
+                    onChange={(v) => setProducts((arr) => { const c=[...arr]; c[i]={...c[i],nilai:v}; return c;})} />
                   {!isFinal && (
                     <Button type="button" variant="ghost" size="icon" onClick={() => setProducts((arr) => arr.filter((_, j) => j !== i))} className="text-rose-400">
                       <Trash2 className="w-4 h-4" />
@@ -395,11 +454,10 @@ function PeriodView() {
                         onChange={(v) => setFinal(setPerUser, uid, 'komisi_produk_fokus', v)}
                         onReset={() => setFinal(setPerUser, uid, 'komisi_produk_fokus', null)} />
                       <td className="text-right tabular-nums">
-                        <Input
-                          type="number"
+                        <RupiahInput
                           value={Math.round(Number(kebersihan || 0))}
                           disabled={isFinal}
-                          onChange={(e) => setKebersihan(setPerUser, uid, Number(e.target.value) || 0)}
+                          onChange={(v) => setKebersihan(setPerUser, uid, v)}
                           className="h-7 text-xs text-right"
                         />
                       </td>
@@ -584,12 +642,11 @@ function FinalCell({ value, override, disabled, onChange, onReset }) {
             reset
           </button>
         )}
-        <Input
-          type="number"
+        <RupiahInput
           value={Math.round(Number(value || 0))}
           disabled={disabled}
-          onChange={(e) => onChange(Number(e.target.value) || 0)}
-          className={`h-7 text-xs text-right w-[110px] ${override && !disabled ? 'border-amber-500/50 bg-amber-500/5' : ''}`}
+          onChange={(v) => onChange(v)}
+          className={`h-7 text-xs text-right w-[130px] ${override && !disabled ? 'border-amber-500/50 bg-amber-500/5' : ''}`}
         />
         {override && !disabled && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />}
       </div>
@@ -669,10 +726,9 @@ function EmployeesTab() {
                     />
                   </td>
                   <td>
-                    <Input
-                      type="number"
+                    <RupiahInput
                       value={tarif}
-                      onChange={(v) => setDrafts((p) => ({ ...p, [e.user_id]: { ...(p[e.user_id] || { jabatan: e.jabatan, tarif_per_jam: e.tarif_per_jam }), tarif_per_jam: Number(v.target.value) || 0 } }))}
+                      onChange={(v) => setDrafts((p) => ({ ...p, [e.user_id]: { ...(p[e.user_id] || { jabatan: e.jabatan, tarif_per_jam: e.tarif_per_jam }), tarif_per_jam: v } }))}
                       placeholder="0"
                       className="h-8 text-xs"
                     />
@@ -738,11 +794,10 @@ function ConfigTab() {
       <CardContent className="space-y-3 max-w-md">
         <div className="space-y-1">
           <Label className="text-xs">Nilai Rupiah per 1 Poin</Label>
-          <Input
-            type="number"
+          <RupiahInput
             value={poin}
-            onChange={(e) => setPoin(Number(e.target.value) || 0)}
-            placeholder="mis. 5000"
+            onChange={(v) => setPoin(v)}
+            placeholder="mis. 5.000"
           />
           <div className="text-[10px] text-muted-foreground">1 poin = {fmtIDR(poin)}</div>
         </div>
