@@ -323,7 +323,7 @@ function PeriodView() {
                   <th className="min-w-[140px] sticky left-0 bg-background z-10">Nama</th>
                   <th>Jabatan</th>
                   <th>Jam Diakui</th>
-                  <th>Poin</th>
+                  <th>Sisa Poin</th>
                   {KOMPONEN_ORDER.map((k) => (
                     <th key={k} className="text-right">{KOMPONEN_LABELS[k]}</th>
                   ))}
@@ -341,7 +341,7 @@ function PeriodView() {
                       <td className="sticky left-0 bg-background z-10 font-medium">{row.name}</td>
                       <td className="text-muted-foreground">{row.jabatan || '-'}</td>
                       <td className="tabular-nums">{row.jam_kerja_diakui_hours} jam</td>
-                      <td className="tabular-nums">{row.poin_periode}</td>
+                      <td className="tabular-nums">{row.sisa_poin ?? row.poin_periode ?? 0}</td>
                       {/* Gaji Jam Kerja (auto) — non-editable */}
                       <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(row.komponen.gaji_jam_kerja)}</td>
                       {/* 5 komponen global → editable final */}
