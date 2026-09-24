@@ -197,11 +197,15 @@ function PeriodView() {
   // Local editable state.
   const [globals, setGlobals] = useState({});
   const [products, setProducts] = useState([]);
+  // Produk Fokus (info-only, ditampilkan di Kitir Gaji). Terpisah dari
+  // `products` (Komisi Produk Fokus) — TIDAK mempengaruhi perhitungan.
+  const [focusProducts, setFocusProducts] = useState([]);
   const [perUser, setPerUser] = useState({});
   useEffect(() => {
     if (!data) return;
     setGlobals(data.period?.globals || {});
     setProducts(Array.isArray(data.period?.products) ? [...data.period.products] : []);
+    setFocusProducts(Array.isArray(data.period?.focus_products) ? [...data.period.focus_products] : []);
     const src = data.period?.per_user || {};
     const pu = {};
     for (const [uid, v] of Object.entries(src)) {
@@ -219,7 +223,7 @@ function PeriodView() {
     try {
       const d = await api(`period`, {
         method: 'PUT',
-        body: JSON.stringify({ cycle, globals, products, per_user: perUser }),
+        body: JSON.stringify({ cycle, globals, products, focus_products: focusProducts, per_user: perUser }),
       });
       setData(d);
       toast.success('Payroll periode disimpan (DRAFT)');
@@ -399,6 +403,42 @@ function PeriodView() {
               ))}
             </div>
           </div>
+          {/* Produk Fokus (Info-only, tampil di Kitir Gaji) — TERPISAH dari
+              Komisi Produk Fokus di atas. TIDAK mempengaruhi perhitungan. */}
+          <div className="pt-2 border-t border-white/10">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <div className="text-sm font-semibold">Produk Fokus (Info Kitir)</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Daftar pengingat yang akan ditampilkan di Kitir Gaji seluruh karyawan pada periode ini. Tidak mempengaruhi perhitungan komisi.
+                </div>
+              </div>
+              {!isFinal && (
+                <Button
+                  type="button" size="sm" variant="outline" className="gap-1"
+                  onClick={() => setFocusProducts((p) => [...p, { nama: '', keterangan: '' }])}
+                >
+                  <Plus className="w-3.5 h-3.5" /> Tambah Produk Fokus
+                </Button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {focusProducts.length === 0 && <div className="text-xs text-muted-foreground italic">Belum ada produk fokus.</div>}
+              {focusProducts.map((p, i) => (
+                <div key={p.id || i} className="grid grid-cols-[1fr,1.5fr,40px] gap-2 items-center">
+                  <Input placeholder="Nama produk" value={p.nama || ''} disabled={isFinal}
+                    onChange={(e) => setFocusProducts((arr) => { const c=[...arr]; c[i]={...c[i],nama:e.target.value}; return c;})} />
+                  <Input placeholder="Keterangan (opsional)" value={p.keterangan || ''} disabled={isFinal}
+                    onChange={(e) => setFocusProducts((arr) => { const c=[...arr]; c[i]={...c[i],keterangan:e.target.value}; return c;})} />
+                  {!isFinal && (
+                    <Button type="button" variant="ghost" size="icon" onClick={() => setFocusProducts((arr) => arr.filter((_, j) => j !== i))} className="text-rose-400">
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -529,6 +569,7 @@ function PeriodView() {
           periodLabel={dateLabel}
           periodFrom={data.from}
           periodTo={data.to}
+          focusProducts={focusProducts}
           onClose={() => setKitirFor(null)}
         />
       )}
@@ -542,7 +583,7 @@ function PeriodView() {
 // PENTING: generate PDF TIDAK memodifikasi state atau memanggil API tulis
 // apapun, sehingga tidak akan mengubah data Payroll.
 // ============================================================
-function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, onClose }) {
+function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, focusProducts, onClose }) {
   const rows = [
     // "Gaji Jam Kerja" → "Gaji". Perhitungan internal tidak berubah.
     ['Gaji', row.komponen.gaji_jam_kerja],
@@ -609,6 +650,24 @@ function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal
       foot: [['TOTAL PAYROLL', Math.round(Number(rowTotal || 0)).toLocaleString('id-ID')]],
       footStyles: { fillColor: [230, 230, 230], textColor: 0, fontStyle: 'bold', halign: 'right' },
     });
+    // Informasi tambahan: Produk Fokus periode ini (info-only). Tabel
+    // baru di bawah tabel komponen gaji. Skip bila kosong.
+    const fpList = Array.isArray(focusProducts) ? focusProducts.filter((p) => p && p.nama) : [];
+    if (fpList.length > 0) {
+      const startY2 = (doc.lastAutoTable?.finalY || y) + 8;
+      doc.setFontSize(10); doc.setFont(undefined, 'bold');
+      doc.text('Produk Fokus Periode Ini', marginX, startY2);
+      doc.setFont(undefined, 'normal');
+      autoTable(doc, {
+        startY: startY2 + 2,
+        head: [['Nama Produk', 'Keterangan']],
+        body: fpList.map((p) => [String(p.nama || ''), String(p.keterangan || '')]),
+        styles: { fontSize: 9, cellPadding: 1.8 },
+        headStyles: { fillColor: [60, 60, 60], textColor: 255 },
+        columnStyles: { 0: { cellWidth: 45 } },
+        margin: { left: marginX, right: marginX },
+      });
+    }
     const safeName = (row.name || 'staff').replace(/\s+/g, '_');
     const safeDate = (periodTo || '').replace(/-/g, '');
     doc.save(`Kitir_${safeName}_${safeDate}.pdf`);
@@ -637,6 +696,21 @@ function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal
           <div className="border-t border-white/10 mt-2 pt-2 flex justify-between font-bold">
             <span>TOTAL PAYROLL</span><span className="tabular-nums">{fmtIDR(rowTotal)}</span>
           </div>
+          {Array.isArray(focusProducts) && focusProducts.filter((p) => p && p.nama).length > 0 && (
+            <div className="border-t border-white/10 mt-3 pt-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                Produk Fokus Periode Ini
+              </div>
+              <ul className="space-y-1">
+                {focusProducts.filter((p) => p && p.nama).map((p, i) => (
+                  <li key={p.id || i} className="flex flex-col">
+                    <span className="font-medium">{p.nama}</span>
+                    {p.keterangan && <span className="text-muted-foreground text-[11px]">{p.keterangan}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={onClose}>Tutup</Button>
