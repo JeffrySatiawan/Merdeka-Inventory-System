@@ -1215,7 +1215,7 @@ function OwnerReportView() {
         const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
         if (res.ok) {
           const d = await res.json();
-          const list = (Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner');
+          const list = (Array.isArray(d?.items) ? d.items : Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner');
           setStaffOpts(list);
         }
       } catch { /* ignore */ }
@@ -2363,7 +2363,7 @@ function PointsHistoryView({ user }) {
           const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
           if (res.ok) {
             const d = await res.json();
-            const list = (Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner');
+            const list = (Array.isArray(d?.items) ? d.items : Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner');
             setStaffOpts(list);
           }
         } catch { /* ignore */ }
@@ -2648,7 +2648,7 @@ function PointsSettingsView() {
         const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
         if (res.ok) {
           const d = await res.json();
-          setStaffOpts((Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner'));
+          setStaffOpts((Array.isArray(d?.items) ? d.items : Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : []).filter((e) => e.role !== 'owner'));
         }
       } catch { /* ignore */ }
     })();
