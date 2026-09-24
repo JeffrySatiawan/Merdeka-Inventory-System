@@ -423,7 +423,7 @@ function PeriodView() {
                 <tr className="text-left border-b border-white/10 [&>th]:py-2 [&>th]:px-2 [&>th]:font-semibold [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-[10px] [&>th]:text-muted-foreground">
                   <th className="min-w-[130px] sticky left-0 bg-background z-10">Nama</th>
                   <th>Jabatan</th>
-                  <th>Jam Diakui</th>
+                  <th title="Jam Kerja + Jam SO + Jam Lembur (approved)">Jam Diakui Payroll</th>
                   <th>Sisa Poin</th>
                   {KOMPONEN_ORDER.map((k) => (
                     <th key={k} className="text-right">{KOMPONEN_LABELS[k]}</th>
@@ -442,7 +442,9 @@ function PeriodView() {
                     <tr key={uid} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 align-middle">
                       <td className="sticky left-0 bg-background z-10 font-medium">{row.name}</td>
                       <td className="text-muted-foreground">{row.jabatan || '-'}</td>
-                      <td className="tabular-nums">{row.jam_kerja_diakui_hours} jam</td>
+                      <td className="tabular-nums" title={`Kerja ${row.jam_kerja_diakui_hours ?? 0} + SO ${row.jam_so_hours ?? 0} + Lembur ${row.jam_lembur_hours ?? 0}`}>
+                        {row.jam_diakui_payroll_hours ?? row.jam_kerja_diakui_hours ?? 0} jam
+                      </td>
                       <td className="tabular-nums">{row.sisa_poin ?? row.poin_periode ?? 0}</td>
                       <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(row.komponen.gaji_jam_kerja)}</td>
                       <FinalCell value={finalOf(uid, 'komisi_penjualan', row.komponen.komisi_penjualan)} override={isOverride(uid, 'komisi_penjualan')}
