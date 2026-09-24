@@ -527,6 +527,8 @@ function PeriodView() {
           finalOf={finalOf}
           isFinal={isFinal}
           periodLabel={dateLabel}
+          periodFrom={data.from}
+          periodTo={data.to}
           onClose={() => setKitirFor(null)}
         />
       )}
@@ -540,9 +542,10 @@ function PeriodView() {
 // PENTING: generate PDF TIDAK memodifikasi state atau memanggil API tulis
 // apapun, sehingga tidak akan mengubah data Payroll.
 // ============================================================
-function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal, periodLabel, onClose }) {
+function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, onClose }) {
   const rows = [
-    ['Gaji Jam Kerja', row.komponen.gaji_jam_kerja],
+    // "Gaji Jam Kerja" → "Gaji". Perhitungan internal tidak berubah.
+    ['Gaji', row.komponen.gaji_jam_kerja],
     ['Komisi Penjualan', finalOf(row.user_id, 'komisi_penjualan', row.komponen.komisi_penjualan)],
     ['Komisi Produk Fokus', finalOf(row.user_id, 'komisi_produk_fokus', row.komponen.komisi_produk_fokus)],
     ['Komisi Kebersihan', kebersihanOverride],
@@ -552,33 +555,63 @@ function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal
     ['BPJS Ketenagakerjaan', finalOf(row.user_id, 'bpjs_tk', row.komponen.bpjs_tk)],
     ['BPJS Kesehatan', finalOf(row.user_id, 'bpjs_kes', row.komponen.bpjs_kes)],
   ];
+  // Format tanggal PLAIN ASCII utk jsPDF (default helvetica tidak render
+  // baik unicode "→" & bisa memunculkan `!` / non-breaking space aneh).
+  // Contoh: "25 Agustus 2026 - 26 September 2026".
+  function fmtDatePlain(iso) {
+    if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '-';
+    const [y, m, d] = iso.split('-').map((n) => Number(n));
+    const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    return `${d} ${MONTHS[m - 1]} ${y}`;
+  }
+  const periodPlain = periodFrom && periodTo ? `${fmtDatePlain(periodFrom)} - ${fmtDatePlain(periodTo)}` : '-';
+
   function print() {
     const doc = new jsPDF({ unit: 'mm', format: 'a5' });
+    const pageW = doc.internal.pageSize.getWidth();
     const marginX = 12;
     let y = 14;
+
+    // Title.
     doc.setFontSize(14); doc.setFont(undefined, 'bold');
     doc.text('KITIR GAJI', marginX, y); y += 6;
     doc.setFontSize(9); doc.setFont(undefined, 'normal');
     doc.text('Merdeka Inventory System', marginX, y); y += 6;
-    doc.setDrawColor(180); doc.line(marginX, y, 148 - marginX, y); y += 5;
+    doc.setDrawColor(180); doc.line(marginX, pageW ? y : y, pageW - marginX, y); y += 6;
+
+    // Header info — kolom rapi & titik dua sejajar.
     doc.setFontSize(10);
-    doc.text(`Nama       : ${row.name || '-'}`, marginX, y); y += 5;
-    doc.text(`Jabatan    : ${row.jabatan || '-'}`, marginX, y); y += 5;
-    doc.text(`Periode    : ${periodLabel}`, marginX, y); y += 5;
-    doc.text(`Status     : ${isFinal ? 'FINAL' : 'DRAFT'}`, marginX, y); y += 4;
+    const labelX = marginX;
+    const colonX = marginX + 22; // posisi tanda ":" konsisten
+    const valueX = marginX + 26; // posisi awal nilai
+    const line = (label, value) => {
+      doc.setFont(undefined, 'normal');
+      doc.text(label, labelX, y);
+      doc.text(':', colonX, y);
+      doc.setFont(undefined, 'bold');
+      doc.text(String(value ?? '-'), valueX, y);
+      y += 6;
+    };
+    line('Nama', row.name || '-');
+    line('Jabatan', (row.jabatan && row.jabatan.trim()) ? row.jabatan : '-');
+    line('Periode', periodPlain);
+    line('Status', isFinal ? 'FINAL' : 'DRAFT');
+
+    doc.setFont(undefined, 'normal');
     autoTable(doc, {
       startY: y + 2,
       head: [['Komponen', 'Nominal (Rp)']],
       body: rows.map(([k, v]) => [k, Math.round(Number(v || 0)).toLocaleString('id-ID')]),
-      styles: { fontSize: 9, cellPadding: 1.5 },
+      styles: { fontSize: 9, cellPadding: 1.8 },
       headStyles: { fillColor: [30, 30, 30], textColor: 255 },
       columnStyles: { 1: { halign: 'right' } },
       margin: { left: marginX, right: marginX },
       foot: [['TOTAL PAYROLL', Math.round(Number(rowTotal || 0)).toLocaleString('id-ID')]],
       footStyles: { fillColor: [230, 230, 230], textColor: 0, fontStyle: 'bold', halign: 'right' },
     });
-    const fname = `Kitir_${(row.name || 'staff').replace(/\s+/g, '_')}_${(periodLabel || '').split('→').pop().trim().replace(/\s+/g, '')}.pdf`;
-    doc.save(fname);
+    const safeName = (row.name || 'staff').replace(/\s+/g, '_');
+    const safeDate = (periodTo || '').replace(/-/g, '');
+    doc.save(`Kitir_${safeName}_${safeDate}.pdf`);
   }
 
   return (
