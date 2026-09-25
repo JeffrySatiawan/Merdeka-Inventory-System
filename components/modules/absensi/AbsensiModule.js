@@ -1428,24 +1428,97 @@ function OwnerReportView() {
 //  (info kehadiran ringkas — TIDAK menyertakan foto / GPS / poin).
 //  Klik cell ✓ → buka modal detail basic (jam masuk/keluar, durasi kerja).
 //  HANYA VISUALISASI — tidak mengubah data, workflow, atau perhitungan.
+//  Pilih Periode Absensi (26 bulan sebelumnya → 25 bulan berjalan) — cerminan
+//  logic periode Payroll (`FIRST_CYCLE_KEY = '2026-09'`). Client-side; tidak
+//  menyentuh endpoint owner-only.
 // ============================================================================
+const ABS_FIRST_PERIOD_KEY = '2026-09'; // 26 Agustus 2026 → 25 September 2026
+
+// Range tanggal untuk periodKey "YYYY-MM" (bulan akhir). Return null bila
+// sebelum periode pertama.
+function absPeriodRange(periodKey) {
+  const m = String(periodKey || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  if (periodKey < ABS_FIRST_PERIOD_KEY) return null;
+  const y = Number(m[1]); const mo = Number(m[2]);
+  const toStr = `${m[1]}-${m[2]}-25`;
+  const prev = new Date(Date.UTC(y, mo - 1, 1));
+  prev.setUTCMonth(prev.getUTCMonth() - 1);
+  const py = prev.getUTCFullYear();
+  const pm = prev.getUTCMonth() + 1;
+  const fromStr = `${py}-${String(pm).padStart(2, '0')}-26`;
+  return { from: fromStr, to: toStr };
+}
+
+// Periode aktif berdasarkan tanggal saat ini. Hari ≥ 26 → periode berikutnya
+// sudah dimulai (bulan depan sebagai periodKey).
+function absActivePeriodKey(now = new Date()) {
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const d = now.getDate();
+  if (d >= 26) {
+    const nm = m === 12 ? 1 : m + 1;
+    const ny = m === 12 ? y + 1 : y;
+    return `${ny}-${String(nm).padStart(2, '0')}`;
+  }
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+
+function absPrevPeriodKey(key) {
+  const [y, m] = key.split('-').map(Number);
+  const pm = m === 1 ? 12 : m - 1;
+  const py = m === 1 ? y - 1 : y;
+  return `${py}-${String(pm).padStart(2, '0')}`;
+}
+
+// Daftar periode dari periode pertama sampai periode aktif (urut menurun).
+function listAbsPeriods() {
+  const latest = absActivePeriodKey();
+  if (latest < ABS_FIRST_PERIOD_KEY) return [];
+  const out = [];
+  let k = latest;
+  for (let i = 0; i < 240 && k >= ABS_FIRST_PERIOD_KEY; i++) {
+    const r = absPeriodRange(k);
+    if (!r) break;
+    out.push({ period_key: k, from: r.from, to: r.to });
+    k = absPrevPeriodKey(k);
+  }
+  return out;
+}
+
+// Label singkat untuk dropdown, contoh "26 Agu 2026 → 25 Sep 2026".
+function fmtAbsPeriodLabel(from, to) {
+  const MO_SHORT = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+  const fmt = (iso) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return `${d} ${MO_SHORT[m - 1]} ${y}`;
+  };
+  return `${fmt(from)} → ${fmt(to)}`;
+}
+
 function RekapDashboardView({ user }) {
   const todayIso = () => new Date().toISOString().slice(0, 10);
-  const firstOfMonthIso = () => {
-    const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
-  };
-  const [from, setFrom] = useState(firstOfMonthIso());
-  const [to, setTo] = useState(todayIso());
+  // Daftar periode di-generate client-side dari logic 26→25.
+  const periods = useMemo(() => listAbsPeriods(), []);
+  // Default = periode aktif (terbaru). Bila belum ada periode aktif
+  // (mustahil di deploy live tetapi guard), kosong.
+  const [periodKey, setPeriodKey] = useState(periods[0]?.period_key || '');
+  const activeRange = useMemo(() => {
+    const p = periods.find((x) => x.period_key === periodKey);
+    return p ? { from: p.from, to: p.to } : null;
+  }, [periodKey, periods]);
+  const from = activeRange?.from || '';
+  const to = activeRange?.to || '';
   const [items, setItems] = useState([]);
   const [staffRows, setStaffRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [detailRec, setDetailRec] = useState(null);
 
-  const load = async () => {
-    if (!from || !to || from > to) { toast.error('Rentang tanggal tidak valid'); return; }
+  const load = async (rng = activeRange) => {
+    if (!rng?.from || !rng?.to) return;
     setLoading(true);
     try {
-      const qs = new URLSearchParams({ from, to }).toString();
+      const qs = new URLSearchParams({ from: rng.from, to: rng.to }).toString();
       const d = await absApi(`rekap?${qs}`);
       setItems(Array.isArray(d.items) ? d.items : []);
       const staff = Array.isArray(d.staff) ? d.staff : [];
@@ -1454,9 +1527,11 @@ function RekapDashboardView({ user }) {
       toast.error(e.message);
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  // Muat ulang tiap kali periode berubah.
+  useEffect(() => { load(activeRange); /* eslint-disable-next-line */ }, [periodKey]);
 
-  // Bangun daftar tanggal (inclusive) dari from → to.
+  // Bangun daftar tanggal (inclusive) dari from → to (maks 62 hari — periode
+  // 26→25 selalu 30/31 hari, aman).
   const dateList = useMemo(() => {
     if (!from || !to || from > to) return [];
     const out = [];
@@ -1464,7 +1539,6 @@ function RekapDashboardView({ user }) {
     const [ty, tm, td] = to.split('-').map(Number);
     const start = new Date(Date.UTC(fy, fm - 1, fd));
     const end = new Date(Date.UTC(ty, tm - 1, td));
-    // Batasi maksimal 62 hari supaya tabel tidak meledak.
     const maxDays = 62;
     let n = 0;
     for (let d = new Date(start); d <= end && n < maxDays; d.setUTCDate(d.getUTCDate() + 1), n++) {
@@ -1518,21 +1592,31 @@ function RekapDashboardView({ user }) {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-end gap-2">
-            <div>
-              <Label className="text-xs">Dari</Label>
-              <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8" />
+            <div className="min-w-[240px]">
+              <Label className="text-xs">Periode Absensi</Label>
+              {periods.length === 0 ? (
+                <div className="h-8 flex items-center text-xs text-muted-foreground italic">
+                  Belum ada periode aktif.
+                </div>
+              ) : (
+                <Select value={periodKey} onValueChange={setPeriodKey}>
+                  <SelectTrigger className="h-8"><SelectValue placeholder="Pilih periode" /></SelectTrigger>
+                  <SelectContent>
+                    {periods.map((p, idx) => (
+                      <SelectItem key={p.period_key} value={p.period_key}>
+                        {fmtAbsPeriodLabel(p.from, p.to)}{idx === 0 ? ' · Aktif' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
-            <div>
-              <Label className="text-xs">Sampai</Label>
-              <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8" />
-            </div>
-            <Button size="sm" onClick={load} disabled={loading} className="gap-1">
+            <Button size="sm" onClick={() => load(activeRange)} disabled={loading || !activeRange} className="gap-1">
               {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              Muat
+              Muat Ulang
             </Button>
             <div className="text-[11px] text-muted-foreground ml-auto">
-              {dateList.length} hari · {rows.length} karyawan aktif
-              {dateList.length >= 62 && ' · maks 62 hari'}
+              {from && to ? `${from} → ${to} · ` : ''}{dateList.length} hari · {rows.length} karyawan aktif
             </div>
           </div>
 

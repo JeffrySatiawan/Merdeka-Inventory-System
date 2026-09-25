@@ -147,6 +147,14 @@ user_problem_statement: |
 - TIDAK mengubah perhitungan gaji, komponen Payroll, Finalisasi, Absensi, Poin, atau modul lain.
 - Files: `/app/lib/modules/payroll/service.js`, `/app/components/modules/payroll/PayrollModule.js`
 
+## Current Task: Absensi Rekap — Dropdown Periode 26→25 (menggantikan input tanggal bebas)
+- Menu Rekap Absen sekarang pakai Select dropdown "Periode Absensi" (bukan input Dari/Sampai).
+- Client-side helper `listAbsPeriods()` reuse logic 26→25 (`ABS_FIRST_PERIOD_KEY = '2026-09'`, `absActivePeriodKey`, `absPeriodRange`). Cerminan logic Payroll — no new backend/DB.
+- Default = periode aktif (terbaru). Tabel kalender otomatis mengikuti rentang periode terpilih. Tanggal 26 Sept 2026 → periode "2026-10" (26 Sept → 25 Okt) otomatis muncul di atas.
+- Endpoint backend `/api/absensi/rekap` tidak berubah — tetap dipanggil dengan `from`/`to` dari periode terpilih.
+- TIDAK mengubah data, logic, atau perhitungan Absensi.
+- File: `/app/components/modules/absensi/AbsensiModule.js`
+
 
 backend:
   - task: "Auth (login/logout/me) with session token"
