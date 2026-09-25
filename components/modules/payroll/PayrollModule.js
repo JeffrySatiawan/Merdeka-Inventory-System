@@ -235,6 +235,8 @@ function PeriodView() {
     for (const [uid, v] of Object.entries(src)) {
       pu[uid] = {
         komisi_kebersihan: Number(v?.komisi_kebersihan || 0),
+        koreksi: Number(v?.koreksi || 0),
+        koreksi_note: String(v?.koreksi_note || ''),
         finals: (v?.finals && typeof v.finals === 'object') ? { ...v.finals } : {},
       };
     }
@@ -312,6 +314,9 @@ function PeriodView() {
     const kebersihan = perUser[uid]?.komisi_kebersihan != null
       ? Number(perUser[uid].komisi_kebersihan)
       : Number(row.komponen.komisi_kebersihan || 0);
+    const koreksi = perUser[uid]?.koreksi != null
+      ? Number(perUser[uid].koreksi)
+      : Number(row.komponen?.koreksi || 0);
     return (
       Number(row.komponen.gaji_jam_kerja || 0) +
       finalOf(uid, 'komisi_penjualan', row.komponen.komisi_penjualan) +
@@ -321,7 +326,8 @@ function PeriodView() {
       finalOf(uid, 'tunjangan_kinerja', row.komponen.tunjangan_kinerja) +
       Number(row.komponen.reward_poin || 0) +
       finalOf(uid, 'bpjs_tk', row.komponen.bpjs_tk) +
-      finalOf(uid, 'bpjs_kes', row.komponen.bpjs_kes)
+      finalOf(uid, 'bpjs_kes', row.komponen.bpjs_kes) +
+      koreksi
     );
   };
   const grand = breakdown.reduce((s, r) => s + rowTotal(r), 0);
@@ -505,6 +511,8 @@ function PeriodView() {
                     <th key={k} className="text-right">{KOMPONEN_LABELS[k]}</th>
                   ))}
                   <th className="text-right">TOTAL</th>
+                  <th className="text-right min-w-[140px]" title="Koreksi Gaji per karyawan (boleh negatif). Otomatis masuk ke Total.">Koreksi Gaji</th>
+                  <th className="min-w-[180px]">Keterangan Koreksi</th>
                   <th></th>
                 </tr>
               </thead>
@@ -514,6 +522,12 @@ function PeriodView() {
                   const kebersihan = isFinal
                     ? Number(row.komponen.komisi_kebersihan || 0)
                     : (perUser[uid]?.komisi_kebersihan != null ? perUser[uid].komisi_kebersihan : Number(row.komponen.komisi_kebersihan || 0));
+                  const koreksi = isFinal
+                    ? Number(row.komponen?.koreksi || 0)
+                    : (perUser[uid]?.koreksi != null ? Number(perUser[uid].koreksi) : 0);
+                  const koreksiNote = isFinal
+                    ? String(row.koreksi_note || '')
+                    : String(perUser[uid]?.koreksi_note ?? '');
                   return (
                     <tr key={uid} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 align-middle">
                       <td className="sticky left-0 bg-background z-10 font-medium">{row.name}</td>
@@ -557,9 +571,28 @@ function PeriodView() {
                         onChange={(v) => setFinal(setPerUser, uid, 'bpjs_kes', v)}
                         onReset={() => setFinal(setPerUser, uid, 'bpjs_kes', null)} />
                       <td className="text-right font-bold tabular-nums">{fmtIDR(rowTotal(row))}</td>
+                      <td className="text-right tabular-nums">
+                        <RupiahInput
+                          value={Math.round(Number(koreksi || 0))}
+                          disabled={isFinal}
+                          onChange={(v) => setPerUser((p) => ({ ...p, [uid]: { ...(p[uid] || {}), koreksi: Number(v) || 0 } }))}
+                          className="h-7 text-xs text-right"
+                          placeholder="Rp0"
+                        />
+                      </td>
+                      <td>
+                        <Input
+                          value={koreksiNote}
+                          disabled={isFinal}
+                          maxLength={500}
+                          onChange={(e) => setPerUser((p) => ({ ...p, [uid]: { ...(p[uid] || {}), koreksi_note: e.target.value } }))}
+                          className="h-7 text-xs"
+                          placeholder="Alasan koreksi (opsional)"
+                        />
+                      </td>
                       <td className="text-right whitespace-nowrap">
                         <Button size="sm" variant="outline" className="h-7 gap-1 text-[10px]"
-                          onClick={() => setKitirFor({ row, kebersihan })}>
+                          onClick={() => setKitirFor({ row, kebersihan, koreksi, koreksiNote })}>
                           <Printer className="w-3 h-3" /> Kitir
                         </Button>
                       </td>
@@ -599,6 +632,8 @@ function PeriodView() {
           open={!!kitirFor}
           row={kitirFor.row}
           kebersihanOverride={kitirFor.kebersihan}
+          koreksiOverride={kitirFor.koreksi}
+          koreksiNote={kitirFor.koreksiNote}
           rowTotal={rowTotal(kitirFor.row)}
           finalOf={finalOf}
           isFinal={isFinal}
@@ -619,7 +654,11 @@ function PeriodView() {
 // PENTING: generate PDF TIDAK memodifikasi state atau memanggil API tulis
 // apapun, sehingga tidak akan mengubah data Payroll.
 // ============================================================
-function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, focusProducts, onClose }) {
+function KitirDialog({ open, row, kebersihanOverride, koreksiOverride, koreksiNote, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, focusProducts, onClose }) {
+  // Koreksi Gaji per karyawan (boleh negatif, boleh 0). Additive terhadap
+  // TOTAL. Dari draft ambil override lokal; dari final ambil snapshot.
+  const koreksiVal = Number(koreksiOverride ?? (isFinal ? (row.komponen?.koreksi || 0) : 0));
+  const koreksiTxt = String(koreksiNote ?? (isFinal ? (row.koreksi_note || '') : '') ?? '');
   const rows = [
     // "Gaji Jam Kerja" → "Gaji". Perhitungan internal tidak berubah.
     ['Gaji', row.komponen.gaji_jam_kerja],
@@ -631,6 +670,7 @@ function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal
     ['Reward Poin', row.komponen.reward_poin],
     ['BPJS Ketenagakerjaan', finalOf(row.user_id, 'bpjs_tk', row.komponen.bpjs_tk)],
     ['BPJS Kesehatan', finalOf(row.user_id, 'bpjs_kes', row.komponen.bpjs_kes)],
+    ['Koreksi Gaji', koreksiVal],
   ];
   // Format tanggal PLAIN ASCII utk jsPDF (default helvetica tidak render
   // baik unicode "→" & bisa memunculkan `!` / non-breaking space aneh).
@@ -688,9 +728,22 @@ function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal
     });
     // Informasi tambahan: Produk Fokus periode ini (info-only). Tabel
     // baru di bawah tabel komponen gaji. Skip bila kosong.
+    let cursorY = doc.lastAutoTable?.finalY || y;
+    // Keterangan Koreksi (bila ada) — tampil sebagai teks bebas di bawah
+    // tabel komponen, sebelum Produk Fokus.
+    if (koreksiTxt && koreksiTxt.trim()) {
+      cursorY += 6;
+      doc.setFontSize(9); doc.setFont(undefined, 'bold');
+      doc.text('Keterangan Koreksi:', marginX, cursorY);
+      cursorY += 5;
+      doc.setFont(undefined, 'normal');
+      const wrapped = doc.splitTextToSize(koreksiTxt.trim(), pageW - marginX * 2);
+      doc.text(wrapped, marginX, cursorY);
+      cursorY += wrapped.length * 4.5;
+    }
     const fpList = Array.isArray(focusProducts) ? focusProducts.filter((p) => p && p.nama) : [];
     if (fpList.length > 0) {
-      const startY2 = (doc.lastAutoTable?.finalY || y) + 8;
+      const startY2 = cursorY + 8;
       doc.setFontSize(10); doc.setFont(undefined, 'bold');
       doc.text('Produk Fokus Periode Ini', marginX, startY2);
       doc.setFont(undefined, 'normal');
@@ -732,6 +785,14 @@ function KitirDialog({ open, row, kebersihanOverride, rowTotal, finalOf, isFinal
           <div className="border-t border-white/10 mt-2 pt-2 flex justify-between font-bold">
             <span>TOTAL PAYROLL</span><span className="tabular-nums">{fmtIDR(rowTotal)}</span>
           </div>
+          {koreksiTxt && koreksiTxt.trim() && (
+            <div className="border-t border-white/10 mt-3 pt-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                Keterangan Koreksi
+              </div>
+              <div className="text-sm whitespace-pre-wrap">{koreksiTxt}</div>
+            </div>
+          )}
           {Array.isArray(focusProducts) && focusProducts.filter((p) => p && p.nama).length > 0 && (
             <div className="border-t border-white/10 mt-3 pt-2">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
