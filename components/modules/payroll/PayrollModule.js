@@ -118,9 +118,21 @@ const KOMPONEN_LABELS = {
 };
 const KOMPONEN_ORDER = Object.keys(KOMPONEN_LABELS);
 
+// Cycle_key aktif berdasarkan tanggal saat ini. Aturan: periode berakhir
+// tanggal 25 bulan berjalan. Jika hari ≥ 26, periode berikutnya sudah
+// dimulai → gunakan bulan depan sebagai cycle_key. Cerminan logic backend
+// `activeCycleKey()` — dipakai hanya sebagai fallback awal state.
 function nowCycleKey() {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  if (day >= 26) {
+    const nm = m === 12 ? 1 : m + 1;
+    const ny = m === 12 ? y + 1 : y;
+    return `${ny}-${String(nm).padStart(2, '0')}`;
+  }
+  return `${y}-${String(m).padStart(2, '0')}`;
 }
 
 export default function PayrollModule({ user, initialView = 'pay:period' }) {
@@ -166,7 +178,10 @@ export default function PayrollModule({ user, initialView = 'pay:period' }) {
 // ============================================================
 function PeriodView() {
   const [cycles, setCycles] = useState([]);
-  const [cycle, setCycle] = useState(nowCycleKey());
+  // Cycle awal '' → di-set ke cycle_key terbaru setelah cycles ter-load.
+  // Menghindari load() menembak cycle_key yang belum valid (sebelum
+  // FIRST_CYCLE_KEY di backend) & auto-arahkan ke periode berjalan.
+  const [cycle, setCycle] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [data, setData] = useState(null); // { from, to, config, period, employees, breakdown }
@@ -177,8 +192,17 @@ function PeriodView() {
   async function loadCycles() {
     try {
       const d = await api('cycles');
-      setCycles(d.cycles || []);
-    } catch (e) { toast.error(e.message); }
+      const list = d.cycles || [];
+      setCycles(list);
+      // Auto-pilih cycle terbaru bila belum ada pilihan aktif atau pilihan
+      // sekarang tidak ada di daftar (misal cycle lama yang sudah tak valid).
+      if (list.length > 0) {
+        setCycle((cur) => (cur && list.some((c) => c.cycle_key === cur)) ? cur : list[0].cycle_key);
+      } else {
+        setCycle('');
+        setLoading(false);
+      }
+    } catch (e) { toast.error(e.message); setLoading(false); }
   }
   async function load(ck = cycle) {
     if (!ck) return;
@@ -190,7 +214,7 @@ function PeriodView() {
     finally { setLoading(false); }
   }
   useEffect(() => { loadCycles(); }, []);
-  useEffect(() => { load(cycle); /* eslint-disable-next-line */ }, [cycle]);
+  useEffect(() => { if (cycle) load(cycle); /* eslint-disable-next-line */ }, [cycle]);
 
   const isFinal = data?.period?.status === 'final';
 
@@ -243,6 +267,18 @@ function PeriodView() {
       toast.success('Payroll periode ini telah difinalisasi (FINAL, terkunci)');
     } catch (e) { toast.error(e.message); }
     finally { setFinalizing(false); }
+  }
+
+  // Kasus khusus: belum ada cycle sama sekali (sebelum periode pertama
+  // 26 Agustus 2026 → 25 September 2026 tiba). Tampilkan empty state.
+  if (!loading && cycles.length === 0) {
+    return (
+      <div className="py-12 text-center text-muted-foreground text-sm space-y-2">
+        <div className="text-base font-semibold text-foreground">Belum ada periode Payroll</div>
+        <div>Periode pertama Payroll dimulai <b>26 Agustus 2026</b> dan berakhir <b>25 September 2026</b>.</div>
+        <div>Periode akan otomatis tersedia setelah tanggal tersebut.</div>
+      </div>
+    );
   }
 
   if (loading || !data) return <div className="py-12 text-center text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Memuat…</div>;
