@@ -1423,6 +1423,229 @@ function OwnerReportView() {
 }
 
 // ============================================================================
+//  Owner: Dashboard Rekap Absen — tabel kalender (row=staff, col=tanggal).
+//  Reuse endpoint existing GET /api/absensi/report (owner-only) + /api/employees.
+//  Reuse VerifikasiDetailModal untuk detail per cell.
+//  HANYA VISUALISASI — tidak mengubah data, workflow, atau perhitungan.
+// ============================================================================
+function RekapDashboardView() {
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  const firstOfMonthIso = () => {
+    const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
+  };
+  const [from, setFrom] = useState(firstOfMonthIso());
+  const [to, setTo] = useState(todayIso());
+  const [items, setItems] = useState([]);
+  const [staffOpts, setStaffOpts] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [radiusM, setRadiusM] = useState(50);
+  const [detailRec, setDetailRec] = useState(null);
+
+  // Ambil daftar staff aktif (reuse endpoint /api/employees seperti view lain).
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = localStorage.getItem('cc_token');
+        const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
+        if (res.ok) {
+          const d = await res.json();
+          const list = (Array.isArray(d?.items) ? d.items : Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : [])
+            .filter((e) => e.role !== 'owner' && e.status !== 'inactive');
+          setStaffOpts(list);
+        }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  const load = async () => {
+    if (!from || !to || from > to) { toast.error('Rentang tanggal tidak valid'); return; }
+    setLoading(true);
+    try {
+      const qs = new URLSearchParams({ from, to }).toString();
+      const d = await absApi(`report?${qs}`);
+      setItems(Array.isArray(d.items) ? d.items : []);
+      if (d.location?.radius_m) setRadiusM(Number(d.location.radius_m));
+    } catch (e) {
+      toast.error(e.message);
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  // Bangun daftar tanggal (inclusive) dari from → to.
+  const dateList = useMemo(() => {
+    if (!from || !to || from > to) return [];
+    const out = [];
+    const [fy, fm, fd] = from.split('-').map(Number);
+    const [ty, tm, td] = to.split('-').map(Number);
+    const start = new Date(Date.UTC(fy, fm - 1, fd));
+    const end = new Date(Date.UTC(ty, tm - 1, td));
+    // Batasi maksimal 62 hari supaya tabel tidak meledak.
+    const maxDays = 62;
+    let n = 0;
+    for (let d = new Date(start); d <= end && n < maxDays; d.setUTCDate(d.getUTCDate() + 1), n++) {
+      out.push(d.toISOString().slice(0, 10));
+    }
+    return out;
+  }, [from, to]);
+
+  // Index: user_id → date → record.
+  const recByUserDate = useMemo(() => {
+    const m = new Map();
+    for (const r of items) {
+      if (!r?.user_id || !r?.date) continue;
+      let inner = m.get(r.user_id);
+      if (!inner) { inner = new Map(); m.set(r.user_id, inner); }
+      // Bila ada >1 record untuk (user, tanggal) — ambil yang pertama.
+      if (!inner.has(r.date)) inner.set(r.date, r);
+    }
+    return m;
+  }, [items]);
+
+  // Staff yang akan ditampilkan: seluruh staff aktif. Bila belum ada
+  // staffOpts (fallback), pakai unique user dari records.
+  const staffRows = useMemo(() => {
+    if (staffOpts.length > 0) {
+      return staffOpts.map((s) => ({ user_id: s.id, name: s.name }));
+    }
+    const seen = new Map();
+    for (const r of items) {
+      if (r.user_id && !seen.has(r.user_id)) seen.set(r.user_id, { user_id: r.user_id, name: r.user_name || r.user_id });
+    }
+    return Array.from(seen.values());
+  }, [staffOpts, items]);
+
+  // Format header tanggal: "01" + "Sen"; highlight hari ini & Minggu.
+  const dow = (iso) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0=Min
+  };
+  const DOW_LABELS = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
+  const todayS = todayIso();
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Users className="w-4 h-4" /> Dashboard Rekap Absen
+          </CardTitle>
+          <CardDescription>
+            Visualisasi kehadiran seluruh karyawan aktif dalam bentuk tabel kalender.
+            Klik sel <b>✓</b> untuk melihat detail Absen Masuk &amp; Keluar pada tanggal tersebut.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <Label className="text-xs">Dari</Label>
+              <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8" />
+            </div>
+            <div>
+              <Label className="text-xs">Sampai</Label>
+              <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8" />
+            </div>
+            <Button size="sm" onClick={load} disabled={loading} className="gap-1">
+              {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Muat
+            </Button>
+            <div className="text-[11px] text-muted-foreground ml-auto">
+              {dateList.length} hari · {staffRows.length} karyawan aktif
+              {dateList.length >= 62 && ' · maks 62 hari'}
+            </div>
+          </div>
+
+          <div className="overflow-auto border border-white/10 rounded-lg">
+            <table className="w-full text-[11px] border-collapse">
+              <thead>
+                <tr className="bg-white/[0.03]">
+                  <th className="sticky left-0 z-20 bg-[#0a0a0b] border-b border-r border-white/10 px-2 py-1.5 text-left font-semibold min-w-[140px]">
+                    Nama
+                  </th>
+                  {dateList.map((iso) => {
+                    const d = Number(iso.slice(-2));
+                    const w = dow(iso);
+                    const isSun = w === 0;
+                    const isToday = iso === todayS;
+                    return (
+                      <th
+                        key={iso}
+                        className={`border-b border-r border-white/10 px-1 py-1 text-center font-semibold min-w-[36px]
+                          ${isSun ? 'text-rose-300' : ''} ${isToday ? 'bg-indigo-500/20' : ''}`}
+                        title={iso}
+                      >
+                        <div className="tabular-nums">{String(d).padStart(2, '0')}</div>
+                        <div className="text-[9px] text-muted-foreground font-normal">{DOW_LABELS[w]}</div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {loading && (
+                  <tr><td colSpan={dateList.length + 1} className="py-6 text-center text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Memuat…</td></tr>
+                )}
+                {!loading && staffRows.length === 0 && (
+                  <tr><td colSpan={dateList.length + 1} className="py-6 text-center text-muted-foreground">Belum ada karyawan aktif.</td></tr>
+                )}
+                {!loading && staffRows.map((s) => {
+                  const byDate = recByUserDate.get(s.user_id);
+                  return (
+                    <tr key={s.user_id} className="hover:bg-white/[0.02]">
+                      <td className="sticky left-0 z-10 bg-[#0a0a0b] border-b border-r border-white/10 px-2 py-1.5 font-medium truncate">
+                        {s.name}
+                      </td>
+                      {dateList.map((iso) => {
+                        const rec = byDate?.get(iso);
+                        const hadir = !!rec;
+                        const isSun = dow(iso) === 0;
+                        return (
+                          <td
+                            key={iso}
+                            className={`border-b border-r border-white/10 text-center py-1
+                              ${isSun ? 'bg-white/[0.02]' : ''}
+                              ${hadir ? 'cursor-pointer hover:bg-emerald-500/10' : ''}`}
+                            onClick={() => hadir && setDetailRec(rec)}
+                            title={hadir
+                              ? `${s.name} · ${iso}\nMasuk: ${rec.actual_check_in_wita || '—'} · Keluar: ${rec.actual_check_out_wita || '—'}`
+                              : `${s.name} · ${iso} · Tidak Hadir`}
+                          >
+                            {hadir ? (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">✓</span>
+                            ) : (
+                              <span className="text-muted-foreground/60">—</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 text-[11px] text-muted-foreground pt-1">
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">✓</span> Hadir (klik untuk detail)
+            </span>
+            <span className="inline-flex items-center gap-1"><span className="w-4 text-center">—</span> Tidak Hadir</span>
+            <span className="inline-flex items-center gap-1"><span className="inline-block w-3 h-3 bg-indigo-500/20 rounded" /> Hari ini</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <VerifikasiDetailModal
+        open={!!detailRec}
+        rec={detailRec}
+        radiusM={radiusM}
+        onClose={() => setDetailRec(null)}
+      />
+    </div>
+  );
+}
+
+
+// ============================================================================
 //  Owner: Verifikasi Detail Modal — bukti Absen Masuk & Keluar (foto + GPS)
 //  Reuse endpoint existing GET /api/absensi/record/:id/selfie/(in|out).
 //  Radius diambil dari settings.location.radius_m (di-echo backend di /report).
@@ -2798,6 +3021,7 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
           <Button size="sm" variant={view === 'abs:points:history' ? 'default' : 'outline'} onClick={() => setView('abs:points:history')} className="gap-1"><Coins className="w-3.5 h-3.5"/>Riwayat Poin</Button>
           {isOwner && (
             <>
+              <Button size="sm" variant={view === 'abs:owner:rekap' ? 'default' : 'outline'} onClick={() => setView('abs:owner:rekap')} className="gap-1"><Users className="w-3.5 h-3.5"/>Rekap</Button>
               <Button size="sm" variant={view === 'abs:owner:dashboard' ? 'default' : 'outline'} onClick={() => setView('abs:owner:dashboard')} className="gap-1"><Users className="w-3.5 h-3.5"/>Dashboard</Button>
               <Button size="sm" variant={view === 'abs:owner:report' ? 'default' : 'outline'} onClick={() => setView('abs:owner:report')} className="gap-1"><History className="w-3.5 h-3.5"/>Laporan</Button>
               <Button size="sm" variant={view === 'abs:owner:overtime' ? 'default' : 'outline'} onClick={() => setView('abs:owner:overtime')} className="gap-1"><ClipboardCheck className="w-3.5 h-3.5"/>Lembur</Button>
@@ -2815,6 +3039,7 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
           {view === 'abs:in:so' && <CheckInView soSelected onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:out' && <CheckOutView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:history' && <HistoryView onBack={() => setView('abs:home')} />}
+          {view === 'abs:owner:rekap' && isOwner && <RekapDashboardView />}
           {view === 'abs:owner:dashboard' && isOwner && <OwnerDashboardView />}
           {view === 'abs:owner:report' && isOwner && <OwnerReportView />}
           {view === 'abs:owner:overtime' && isOwner && <OwnerOvertimeView />}

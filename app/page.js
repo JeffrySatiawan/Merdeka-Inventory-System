@@ -453,6 +453,7 @@ function buildNav(user) {
           icon: Clock,
           module: 'absensi',
           children: [
+            { key: 'abs:owner:rekap', label: 'Dashboard Rekap Absen', ownerOnly: true },
             { key: 'abs:home', label: 'Absensi Saya' },
             { key: 'abs:history', label: 'Riwayat Absensi' },
             { key: 'abs:points:board', label: 'Live Point Board' },
@@ -773,6 +774,7 @@ function MobileShell({ user, active, onNav, onLogout, onOpenPicker, children }) 
     'abs:in': 'Absen Masuk',
     'abs:out': 'Absen Keluar',
     'abs:history': 'Riwayat Absensi',
+    'abs:owner:rekap': 'Absensi · Dashboard Rekap',
     'abs:owner:dashboard': 'Absensi · Dashboard',
     'abs:owner:report': 'Absensi · Laporan',
     'abs:owner:overtime': 'Absensi · Approval Lembur',
@@ -955,6 +957,7 @@ function MobileTopBar({ user, active, onNav, onLogout }) {
     'abs:in': 'Absensi · Absen Masuk',
     'abs:out': 'Absensi · Absen Keluar',
     'abs:history': 'Absensi · Riwayat',
+    'abs:owner:rekap': 'Absensi · Dashboard Rekap',
     'abs:owner:dashboard': 'Absensi · Dashboard Owner',
     'abs:owner:report': 'Absensi · Laporan',
     'abs:owner:overtime': 'Absensi · Approval Lembur',

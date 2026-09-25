@@ -131,6 +131,14 @@ user_problem_statement: |
 - Frontend: UI CRUD baru di Card konfigurasi periode (bawah section Komisi Produk Fokus). Disabled saat FINAL. Dikirim bersama save. KitirDialog menerima `focusProducts` dan merender tabel "Produk Fokus Periode Ini" di PDF (autoTable kedua) + preview modal.
 - Files: `/app/lib/modules/payroll/service.js`, `/app/components/modules/payroll/PayrollModule.js`
 
+## Current Task: Absensi — Dashboard Rekap Absen (Owner-only, visualisasi kalender)
+- Menu baru `abs:owner:rekap` di sidebar TEPAT DI ATAS "Absensi Saya", tetap dalam group Absensi. Hidden untuk staff (`ownerOnly: true`).
+- HANYA visualisasi: tabel kalender row=Nama Karyawan, col=Tanggal. Sel ✓ = Hadir (klik → buka `VerifikasiDetailModal` existing), — = Tidak Hadir.
+- Reuse endpoint `GET /api/absensi/report` (owner-guarded backend) + `/api/employees` (untuk daftar staff aktif). Tidak ada endpoint/collection baru.
+- Default rentang: awal bulan → hari ini. Batas maks 62 hari agar tabel tidak meledak.
+- TIDAK mengubah workflow Absensi, Absensi Saya, Laporan Absensi, atau modul lain.
+- Files: `/app/components/modules/absensi/AbsensiModule.js` (RekapDashboardView + wire-up), `/app/app/page.js` (sidebar entry + breadcrumb labels)
+
 
 backend:
   - task: "Auth (login/logout/me) with session token"
