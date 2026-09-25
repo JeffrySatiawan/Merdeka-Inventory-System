@@ -1423,12 +1423,13 @@ function OwnerReportView() {
 }
 
 // ============================================================================
-//  Owner: Dashboard Rekap Absen — tabel kalender (row=staff, col=tanggal).
-//  Reuse endpoint existing GET /api/absensi/report (owner-only) + /api/employees.
-//  Reuse VerifikasiDetailModal untuk detail per cell.
+//  Rekap Absen — Dashboard visualisasi tabel kalender (row=staff, col=tanggal).
+//  Bisa diakses semua staff & owner. Reuse endpoint BARU GET /api/absensi/rekap
+//  (info kehadiran ringkas — TIDAK menyertakan foto / GPS / poin).
+//  Klik cell ✓ → buka modal detail basic (jam masuk/keluar, durasi kerja).
 //  HANYA VISUALISASI — tidak mengubah data, workflow, atau perhitungan.
 // ============================================================================
-function RekapDashboardView() {
+function RekapDashboardView({ user }) {
   const todayIso = () => new Date().toISOString().slice(0, 10);
   const firstOfMonthIso = () => {
     const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
@@ -1436,35 +1437,19 @@ function RekapDashboardView() {
   const [from, setFrom] = useState(firstOfMonthIso());
   const [to, setTo] = useState(todayIso());
   const [items, setItems] = useState([]);
-  const [staffOpts, setStaffOpts] = useState([]);
+  const [staffRows, setStaffRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [radiusM, setRadiusM] = useState(50);
   const [detailRec, setDetailRec] = useState(null);
-
-  // Ambil daftar staff aktif (reuse endpoint /api/employees seperti view lain).
-  useEffect(() => {
-    (async () => {
-      try {
-        const token = localStorage.getItem('cc_token');
-        const res = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token || ''}` }});
-        if (res.ok) {
-          const d = await res.json();
-          const list = (Array.isArray(d?.items) ? d.items : Array.isArray(d?.employees) ? d.employees : Array.isArray(d) ? d : [])
-            .filter((e) => e.role !== 'owner' && e.status !== 'inactive');
-          setStaffOpts(list);
-        }
-      } catch { /* ignore */ }
-    })();
-  }, []);
 
   const load = async () => {
     if (!from || !to || from > to) { toast.error('Rentang tanggal tidak valid'); return; }
     setLoading(true);
     try {
       const qs = new URLSearchParams({ from, to }).toString();
-      const d = await absApi(`report?${qs}`);
+      const d = await absApi(`rekap?${qs}`);
       setItems(Array.isArray(d.items) ? d.items : []);
-      if (d.location?.radius_m) setRadiusM(Number(d.location.radius_m));
+      const staff = Array.isArray(d.staff) ? d.staff : [];
+      setStaffRows(staff.map((s) => ({ user_id: s.id, name: s.name })));
     } catch (e) {
       toast.error(e.message);
     } finally { setLoading(false); }
@@ -1501,18 +1486,15 @@ function RekapDashboardView() {
     return m;
   }, [items]);
 
-  // Staff yang akan ditampilkan: seluruh staff aktif. Bila belum ada
-  // staffOpts (fallback), pakai unique user dari records.
-  const staffRows = useMemo(() => {
-    if (staffOpts.length > 0) {
-      return staffOpts.map((s) => ({ user_id: s.id, name: s.name }));
-    }
+  // Fallback: bila staff kosong (misal ada masalah), pakai unique user dari records.
+  const rows = useMemo(() => {
+    if (staffRows.length > 0) return staffRows;
     const seen = new Map();
     for (const r of items) {
       if (r.user_id && !seen.has(r.user_id)) seen.set(r.user_id, { user_id: r.user_id, name: r.user_name || r.user_id });
     }
     return Array.from(seen.values());
-  }, [staffOpts, items]);
+  }, [staffRows, items]);
 
   // Format header tanggal: "01" + "Sen"; highlight hari ini & Minggu.
   const dow = (iso) => {
@@ -1549,7 +1531,7 @@ function RekapDashboardView() {
               Muat
             </Button>
             <div className="text-[11px] text-muted-foreground ml-auto">
-              {dateList.length} hari · {staffRows.length} karyawan aktif
+              {dateList.length} hari · {rows.length} karyawan aktif
               {dateList.length >= 62 && ' · maks 62 hari'}
             </div>
           </div>
@@ -1584,10 +1566,10 @@ function RekapDashboardView() {
                 {loading && (
                   <tr><td colSpan={dateList.length + 1} className="py-6 text-center text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Memuat…</td></tr>
                 )}
-                {!loading && staffRows.length === 0 && (
+                {!loading && rows.length === 0 && (
                   <tr><td colSpan={dateList.length + 1} className="py-6 text-center text-muted-foreground">Belum ada karyawan aktif.</td></tr>
                 )}
-                {!loading && staffRows.map((s) => {
+                {!loading && rows.map((s) => {
                   const byDate = recByUserDate.get(s.user_id);
                   return (
                     <tr key={s.user_id} className="hover:bg-white/[0.02]">
@@ -1604,7 +1586,7 @@ function RekapDashboardView() {
                             className={`border-b border-r border-white/10 text-center py-1
                               ${isSun ? 'bg-white/[0.02]' : ''}
                               ${hadir ? 'cursor-pointer hover:bg-emerald-500/10' : ''}`}
-                            onClick={() => hadir && setDetailRec(rec)}
+                            onClick={() => hadir && setDetailRec({ ...rec, user_name: rec.user_name || s.name })}
                             title={hadir
                               ? `${s.name} · ${iso}\nMasuk: ${rec.actual_check_in_wita || '—'} · Keluar: ${rec.actual_check_out_wita || '—'}`
                               : `${s.name} · ${iso} · Tidak Hadir`}
@@ -1634,13 +1616,91 @@ function RekapDashboardView() {
         </CardContent>
       </Card>
 
-      <VerifikasiDetailModal
+      <RekapDetailModal
         open={!!detailRec}
         rec={detailRec}
-        radiusM={radiusM}
         onClose={() => setDetailRec(null)}
       />
     </div>
+  );
+}
+
+// ============================================================================
+//  Rekap Detail Modal — tampilan BASIC (semua staff boleh melihat).
+//  TIDAK menampilkan foto selfie atau koordinat GPS (privasi). Reuse data
+//  yang sudah dikembalikan endpoint /api/absensi/rekap.
+// ============================================================================
+function RekapDetailModal({ open, rec, onClose }) {
+  if (!open || !rec) return null;
+  // Durasi kerja sederhana: jam keluar - jam masuk (jika keduanya ada).
+  const parseHM = (s) => {
+    if (!s || typeof s !== 'string') return null;
+    const m = s.match(/^(\d{1,2})[.:](\d{2})$/);
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  const inM = parseHM(rec.actual_check_in_wita);
+  const outM = parseHM(rec.actual_check_out_wita);
+  let durasiStr = '—';
+  if (inM != null && outM != null && outM >= inM) {
+    const diff = outM - inM;
+    durasiStr = `${Math.floor(diff / 60)} jam ${diff % 60} menit`;
+  }
+  const late = Number(rec.late_minutes || 0);
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Clock className="w-4 h-4" /> Detail Absensi</DialogTitle>
+          <DialogDescription>
+            {rec.user_name} · {rec.date} · {rec.shift_name || rec.shift_key || '—'}
+            {rec.shift_start && rec.shift_end ? ` (${rec.shift_start}–${rec.shift_end})` : ''}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="text-sm space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Absen Masuk</div>
+              <div className="text-lg font-semibold tabular-nums">{rec.actual_check_in_wita || '—'}</div>
+              {late > 0 && (
+                <Badge className="mt-1 bg-rose-500/15 text-rose-300 border-rose-500/30 text-[10px]">
+                  Terlambat {late} menit
+                </Badge>
+              )}
+              {late <= 0 && rec.actual_check_in_wita && (
+                <Badge className="mt-1 bg-emerald-500/15 text-emerald-300 border-emerald-500/30 text-[10px]">
+                  Tepat waktu
+                </Badge>
+              )}
+            </div>
+            <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Absen Keluar</div>
+              <div className="text-lg font-semibold tabular-nums">{rec.actual_check_out_wita || '—'}</div>
+              {!rec.actual_check_out_wita && (
+                <Badge className="mt-1 bg-white/5 text-muted-foreground border-white/10 text-[10px]">Belum absen keluar</Badge>
+              )}
+            </div>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-1">
+            <div className="flex justify-between"><span className="text-muted-foreground">Durasi Kerja</span><b className="tabular-nums">{durasiStr}</b></div>
+            {rec.so_selected && (
+              <div className="flex justify-between"><span className="text-muted-foreground">Stock Opname</span><b>Ya</b></div>
+            )}
+            {rec.overtime_status && rec.overtime_status !== 'none' && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Lembur</span>
+                <b className={rec.overtime_status === 'approved' ? 'text-emerald-300' : rec.overtime_status === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>
+                  {rec.overtime_status === 'approved' ? `Disetujui${rec.overtime_minutes ? ` (${rec.overtime_minutes} menit)` : ''}` : rec.overtime_status === 'rejected' ? 'Ditolak' : 'Menunggu approval'}
+                </b>
+              </div>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Tutup</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -3019,9 +3079,9 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
           <Button size="sm" variant={view === 'abs:home' ? 'default' : 'outline'} onClick={() => setView('abs:home')}>Absensi</Button>
           <Button size="sm" variant={view === 'abs:points:board' ? 'default' : 'outline'} onClick={() => setView('abs:points:board')} className="gap-1"><Trophy className="w-3.5 h-3.5"/>Live Board</Button>
           <Button size="sm" variant={view === 'abs:points:history' ? 'default' : 'outline'} onClick={() => setView('abs:points:history')} className="gap-1"><Coins className="w-3.5 h-3.5"/>Riwayat Poin</Button>
+          <Button size="sm" variant={view === 'abs:owner:rekap' ? 'default' : 'outline'} onClick={() => setView('abs:owner:rekap')} className="gap-1"><Users className="w-3.5 h-3.5"/>Rekap</Button>
           {isOwner && (
             <>
-              <Button size="sm" variant={view === 'abs:owner:rekap' ? 'default' : 'outline'} onClick={() => setView('abs:owner:rekap')} className="gap-1"><Users className="w-3.5 h-3.5"/>Rekap</Button>
               <Button size="sm" variant={view === 'abs:owner:dashboard' ? 'default' : 'outline'} onClick={() => setView('abs:owner:dashboard')} className="gap-1"><Users className="w-3.5 h-3.5"/>Dashboard</Button>
               <Button size="sm" variant={view === 'abs:owner:report' ? 'default' : 'outline'} onClick={() => setView('abs:owner:report')} className="gap-1"><History className="w-3.5 h-3.5"/>Laporan</Button>
               <Button size="sm" variant={view === 'abs:owner:overtime' ? 'default' : 'outline'} onClick={() => setView('abs:owner:overtime')} className="gap-1"><ClipboardCheck className="w-3.5 h-3.5"/>Lembur</Button>
@@ -3039,7 +3099,7 @@ export default function AbsensiModule({ user, initialView = 'abs:home' }) {
           {view === 'abs:in:so' && <CheckInView soSelected onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:out' && <CheckOutView onDone={() => setView('abs:home')} onBack={() => setView('abs:home')} />}
           {view === 'abs:history' && <HistoryView onBack={() => setView('abs:home')} />}
-          {view === 'abs:owner:rekap' && isOwner && <RekapDashboardView />}
+          {view === 'abs:owner:rekap' && <RekapDashboardView user={user} />}
           {view === 'abs:owner:dashboard' && isOwner && <OwnerDashboardView />}
           {view === 'abs:owner:report' && isOwner && <OwnerReportView />}
           {view === 'abs:owner:overtime' && isOwner && <OwnerOvertimeView />}

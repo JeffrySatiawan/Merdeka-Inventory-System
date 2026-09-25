@@ -453,7 +453,7 @@ function buildNav(user) {
           icon: Clock,
           module: 'absensi',
           children: [
-            { key: 'abs:owner:rekap', label: 'Dashboard Rekap Absen', ownerOnly: true },
+            { key: 'abs:owner:rekap', label: 'Dashboard Rekap Absen' },
             { key: 'abs:home', label: 'Absensi Saya' },
             { key: 'abs:history', label: 'Riwayat Absensi' },
             { key: 'abs:points:board', label: 'Live Point Board' },
