@@ -743,19 +743,29 @@ function KitirDialog({ open, row, kebersihanOverride, koreksiOverride, koreksiNo
     }
     const fpList = Array.isArray(focusProducts) ? focusProducts.filter((p) => p && p.nama) : [];
     if (fpList.length > 0) {
-      const startY2 = cursorY + 8;
+      // Judul section.
+      let yFp = cursorY + 8;
       doc.setFontSize(10); doc.setFont(undefined, 'bold');
-      doc.text('Produk Fokus Periode Ini', marginX, startY2);
-      doc.setFont(undefined, 'normal');
-      autoTable(doc, {
-        startY: startY2 + 2,
-        head: [['Nama Produk', 'Keterangan']],
-        body: fpList.map((p) => [String(p.nama || ''), String(p.keterangan || '')]),
-        styles: { fontSize: 9, cellPadding: 1.8 },
-        headStyles: { fillColor: [60, 60, 60], textColor: 255 },
-        columnStyles: { 0: { cellWidth: 45 } },
-        margin: { left: marginX, right: marginX },
-      });
+      doc.text('Produk Fokus Periode Ini', marginX, yFp);
+      yFp += 5;
+      // Render list text-based: nama bold, keterangan (jika ada) italic
+      // di bawahnya. Keterangan kosong = tidak ditampilkan sama sekali.
+      // Menghindari kolom "Keterangan" yang selalu tampil walau kosong.
+      const contentW = pageW - marginX * 2;
+      for (const p of fpList) {
+        doc.setFontSize(9); doc.setFont(undefined, 'bold');
+        const nameLines = doc.splitTextToSize(`• ${String(p.nama || '')}`, contentW);
+        doc.text(nameLines, marginX, yFp);
+        yFp += nameLines.length * 4.5;
+        const kt = String(p.keterangan || '').trim();
+        if (kt) {
+          doc.setFont(undefined, 'italic');
+          const ktLines = doc.splitTextToSize(kt, contentW - 4);
+          doc.text(ktLines, marginX + 4, yFp);
+          yFp += ktLines.length * 4.2;
+        }
+        yFp += 1;
+      }
     }
     const safeName = (row.name || 'staff').replace(/\s+/g, '_');
     const safeDate = (periodTo || '').replace(/-/g, '');
