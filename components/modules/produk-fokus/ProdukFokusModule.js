@@ -817,11 +817,12 @@ function PenjualanView({ periodKey, activePeriodKey, range, isOwner, user }) {
                     <th className="text-right">Qty</th>
                     <th className="text-right">Est. Bonus</th>
                     {isOwner && <th>Input oleh</th>}
+                    {isOwner && <th></th>}
                   </tr>
                 </thead>
                 <tbody>
                   {items.length === 0 ? (
-                    <tr><td colSpan={isOwner ? 7 : 6} className="py-6 text-center text-muted-foreground">Belum ada transaksi.</td></tr>
+                    <tr><td colSpan={isOwner ? 8 : 6} className="py-6 text-center text-muted-foreground">Belum ada transaksi.</td></tr>
                   ) : items.map((it) => (
                     <tr key={it.id} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2">
                       <td className="text-muted-foreground text-[11px] whitespace-nowrap">
@@ -833,6 +834,22 @@ function PenjualanView({ periodKey, activePeriodKey, range, isOwner, user }) {
                       <td className="text-right tabular-nums">{it.qty} {it.satuan}</td>
                       <td className="text-right tabular-nums">{fmtIDR(it.qty * (it.bonus_unit || 0))}</td>
                       {isOwner && <td className="text-muted-foreground text-[11px]">{it.input_by_name || it.input_by}</td>}
+                      {isOwner && (
+                        <td className="text-right">
+                          <Button size="icon" variant="ghost" className="h-7 w-7 text-rose-400"
+                            title="Hapus transaksi (Owner only)"
+                            onClick={async () => {
+                              if (!confirm(`Hapus transaksi ${it.staff_name} · ${it.nama} · ${it.qty} ${it.satuan}?\nAksi ini permanen dan akan membebaskan kuota master.`)) return;
+                              try {
+                                await pfApi(`penjualan/${it.id}`, { method: 'DELETE' });
+                                toast.success('Transaksi dihapus');
+                                load();
+                              } catch (e) { toast.error(e.message); }
+                            }}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
