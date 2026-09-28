@@ -6,6 +6,7 @@ import OrderManagementModule from '@/components/modules/order-management/OrderMa
 import FakturModule from '@/components/modules/faktur/FakturModule';
 import AbsensiModule from '@/components/modules/absensi/AbsensiModule';
 import PayrollModule from '@/components/modules/payroll/PayrollModule';
+import ProdukFokusModule from '@/components/modules/produk-fokus/ProdukFokusModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -375,6 +376,7 @@ const MODULES_META = {
   // Guard router `/api/payroll/*` juga menolak staff walau modules array mereka
   // dimanipulasi (defense-in-depth).
   payroll: { key: 'payroll', name: 'Payroll', icon: Wallet, status: 'active', ownerOnly: true },
+  produk_fokus: { key: 'produk_fokus', name: 'Produk Fokus', icon: Target, status: 'active', color: 'text-orange-400' },
 };
 
 // Compute allowed module keys for a user (owner has all)
@@ -477,6 +479,20 @@ function buildNav(user) {
             { key: 'pay:period', label: 'Payroll Periode', ownerOnly: true },
             { key: 'pay:employees', label: 'Data Karyawan', ownerOnly: true },
             { key: 'pay:config', label: 'Pengaturan Payroll', ownerOnly: true },
+          ],
+        },
+        {
+          key: 'mod:produk_fokus',
+          label: 'Produk Fokus',
+          icon: Target,
+          module: 'produk_fokus',
+          children: [
+            { key: 'pf:dashboard', label: 'Dashboard' },
+            { key: 'pf:pengajuan', label: 'Pengajuan' },
+            { key: 'pf:penjualan', label: 'Input Penjualan' },
+            { key: 'pf:master', label: 'Master Produk', ownerOnly: true },
+            { key: 'pf:rekonsiliasi', label: 'Rekonsiliasi POS', ownerOnly: true },
+            { key: 'pf:histori', label: 'Histori', ownerOnly: true },
           ],
         },
       ],
@@ -705,6 +721,7 @@ function getActiveModule(view) {
   if (view.startsWith('fk:') || view === 'mod:faktur') return 'faktur';
   if (view.startsWith('abs:') || view === 'mod:absensi') return 'absensi';
   if (view.startsWith('pay:') || view === 'mod:payroll') return 'payroll';
+  if (view.startsWith('pf:') || view === 'mod:produk_fokus') return 'produk_fokus';
   return null; // no module context (e.g. ad:users)
 }
 
@@ -3674,6 +3691,9 @@ function App() {
           isOwner(user)
             ? <PayrollModule user={user} initialView={activeView === 'mod:payroll' ? 'pay:period' : activeView} />
             : <div className="p-6 text-center text-rose-300 text-sm">Akses ditolak — halaman ini hanya untuk Owner.</div>
+        )}
+        {(activeView.startsWith('pf:') || activeView === 'mod:produk_fokus') && (
+          <ProdukFokusModule user={user} initialView={activeView === 'mod:produk_fokus' ? 'pf:dashboard' : activeView} />
         )}
         {activeView === 'rp:history' && <ReportsHistoryView />}
         {activeView === 'ad:users' && <EmployeesView />}

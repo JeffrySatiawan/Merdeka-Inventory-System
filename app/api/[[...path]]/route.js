@@ -7,6 +7,7 @@ import { handleOMRequest } from '@/lib/modules/order-management/service';
 import { handleFakturRequest } from '@/lib/modules/faktur/service';
 import { handleAbsensiRequest } from '@/lib/modules/absensi/service';
 import { handlePayrollRequest } from '@/lib/modules/payroll/service';
+import { handleProdukFokusRequest } from '@/lib/modules/produk-fokus/service';
 
 // ---------- Mongo ----------
 let cachedClient = null;
@@ -165,6 +166,13 @@ const AVAILABLE_MODULES = [
     icon: 'Wallet',
     status: 'active',
     owner_only: true,
+  },
+  {
+    key: 'produk_fokus',
+    name: 'Produk Fokus',
+    description: 'Master produk fokus per periode, pengajuan tim ED, input penjualan, dan rekonsiliasi POS.',
+    icon: 'Target',
+    status: 'active',
   },
 ];
 const VALID_MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
@@ -525,6 +533,23 @@ async function handleRequest(req, path, method) {
     }
     const sub = path === 'payroll' ? '' : path.slice('payroll/'.length);
     const resp = await handlePayrollRequest(req, sub, method, { db, user });
+    if (resp) return resp;
+    return err('not found', 404);
+  }
+
+  // ============================================================
+  // Produk Fokus — modul mandiri, semua staff aktif dapat mengakses
+  // sesuai role (owner: full; staff: own pengajuan + penjualan). Guard
+  // detail per-endpoint di dalam service.js.
+  // ============================================================
+  if (path === 'pf' || path.startsWith('pf/')) {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    if (!hasModule(user, 'produk_fokus')) {
+      return err('forbidden — module Produk Fokus belum diaktifkan untuk akun Anda', 403);
+    }
+    const sub = path === 'pf' ? '' : path.slice('pf/'.length);
+    const resp = await handleProdukFokusRequest(req, sub, method, { db, user });
     if (resp) return resp;
     return err('not found', 404);
   }
