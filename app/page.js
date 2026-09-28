@@ -3395,6 +3395,21 @@ function ModulePickerScreen({ user, onPick, onLogout }) {
       stats: [],
     });
   }
+  if (mods.includes('produk_fokus')) {
+    cards.push({
+      key: 'produk_fokus',
+      name: 'Produk Fokus',
+      subtitle: 'Master · Pengajuan · Input Penjualan · Rekonsiliasi POS',
+      icon: Target,
+      gradient: 'from-orange-500/30 via-amber-500/20 to-transparent',
+      border: 'border-orange-500/40 hover:border-orange-500/70',
+      iconBg: 'bg-orange-500/20 border-orange-500/40',
+      iconColor: 'text-orange-400',
+      accentText: 'text-orange-300',
+      target: 'pf:dashboard',
+      stats: [],
+    });
+  }
 
   const timeLabel = clock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
   const dateLabel = clock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
