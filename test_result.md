@@ -15084,3 +15084,291 @@ agent_communication:
       All 34 tests passed (100%). Module is production-ready.
       
       **NOTE:** Telegram upload test (POST /api/tj/upload) was NOT tested as it requires actual image data and Telegram API interaction. The endpoint is implemented and ready for manual testing if needed.
+
+user_problem_statement: |
+  FIX — STATUS KARYAWAN TRAINING (Module Payroll)
+  Tambahkan checkbox "Training" pada Breakdown per Karyawan.
+  Jika Training dicentang:
+   - Seluruh komponen Payroll otomatis dikecualikan.
+   - Total Payroll otomatis = 0.
+   - Nominal gaji Training diisi manual via sistem Koreksi Gaji existing.
+  Jika Training tidak dicentang: gunakan perhitungan Payroll normal.
+  Berlaku HANYA untuk periode Payroll yang sedang diproses.
+  Tidak mengubah data Absensi/Poin. Tidak mengubah workflow lain. Reuse sistem Koreksi.
+
+backend:
+  - task: "Payroll — Training flag per karyawan (per periode)"
+    implemented: true
+    working: true
+    file: "lib/modules/payroll/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Perubahan minimal & additive di `computeBreakdown` dan handler PUT `/api/payroll/period`:
+          1. PUT `/api/payroll/period` menerima `per_user[uid].training` (boolean). Disimpan di
+             `payroll_periods.per_user[uid].training` (per cycle_key).
+          2. `computeBreakdown` membaca `pu.training`. Bila true, semua komponen dipaksa 0:
+             gaji_jam_kerja, komisi_penjualan, komisi_produk_fokus, komisi_kebersihan,
+             apresiasi_so, tunjangan_kinerja, reward_poin, bpjs_tk, bpjs_kes.
+             Hanya `koreksi` yang diperlakukan normal (nominal Gaji Training manual).
+             `total = koreksi` saat Training aktif.
+          3. `overrides[k]` di-set false saat training aktif (tidak relevan).
+          4. Row breakdown mengekspos flag `training: bool` untuk konsumsi frontend & snapshot.
+          5. Saat FINALIZE: `computeBreakdown` menghasilkan snapshot dgn nilai 0 untuk komponen
+             training → frozen dengan benar.
+          
+          UJI YANG DIINGINKAN:
+          - GET `/api/payroll/period?cycle=YYYY-MM` untuk periode aktif → dapat breakdown normal.
+          - PUT `/api/payroll/period` body `{ cycle, per_user: { <uid>: { training: true } } }`
+            → response breakdown karyawan tsb: semua komponen 0, koreksi=0, total=0.
+          - PUT lagi dgn `per_user[uid] = { training: true, koreksi: 1500000, koreksi_note: 'Gaji Training' }`
+            → response: komponen 0, koreksi=1500000, total=1500000. Karyawan lain TIDAK terpengaruh.
+          - PUT lagi dgn `per_user[uid] = { training: false }` (bersih flag)
+            → response: perhitungan normal kembali (komponen dari globals/N, gaji_jam_kerja
+            dari jam diakui, reward_poin dari poin).
+          - Auth: hanya Owner (`owner`/`owner123`). Non-owner harus 401/403.
+          - Cross-user isolation: hanya karyawan yg di-flag training yang otomatis 0. Yang tidak
+            di-flag tetap normal.
+          
+          Kredensial: Owner `owner` / `owner123`.
+          Endpoint utama: GET/PUT `/api/payroll/period`, POST `/api/payroll/period/finalize`.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 9 TESTS PASSED (100%) - PAYROLL TRAINING FLAG FEATURE FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for Payroll Training flag per karyawan (per periode)
+          **TEST FILE:** /app/backend_test_payroll_training.py
+          **TEST METHOD:** Python requests library with real API calls
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-08-26T04:45:23Z
+          **CREDENTIALS:** owner / owner123, cindy / cindy123
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: AUTH GUARD (4/4 tests passed)
+             - No token → GET /api/payroll/cycles → 401 ✓
+             - Owner login (owner/owner123) → 200 with token ✓
+             - Staff login (cindy/cindy123) → 200 with token ✓
+             - Staff access to /api/payroll/cycles → 403 (owner-only enforced) ✓
+          
+          ✅ TEST 2: GET CYCLES (3/3 tests passed)
+             - GET /api/payroll/cycles as owner → 200 ✓
+             - Response contains 2 cycles: ['2026-10', '2026-09'] ✓
+             - Selected cycle: 2026-10 (2026-09-26 → 2026-10-25) ✓
+          
+          ✅ TEST 3: BASELINE - GET BREAKDOWN (6/6 tests passed)
+             - GET /api/payroll/period?cycle=2026-10 → 200 ✓
+             - Response contains 6 staff in breakdown ✓
+             - uidA: Cindy (baseline total: 525000, training: false) ✓
+             - uidB: Hayu (baseline total: 0, training: false) ✓
+             - Baseline komponen recorded for both users ✓
+          
+          ✅ TEST 4: TURN ON TRAINING FOR uidA (8/8 tests passed)
+             - PUT /api/payroll/period with training=true for uidA → 200 ✓
+             - uidA training flag set to true ✓
+             - uidA all komponen = 0 (gaji_jam_kerja, komisi_penjualan, komisi_produk_fokus, komisi_kebersihan, apresiasi_so, tunjangan_kinerja, reward_poin, bpjs_tk, bpjs_kes) ✓
+             - uidA koreksi = 0 ✓
+             - uidA total = 0 ✓
+             - uidB training flag = false (UNCHANGED) ✓
+             - uidB komponen UNCHANGED from baseline ✓
+             - **CRITICAL SUCCESS:** Cross-user isolation verified - only uidA affected ✓
+          
+          ✅ TEST 5: SET KOREKSI FOR uidA (TRAINING) (7/7 tests passed)
+             - PUT /api/payroll/period with training=true + koreksi=1500000 + koreksi_note='Gaji Training Agustus' → 200 ✓
+             - uidA training flag still true ✓
+             - uidA all komponen = 0 except koreksi = 1500000 ✓
+             - uidA total = 1500000 ✓
+             - uidA koreksi_note = 'Gaji Training Agustus' ✓
+             - uidB still UNCHANGED (training=false, total=0) ✓
+             - **CRITICAL SUCCESS:** Training mode allows manual koreksi as Gaji Training ✓
+          
+          ✅ TEST 6: PERSISTENCE - GET AGAIN (6/6 tests passed)
+             - GET /api/payroll/period?cycle=2026-10 (fresh call) → 200 ✓
+             - uidA training flag persisted (true) ✓
+             - uidA koreksi persisted (1500000) ✓
+             - uidA total persisted (1500000) ✓
+             - uidA koreksi_note persisted ('Gaji Training Agustus') ✓
+             - uidB still normal (training=false, total=0) ✓
+             - **CRITICAL SUCCESS:** Training flag and koreksi persist across GET/PUT ✓
+          
+          ✅ TEST 7: TURN OFF TRAINING FOR uidA (5/5 tests passed)
+             - PUT /api/payroll/period with training=false + koreksi=0 → 200 ✓
+             - uidA training flag cleared (false) ✓
+             - uidA komponen back to baseline (all fields match baseline within rounding tolerance) ✓
+             - uidA total back to baseline (525000) ✓
+             - uidB still normal (training=false, total=0) ✓
+             - **CRITICAL SUCCESS:** Turning off training restores normal calculation ✓
+          
+          ✅ TEST 8: FINAL GUARD (3/3 tests passed)
+             - GET /api/payroll/period?cycle=2026-10 → status: draft ✓
+             - POST /api/payroll/period/finalize with cycle=2026-10 → 200, status: final ✓
+             - PUT /api/payroll/period with training toggle on FINAL period → 409 ✓
+             - Error message: "Payroll periode ini sudah FINAL — tidak dapat diubah." ✓
+             - **CRITICAL SUCCESS:** FINAL period cannot be modified (409 enforced) ✓
+          
+          ✅ TEST 9: CLEANUP (1/1 test passed)
+             - Cycle is FINAL, skipping cleanup (cannot modify FINAL period) ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Auth Guard (VERIFIED):**
+             - No token → 401 (unauthorized)
+             - Owner (owner/owner123) → 200 with token
+             - Staff (cindy/cindy123) → 200 with token, but 403 on /api/payroll/* (owner-only)
+             - Module-based access control working correctly
+          
+          2. **GET Cycles (VERIFIED):**
+             - Endpoint returns list of available cycles (2026-10, 2026-09)
+             - Cycle format: YYYY-MM (26th of previous month → 25th of that month)
+             - First cycle available: 2026-09 (26 Aug 2026 → 25 Sept 2026)
+             - Newest cycle selected: 2026-10 (26 Sept 2026 → 25 Oct 2026)
+          
+          3. **Baseline Breakdown (VERIFIED):**
+             - GET /api/payroll/period returns breakdown with 6 staff
+             - Each staff has komponen fields and total
+             - Baseline recorded for uidA (Cindy, total=525000) and uidB (Hayu, total=0)
+             - Training flag defaults to false
+          
+          4. **Training ON (VERIFIED):**
+             - PUT with training=true for uidA → all komponen forced to 0
+             - Fields zeroed: gaji_jam_kerja, komisi_penjualan, komisi_produk_fokus, komisi_kebersihan, apresiasi_so, tunjangan_kinerja, reward_poin, bpjs_tk, bpjs_kes
+             - koreksi field still normal (0 in this test)
+             - total = 0 (sum of all komponen)
+             - uidB UNCHANGED (cross-user isolation verified)
+          
+          5. **Koreksi for Training (VERIFIED):**
+             - PUT with training=true + koreksi=1500000 → total=1500000
+             - All komponen still 0 except koreksi=1500000
+             - koreksi_note field working ('Gaji Training Agustus')
+             - This allows manual input of Gaji Training via koreksi field
+             - uidB still UNCHANGED
+          
+          6. **Persistence (VERIFIED):**
+             - Fresh GET after PUT → training flag persisted
+             - koreksi and koreksi_note persisted
+             - total persisted (1500000)
+             - Data stored in payroll_periods.per_user[uid].training per cycle_key
+          
+          7. **Training OFF (VERIFIED):**
+             - PUT with training=false → komponen back to normal calculation
+             - All komponen fields restored to baseline values
+             - total back to baseline (525000)
+             - Normal calculation: gaji_jam_kerja from jam diakui, reward_poin from poin, etc.
+          
+          8. **FINAL Guard (VERIFIED):**
+             - POST /api/payroll/period/finalize → status changed to 'final'
+             - PUT on FINAL period → 409 with error message
+             - Error message in Indonesian: "Payroll periode ini sudah FINAL — tidak dapat diubah."
+             - FINAL period cannot be modified (training toggle rejected)
+          
+          9. **Cleanup (VERIFIED):**
+             - Cycle is FINAL, cleanup skipped (cannot modify FINAL period)
+             - This is expected behavior
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Auth guard: no token → 401, non-owner → 403
+          ✅ GET cycles returns available cycles (2026-10, 2026-09)
+          ✅ GET breakdown returns staff with komponen and total
+          ✅ Training ON: all komponen = 0, total = 0
+          ✅ Koreksi for training: koreksi field works, total = koreksi
+          ✅ Persistence: training flag and koreksi persist across GET/PUT
+          ✅ Training OFF: komponen back to normal calculation
+          ✅ FINAL guard: PUT on FINAL period → 409
+          ✅ Cross-user isolation: only flagged user affected, others unchanged
+          ✅ koreksi_note field working correctly
+          
+          **CONCLUSION:**
+          The Payroll Training flag feature is FULLY WORKING. All requirements met:
+          1. PUT /api/payroll/period accepts per_user[uid].training (boolean)
+          2. Training=true forces all komponen to 0 (gaji_jam_kerja, komisi_penjualan, komisi_produk_fokus, komisi_kebersihan, apresiasi_so, tunjangan_kinerja, reward_poin, bpjs_tk, bpjs_kes)
+          3. Only koreksi field remains active for manual Gaji Training input
+          4. total = koreksi when training=true
+          5. Training flag persists per (user_id, cycle_key) in payroll_periods.per_user
+          6. Training=false restores normal calculation
+          7. Cross-user isolation verified (only flagged user affected)
+          8. FINAL period cannot be modified (409 enforced)
+          9. Owner-only access enforced (staff denied with 403)
+          10. koreksi_note field working for training salary notes
+          
+          Test file: /app/backend_test_payroll_training.py
+          All 9 test scenarios passed (100%). Task marked as working=true, needs_retesting=false.
+
+frontend:
+  - task: "Payroll — Training checkbox UI di Breakdown per Karyawan"
+    implemented: true
+    working: "NA"
+    file: "components/modules/payroll/PayrollModule.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          - Kolom baru "Training" (checkbox) pada tabel Breakdown per Karyawan.
+          - Row Training: badge "Training" di nama, semua cell komponen di-disable & tampil 0
+            (visual line-through pada Jam/Poin), input Koreksi & Keterangan tetap enabled.
+          - `rowTotal`, `finalOf`, `isOverride` menghormati flag training di mode DRAFT.
+          - KitirDialog menampilkan badge Training + memaksa komponen 0 pada tabel preview & PDF.
+          - Status Kitir PDF: "DRAFT (TRAINING)" / "FINAL (TRAINING)".
+          - Save mengirim flag ke `per_user[uid].training`. Backend persist per cycle.
+          Tidak menyentuh module Absensi/Poin/lain.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 0
+  run_ui: false
+
+test_plan:
+  current_focus:
+    - "Payroll — Training flag per karyawan (per periode)"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Selesai implementasi fitur "Status Karyawan Training" di module Payroll (additive, tanpa
+      mengubah workflow existing). Tolong test backend endpoint `/api/payroll/period` untuk skenario:
+      1) Toggle training=true untuk 1 karyawan → semua komponen 0, hanya koreksi yg berlaku, total = koreksi.
+      2) Karyawan lain tidak terpengaruh (perhitungan normal tetap).
+      3) Toggle training=false → kembali ke perhitungan normal.
+      4) Guard Owner-only (401 tanpa token).
+      5) Verifikasi flag `training` disimpan (persist antar GET/PUT).
+      6) Bila periode FINAL → PUT ditolak 409.
+      Kredensial: Owner `owner` / `owner123`. Cycle aktif otomatis dari `activeCycleKey` (periode
+      pertama = 2026-09). Bila cycle belum tersedia, gunakan endpoint GET `/api/payroll/cycles`
+      untuk daftar cycle yang tersedia.
+  - agent: "testing"
+    message: |
+      ✅ BACKEND TESTING COMPLETE - ALL 9 TESTS PASSED (100%)
+      
+      Tested Payroll Training flag feature comprehensively via /app/backend_test_payroll_training.py.
+      
+      **VERIFIED WORKING:**
+      1. Auth guard: no token → 401, staff (cindy) → 403 on /api/payroll/* (owner-only enforced)
+      2. GET /api/payroll/cycles returns 2 cycles (2026-10, 2026-09), selected 2026-10
+      3. Baseline breakdown: 6 staff, picked uidA (Cindy, total=525000) and uidB (Hayu, total=0)
+      4. Training ON for uidA: all komponen=0, total=0, training=true ✓
+      5. Set koreksi=1500000 for uidA: total=1500000, koreksi_note='Gaji Training Agustus' ✓
+      6. Persistence: training flag, koreksi, koreksi_note persisted across GET/PUT ✓
+      7. Training OFF for uidA: komponen back to baseline (total=525000) ✓
+      8. FINAL guard: finalized cycle 2026-10, PUT → 409 with error message ✓
+      9. Cross-user isolation: uidB UNCHANGED throughout all tests ✓
+      
+      **CRITICAL SUCCESS:**
+      - Training=true forces all komponen to 0 (gaji_jam_kerja, komisi_penjualan, komisi_produk_fokus, komisi_kebersihan, apresiasi_so, tunjangan_kinerja, reward_poin, bpjs_tk, bpjs_kes)
+      - Only koreksi field remains active for manual Gaji Training input
+      - total = koreksi when training=true
+      - Training=false restores normal calculation
+      - FINAL period cannot be modified (409 enforced)
+      - Cross-user isolation verified (only flagged user affected)
+      
+      NO ISSUES FOUND. Backend implementation is correct and fully functional.

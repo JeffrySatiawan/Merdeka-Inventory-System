@@ -237,6 +237,7 @@ function PeriodView() {
         komisi_kebersihan: Number(v?.komisi_kebersihan || 0),
         koreksi: Number(v?.koreksi || 0),
         koreksi_note: String(v?.koreksi_note || ''),
+        training: !!v?.training,
         finals: (v?.finals && typeof v.finals === 'object') ? { ...v.finals } : {},
       };
     }
@@ -303,20 +304,24 @@ function PeriodView() {
   };
   const finalOf = (uid, k, snapshotVal) => {
     if (isFinal) return snapshotVal;
+    // TRAINING: seluruh komponen otomatis = 0 untuk karyawan ybs.
+    if (perUser[uid]?.training) return 0;
     const f = perUser[uid]?.finals || {};
     return f[k] != null ? Number(f[k]) : (localDefaults[k] || 0);
   };
-  const isOverride = (uid, k) => !isFinal && (perUser[uid]?.finals || {})[k] != null;
+  const isOverride = (uid, k) => !isFinal && !perUser[uid]?.training && (perUser[uid]?.finals || {})[k] != null;
 
   const rowTotal = (row) => {
     if (isFinal) return Number(row.total || 0);
     const uid = row.user_id;
-    const kebersihan = perUser[uid]?.komisi_kebersihan != null
-      ? Number(perUser[uid].komisi_kebersihan)
-      : Number(row.komponen.komisi_kebersihan || 0);
     const koreksi = perUser[uid]?.koreksi != null
       ? Number(perUser[uid].koreksi)
       : Number(row.komponen?.koreksi || 0);
+    // TRAINING: total = Koreksi Gaji saja (seluruh komponen otomatis 0).
+    if (perUser[uid]?.training) return koreksi;
+    const kebersihan = perUser[uid]?.komisi_kebersihan != null
+      ? Number(perUser[uid].komisi_kebersihan)
+      : Number(row.komponen.komisi_kebersihan || 0);
     return (
       Number(row.komponen.gaji_jam_kerja || 0) +
       finalOf(uid, 'komisi_penjualan', row.komponen.komisi_penjualan) +
@@ -505,6 +510,7 @@ function PeriodView() {
                 <tr className="text-left border-b border-white/10 [&>th]:py-2 [&>th]:px-2 [&>th]:font-semibold [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-[10px] [&>th]:text-muted-foreground">
                   <th className="min-w-[130px] sticky left-0 bg-background z-10">Nama</th>
                   <th>Jabatan</th>
+                  <th title="Karyawan status Training — seluruh komponen otomatis Payroll = 0. Gaji Training diisi manual via Koreksi Gaji.">Training</th>
                   <th title="Jam Kerja + Jam SO + Jam Lembur (approved)">Jam Diakui Payroll</th>
                   <th>Sisa Poin</th>
                   {KOMPONEN_ORDER.map((k) => (
@@ -519,55 +525,75 @@ function PeriodView() {
               <tbody>
                 {breakdown.map((row) => {
                   const uid = row.user_id;
+                  const isTraining = isFinal ? !!row.training : !!perUser[uid]?.training;
                   const kebersihan = isFinal
                     ? Number(row.komponen.komisi_kebersihan || 0)
-                    : (perUser[uid]?.komisi_kebersihan != null ? perUser[uid].komisi_kebersihan : Number(row.komponen.komisi_kebersihan || 0));
+                    : (isTraining ? 0 : (perUser[uid]?.komisi_kebersihan != null ? perUser[uid].komisi_kebersihan : Number(row.komponen.komisi_kebersihan || 0)));
                   const koreksi = isFinal
                     ? Number(row.komponen?.koreksi || 0)
                     : (perUser[uid]?.koreksi != null ? Number(perUser[uid].koreksi) : 0);
                   const koreksiNote = isFinal
                     ? String(row.koreksi_note || '')
                     : String(perUser[uid]?.koreksi_note ?? '');
+                  const gajiJamKerjaDisp = isFinal
+                    ? Number(row.komponen.gaji_jam_kerja || 0)
+                    : (isTraining ? 0 : Number(row.komponen.gaji_jam_kerja || 0));
+                  const rewardPoinDisp = isFinal
+                    ? Number(row.komponen.reward_poin || 0)
+                    : (isTraining ? 0 : Number(row.komponen.reward_poin || 0));
                   return (
-                    <tr key={uid} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 align-middle">
-                      <td className="sticky left-0 bg-background z-10 font-medium">{row.name}</td>
+                    <tr key={uid} className={`border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 align-middle ${isTraining ? 'bg-indigo-500/5' : ''}`}>
+                      <td className="sticky left-0 bg-background z-10 font-medium">
+                        {row.name}
+                        {isTraining && <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[9px] uppercase tracking-wider font-semibold">Training</span>}
+                      </td>
                       <td className="text-muted-foreground">{row.jabatan || '-'}</td>
-                      <td className="tabular-nums" title={`Kerja ${row.jam_kerja_diakui_hours ?? 0} + SO ${row.jam_so_hours ?? 0} + Lembur ${row.jam_lembur_hours ?? 0}`}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={isTraining}
+                          disabled={isFinal}
+                          onChange={(e) => setPerUser((p) => ({ ...p, [uid]: { ...(p[uid] || {}), training: e.target.checked } }))}
+                          className="h-4 w-4 accent-indigo-500 cursor-pointer disabled:cursor-not-allowed"
+                          title="Centang bila karyawan berstatus Training pada periode ini"
+                        />
+                      </td>
+                      <td className={`tabular-nums ${isTraining ? 'text-muted-foreground/50 line-through' : ''}`} title={`Kerja ${row.jam_kerja_diakui_hours ?? 0} + SO ${row.jam_so_hours ?? 0} + Lembur ${row.jam_lembur_hours ?? 0}`}>
                         {row.jam_diakui_payroll_hours ?? row.jam_kerja_diakui_hours ?? 0} jam
                       </td>
-                      <td className="tabular-nums">{row.sisa_poin ?? row.poin_periode ?? 0}</td>
-                      <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(row.komponen.gaji_jam_kerja)}</td>
+                      <td className={`tabular-nums ${isTraining ? 'text-muted-foreground/50 line-through' : ''}`}>{row.sisa_poin ?? row.poin_periode ?? 0}</td>
+                      <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(gajiJamKerjaDisp)}</td>
                       <FinalCell value={finalOf(uid, 'komisi_penjualan', row.komponen.komisi_penjualan)} override={isOverride(uid, 'komisi_penjualan')}
-                        disabled={isFinal}
+                        disabled={isFinal || isTraining}
                         onChange={(v) => setFinal(setPerUser, uid, 'komisi_penjualan', v)}
                         onReset={() => setFinal(setPerUser, uid, 'komisi_penjualan', null)} />
                       <FinalCell value={finalOf(uid, 'komisi_produk_fokus', row.komponen.komisi_produk_fokus)} override={isOverride(uid, 'komisi_produk_fokus')}
-                        disabled={isFinal}
+                        disabled={isFinal || isTraining}
                         onChange={(v) => setFinal(setPerUser, uid, 'komisi_produk_fokus', v)}
                         onReset={() => setFinal(setPerUser, uid, 'komisi_produk_fokus', null)} />
                       <td className="text-right tabular-nums">
                         <RupiahInput
                           value={Math.round(Number(kebersihan || 0))}
-                          disabled={isFinal}
+                          disabled={isFinal || isTraining}
                           onChange={(v) => setKebersihan(setPerUser, uid, v)}
                           className="h-7 text-xs text-right"
                         />
                       </td>
                       <FinalCell value={finalOf(uid, 'apresiasi_so', row.komponen.apresiasi_so)} override={isOverride(uid, 'apresiasi_so')}
-                        disabled={isFinal}
+                        disabled={isFinal || isTraining}
                         onChange={(v) => setFinal(setPerUser, uid, 'apresiasi_so', v)}
                         onReset={() => setFinal(setPerUser, uid, 'apresiasi_so', null)} />
                       <FinalCell value={finalOf(uid, 'tunjangan_kinerja', row.komponen.tunjangan_kinerja)} override={isOverride(uid, 'tunjangan_kinerja')}
-                        disabled={isFinal}
+                        disabled={isFinal || isTraining}
                         onChange={(v) => setFinal(setPerUser, uid, 'tunjangan_kinerja', v)}
                         onReset={() => setFinal(setPerUser, uid, 'tunjangan_kinerja', null)} />
-                      <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(row.komponen.reward_poin)}</td>
+                      <td className="text-right tabular-nums text-muted-foreground">{fmtIDR(rewardPoinDisp)}</td>
                       <FinalCell value={finalOf(uid, 'bpjs_tk', row.komponen.bpjs_tk)} override={isOverride(uid, 'bpjs_tk')}
-                        disabled={isFinal}
+                        disabled={isFinal || isTraining}
                         onChange={(v) => setFinal(setPerUser, uid, 'bpjs_tk', v)}
                         onReset={() => setFinal(setPerUser, uid, 'bpjs_tk', null)} />
                       <FinalCell value={finalOf(uid, 'bpjs_kes', row.komponen.bpjs_kes)} override={isOverride(uid, 'bpjs_kes')}
-                        disabled={isFinal}
+                        disabled={isFinal || isTraining}
                         onChange={(v) => setFinal(setPerUser, uid, 'bpjs_kes', v)}
                         onReset={() => setFinal(setPerUser, uid, 'bpjs_kes', null)} />
                       <td className="text-right font-bold tabular-nums">{fmtIDR(rowTotal(row))}</td>
@@ -576,8 +602,8 @@ function PeriodView() {
                           value={Math.round(Number(koreksi || 0))}
                           disabled={isFinal}
                           onChange={(v) => setPerUser((p) => ({ ...p, [uid]: { ...(p[uid] || {}), koreksi: Number(v) || 0 } }))}
-                          className="h-7 text-xs text-right"
-                          placeholder="Rp0"
+                          className={`h-7 text-xs text-right ${isTraining ? 'border-indigo-500/50 bg-indigo-500/5' : ''}`}
+                          placeholder={isTraining ? 'Gaji Training' : 'Rp0'}
                         />
                       </td>
                       <td>
@@ -587,12 +613,12 @@ function PeriodView() {
                           maxLength={500}
                           onChange={(e) => setPerUser((p) => ({ ...p, [uid]: { ...(p[uid] || {}), koreksi_note: e.target.value } }))}
                           className="h-7 text-xs"
-                          placeholder="Alasan koreksi (opsional)"
+                          placeholder={isTraining ? 'Keterangan Gaji Training' : 'Alasan koreksi (opsional)'}
                         />
                       </td>
                       <td className="text-right whitespace-nowrap">
                         <Button size="sm" variant="outline" className="h-7 gap-1 text-[10px]"
-                          onClick={() => setKitirFor({ row, kebersihan, koreksi, koreksiNote })}>
+                          onClick={() => setKitirFor({ row, kebersihan, koreksi, koreksiNote, isTraining })}>
                           <Printer className="w-3 h-3" /> Kitir
                         </Button>
                       </td>
@@ -634,6 +660,7 @@ function PeriodView() {
           kebersihanOverride={kitirFor.kebersihan}
           koreksiOverride={kitirFor.koreksi}
           koreksiNote={kitirFor.koreksiNote}
+          isTraining={kitirFor.isTraining}
           rowTotal={rowTotal(kitirFor.row)}
           finalOf={finalOf}
           isFinal={isFinal}
@@ -654,22 +681,27 @@ function PeriodView() {
 // PENTING: generate PDF TIDAK memodifikasi state atau memanggil API tulis
 // apapun, sehingga tidak akan mengubah data Payroll.
 // ============================================================
-function KitirDialog({ open, row, kebersihanOverride, koreksiOverride, koreksiNote, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, focusProducts, onClose }) {
+function KitirDialog({ open, row, kebersihanOverride, koreksiOverride, koreksiNote, isTraining, rowTotal, finalOf, isFinal, periodLabel, periodFrom, periodTo, focusProducts, onClose }) {
   // Koreksi Gaji per karyawan (boleh negatif, boleh 0). Additive terhadap
   // TOTAL. Dari draft ambil override lokal; dari final ambil snapshot.
   const koreksiVal = Number(koreksiOverride ?? (isFinal ? (row.komponen?.koreksi || 0) : 0));
   const koreksiTxt = String(koreksiNote ?? (isFinal ? (row.koreksi_note || '') : '') ?? '');
+  // TRAINING: seluruh komponen otomatis = 0 (hanya Koreksi yang tampil di
+  // total). isFinal snapshot sudah menyimpan komponen 0 saat training,
+  // jadi cukup pakai flag `isTraining` untuk draft & override tampilan.
+  const trainingActive = !!isTraining || (isFinal && !!row.training);
+  const zeroIfTraining = (v) => (trainingActive ? 0 : v);
   const rows = [
     // "Gaji Jam Kerja" → "Gaji". Perhitungan internal tidak berubah.
-    ['Gaji', row.komponen.gaji_jam_kerja],
-    ['Komisi Penjualan', finalOf(row.user_id, 'komisi_penjualan', row.komponen.komisi_penjualan)],
-    ['Komisi Produk Fokus', finalOf(row.user_id, 'komisi_produk_fokus', row.komponen.komisi_produk_fokus)],
-    ['Komisi Kebersihan', kebersihanOverride],
-    ['Apresiasi Stock Opname', finalOf(row.user_id, 'apresiasi_so', row.komponen.apresiasi_so)],
-    ['Tunjangan Kinerja', finalOf(row.user_id, 'tunjangan_kinerja', row.komponen.tunjangan_kinerja)],
-    ['Reward Poin', row.komponen.reward_poin],
-    ['BPJS Ketenagakerjaan', finalOf(row.user_id, 'bpjs_tk', row.komponen.bpjs_tk)],
-    ['BPJS Kesehatan', finalOf(row.user_id, 'bpjs_kes', row.komponen.bpjs_kes)],
+    ['Gaji', zeroIfTraining(row.komponen.gaji_jam_kerja)],
+    ['Komisi Penjualan', zeroIfTraining(finalOf(row.user_id, 'komisi_penjualan', row.komponen.komisi_penjualan))],
+    ['Komisi Produk Fokus', zeroIfTraining(finalOf(row.user_id, 'komisi_produk_fokus', row.komponen.komisi_produk_fokus))],
+    ['Komisi Kebersihan', zeroIfTraining(kebersihanOverride)],
+    ['Apresiasi Stock Opname', zeroIfTraining(finalOf(row.user_id, 'apresiasi_so', row.komponen.apresiasi_so))],
+    ['Tunjangan Kinerja', zeroIfTraining(finalOf(row.user_id, 'tunjangan_kinerja', row.komponen.tunjangan_kinerja))],
+    ['Reward Poin', zeroIfTraining(row.komponen.reward_poin)],
+    ['BPJS Ketenagakerjaan', zeroIfTraining(finalOf(row.user_id, 'bpjs_tk', row.komponen.bpjs_tk))],
+    ['BPJS Kesehatan', zeroIfTraining(finalOf(row.user_id, 'bpjs_kes', row.komponen.bpjs_kes))],
     ['Koreksi Gaji', koreksiVal],
   ];
   // Format tanggal PLAIN ASCII utk jsPDF (default helvetica tidak render
@@ -712,7 +744,7 @@ function KitirDialog({ open, row, kebersihanOverride, koreksiOverride, koreksiNo
     line('Nama', row.name || '-');
     line('Jabatan', (row.jabatan && row.jabatan.trim()) ? row.jabatan : '-');
     line('Periode', periodPlain);
-    line('Status', isFinal ? 'FINAL' : 'DRAFT');
+    line('Status', `${isFinal ? 'FINAL' : 'DRAFT'}${trainingActive ? ' (TRAINING)' : ''}`);
 
     doc.setFont(undefined, 'normal');
     autoTable(doc, {
@@ -776,8 +808,11 @@ function KitirDialog({ open, row, kebersihanOverride, koreksiOverride, koreksiNo
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><FileText className="w-4 h-4" /> Kitir Gaji · {row.name}</DialogTitle>
-          <DialogDescription>{periodLabel} · Status: <b>{isFinal ? 'FINAL' : 'DRAFT'}</b></DialogDescription>
+          <DialogTitle className="flex items-center gap-2">
+            <FileText className="w-4 h-4" /> Kitir Gaji · {row.name}
+            {trainingActive && <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] uppercase tracking-wider font-semibold">Training</span>}
+          </DialogTitle>
+          <DialogDescription>{periodLabel} · Status: <b>{isFinal ? 'FINAL' : 'DRAFT'}</b>{trainingActive ? ' · Karyawan Training (seluruh komponen otomatis 0)' : ''}</DialogDescription>
         </DialogHeader>
         <div className="text-xs space-y-1">
           <div className="grid grid-cols-2 gap-1">
