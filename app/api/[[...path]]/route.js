@@ -8,6 +8,7 @@ import { handleFakturRequest } from '@/lib/modules/faktur/service';
 import { handleAbsensiRequest } from '@/lib/modules/absensi/service';
 import { handlePayrollRequest } from '@/lib/modules/payroll/service';
 import { handleProdukFokusRequest } from '@/lib/modules/produk-fokus/service';
+import { handleTradingJournalRequest } from '@/lib/modules/trading-journal/service';
 
 // ---------- Mongo ----------
 let cachedClient = null;
@@ -173,6 +174,15 @@ const AVAILABLE_MODULES = [
     description: 'Master produk fokus per periode, pengajuan tim ED, input penjualan, dan rekonsiliasi POS.',
     icon: 'Target',
     status: 'active',
+  },
+  {
+    // OWNER-ONLY private module.
+    key: 'trading_journal',
+    name: 'Personal Trading Journal',
+    description: 'Journal trading pribadi (private Owner).',
+    icon: 'LineChart',
+    status: 'active',
+    owner_only: true,
   },
 ];
 const VALID_MODULE_KEYS = AVAILABLE_MODULES.map((m) => m.key);
@@ -550,6 +560,21 @@ async function handleRequest(req, path, method) {
     }
     const sub = path === 'pf' ? '' : path.slice('pf/'.length);
     const resp = await handleProdukFokusRequest(req, sub, method, { db, user });
+    if (resp) return resp;
+    return err('not found', 404);
+  }
+
+  // ============================================================
+  // Trading Journal — PRIVATE, OWNER ONLY.
+  // ============================================================
+  if (path === 'tj' || path.startsWith('tj/')) {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    if (user.role !== 'owner') {
+      return err('forbidden — Trading Journal hanya untuk Owner', 403);
+    }
+    const sub = path === 'tj' ? '' : path.slice('tj/'.length);
+    const resp = await handleTradingJournalRequest(req, sub, method, { db, user });
     if (resp) return resp;
     return err('not found', 404);
   }

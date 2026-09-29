@@ -7,9 +7,11 @@ import FakturModule from '@/components/modules/faktur/FakturModule';
 import AbsensiModule from '@/components/modules/absensi/AbsensiModule';
 import PayrollModule from '@/components/modules/payroll/PayrollModule';
 import ProdukFokusModule from '@/components/modules/produk-fokus/ProdukFokusModule';
+import TradingJournalModule from '@/components/modules/trading-journal/TradingJournalModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
+  LineChart,
   Upload,
   Users,
   Settings as SettingsIcon,
@@ -377,6 +379,7 @@ const MODULES_META = {
   // dimanipulasi (defense-in-depth).
   payroll: { key: 'payroll', name: 'Payroll', icon: Wallet, status: 'active', ownerOnly: true },
   produk_fokus: { key: 'produk_fokus', name: 'Produk Fokus', icon: Target, status: 'active', color: 'text-orange-400' },
+  trading_journal: { key: 'trading_journal', name: 'Personal Trading Journal', icon: LineChart, status: 'active', ownerOnly: true, color: 'text-cyan-400' },
 };
 
 // Compute allowed module keys for a user (owner has all)
@@ -493,6 +496,19 @@ function buildNav(user) {
             { key: 'pf:master', label: 'Master Produk', ownerOnly: true },
             { key: 'pf:rekonsiliasi', label: 'Rekonsiliasi POS', ownerOnly: true },
             { key: 'pf:histori', label: 'Histori', ownerOnly: true },
+          ],
+        },
+        {
+          key: 'mod:trading_journal',
+          label: 'Trading Journal',
+          icon: LineChart,
+          module: 'trading_journal',
+          ownerOnly: true,
+          children: [
+            { key: 'tj:journal', label: 'Trading Journal', ownerOnly: true },
+            { key: 'tj:master', label: 'Master Data', ownerOnly: true },
+            { key: 'tj:compounding', label: 'Compounding', ownerOnly: true },
+            { key: 'tj:analytics', label: 'Analytics & Export', ownerOnly: true },
           ],
         },
       ],
@@ -722,7 +738,8 @@ function getActiveModule(view) {
   if (view.startsWith('abs:') || view === 'mod:absensi') return 'absensi';
   if (view.startsWith('pay:') || view === 'mod:payroll') return 'payroll';
   if (view.startsWith('pf:') || view === 'mod:produk_fokus') return 'produk_fokus';
-  return null; // no module context (e.g. ad:users)
+  if (view.startsWith('tj:') || view === 'mod:trading_journal') return 'trading_journal';
+  return null;
 }
 
 // Bottom-nav items per module (filtered by role/permission at render time)
@@ -3410,6 +3427,21 @@ function ModulePickerScreen({ user, onPick, onLogout }) {
       stats: [],
     });
   }
+  if (mods.includes('trading_journal') && isOwner(user)) {
+    cards.push({
+      key: 'trading_journal',
+      name: 'Personal Trading Journal',
+      subtitle: 'Journal trading pribadi · Private Owner',
+      icon: LineChart,
+      gradient: 'from-cyan-500/30 via-sky-500/20 to-transparent',
+      border: 'border-cyan-500/40 hover:border-cyan-500/70',
+      iconBg: 'bg-cyan-500/20 border-cyan-500/40',
+      iconColor: 'text-cyan-400',
+      accentText: 'text-cyan-300',
+      target: 'tj:journal',
+      stats: [],
+    });
+  }
 
   const timeLabel = clock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
   const dateLabel = clock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -3709,6 +3741,11 @@ function App() {
         )}
         {(activeView.startsWith('pf:') || activeView === 'mod:produk_fokus') && (
           <ProdukFokusModule user={user} initialView={activeView === 'mod:produk_fokus' ? 'pf:dashboard' : activeView} />
+        )}
+        {(activeView.startsWith('tj:') || activeView === 'mod:trading_journal') && (
+          isOwner(user)
+            ? <TradingJournalModule user={user} initialView={activeView === 'mod:trading_journal' ? 'tj:journal' : activeView} />
+            : <div className="p-6 text-center text-rose-300 text-sm">Akses ditolak — halaman ini hanya untuk Owner.</div>
         )}
         {activeView === 'rp:history' && <ReportsHistoryView />}
         {activeView === 'ad:users' && <EmployeesView />}
