@@ -886,63 +886,102 @@ function StaffDashboard({ periodKey, range }) {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [periodKey]);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base flex items-center gap-2"><Target className="w-4 h-4" /> Dashboard Saya</CardTitle>
-        <CardDescription>Periode <b>{range ? fmtPeriodLabel(range.from, range.to) : periodKey}</b>. Anda hanya melihat data penjualan diri sendiri.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {loading ? (
-          <div className="py-6 text-center text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Memuat…</div>
-        ) : !data ? null : (
-          <>
-            <div className="grid grid-cols-2 gap-3">
-              <Stat label="Total Qty Saya" value={data.total_my_qty || 0} />
-              <Stat label="Estimasi Bonus Saya" value={fmtIDR(data.total_my_bonus)} />
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left border-b border-white/10 [&>th]:py-2 [&>th]:px-2 [&>th]:text-[10px] [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-muted-foreground [&>th]:font-semibold">
-                    <th>Produk</th>
-                    <th>Limit</th>
-                    <th className="text-right">Bonus/Unit</th>
-                    <th className="text-right">Qty Saya</th>
-                    <th className="text-right">Est. Bonus</th>
-                    <th>Progress Total (Semua Staff)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(data.rows || []).length === 0 ? (
-                    <tr><td colSpan={6} className="py-6 text-center text-muted-foreground">Belum ada Master Produk pada periode ini.</td></tr>
-                  ) : (data.rows || []).map((r) => (
-                    <tr key={r.master_id} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2">
-                      <td><span className="font-mono text-[11px] text-muted-foreground">{r.kode}</span> · <b>{r.nama}</b></td>
-                      <td className="text-[11px]">
-                        {r.jumlah_type === 'limited' ? `${r.limit} ${r.satuan}` : <span className="text-emerald-300">Tidak Terbatas</span>}
-                      </td>
-                      <td className="text-right tabular-nums">{fmtIDR(r.bonus_unit)}</td>
-                      <td className="text-right tabular-nums font-medium">{r.my_qty}</td>
-                      <td className="text-right tabular-nums">{fmtIDR(r.my_bonus)}</td>
-                      <td className="min-w-[140px]">
-                        {r.jumlah_type === 'limited' ? (
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-1.5 bg-white/10 rounded overflow-hidden">
-                              <div className="h-full bg-orange-400" style={{ width: `${r.progress || 0}%` }} />
-                            </div>
-                            <span className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">{Math.round(r.progress || 0)}% · sisa {r.sisa}</span>
-                          </div>
-                        ) : <span className="text-[10px] text-muted-foreground">total {r.total_qty}</span>}
-                      </td>
+    <div className="space-y-3">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2"><Target className="w-4 h-4" /> Dashboard Saya</CardTitle>
+          <CardDescription>Periode <b>{range ? fmtPeriodLabel(range.from, range.to) : periodKey}</b>. Data penjualan diri sendiri.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {loading ? (
+            <div className="py-6 text-center text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Memuat…</div>
+          ) : !data ? null : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <Stat label="Total Qty Saya" value={data.total_my_qty || 0} />
+                <Stat label="Estimasi Bonus Saya" value={fmtIDR(data.total_my_bonus)} />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left border-b border-white/10 [&>th]:py-2 [&>th]:px-2 [&>th]:text-[10px] [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-muted-foreground [&>th]:font-semibold">
+                      <th>Produk</th>
+                      <th>Limit</th>
+                      <th className="text-right">Bonus/Unit</th>
+                      <th className="text-right">Qty Saya</th>
+                      <th className="text-right">Est. Bonus</th>
+                      <th>Progress Total (Semua Staff)</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </CardContent>
-    </Card>
+                  </thead>
+                  <tbody>
+                    {(data.rows || []).length === 0 ? (
+                      <tr><td colSpan={6} className="py-6 text-center text-muted-foreground">Belum ada Master Produk pada periode ini.</td></tr>
+                    ) : (data.rows || []).map((r) => (
+                      <tr key={r.master_id} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2">
+                        <td><span className="font-mono text-[11px] text-muted-foreground">{r.kode}</span> · <b>{r.nama}</b></td>
+                        <td className="text-[11px]">
+                          {r.jumlah_type === 'limited' ? `${r.limit} ${r.satuan}` : <span className="text-emerald-300">Tidak Terbatas</span>}
+                        </td>
+                        <td className="text-right tabular-nums">{fmtIDR(r.bonus_unit)}</td>
+                        <td className="text-right tabular-nums font-medium">{r.my_qty}</td>
+                        <td className="text-right tabular-nums">{fmtIDR(r.my_bonus)}</td>
+                        <td className="min-w-[140px]">
+                          {r.jumlah_type === 'limited' ? (
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1.5 bg-white/10 rounded overflow-hidden">
+                                <div className="h-full bg-orange-400" style={{ width: `${r.progress || 0}%` }} />
+                              </div>
+                              <span className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">{Math.round(r.progress || 0)}% · sisa {r.sisa}</span>
+                            </div>
+                          ) : <span className="text-[10px] text-muted-foreground">total {r.total_qty}</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Leaderboard — semua staff dapat melihat kontribusi rekan */}
+      {data && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">🏆 Penjualan per Staff</CardTitle>
+            <CardDescription className="text-[11px]">Ranking kontribusi seluruh karyawan periode ini.</CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left border-b border-white/10 [&>th]:py-2 [&>th]:px-2 [&>th]:text-[10px] [&>th]:uppercase [&>th]:tracking-wider [&>th]:text-muted-foreground [&>th]:font-semibold">
+                  <th className="w-8">#</th>
+                  <th>Staff</th>
+                  <th className="text-right">Total Qty</th>
+                  <th className="text-right">Estimasi Bonus</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.per_staff || []).length === 0 ? (
+                  <tr><td colSpan={4} className="py-6 text-center text-muted-foreground">Belum ada transaksi.</td></tr>
+                ) : (data.per_staff || []).map((r, i) => {
+                  const isMe = r.staff_id === data.staff_id;
+                  return (
+                    <tr key={r.staff_id} className={`border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2 ${isMe ? 'bg-orange-500/5' : ''}`}>
+                      <td className="text-muted-foreground tabular-nums">{i + 1}</td>
+                      <td className={`font-medium ${isMe ? 'text-orange-300' : ''}`}>{r.staff_name}{isMe ? ' (Saya)' : ''}</td>
+                      <td className="text-right tabular-nums">{r.qty}</td>
+                      <td className="text-right tabular-nums font-semibold">{fmtIDR(r.bonus)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   );
 }
 
