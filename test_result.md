@@ -2980,6 +2980,213 @@ backend:
           
           **NOTE:** Telegram upload test (POST /api/tj/upload) was NOT tested as it requires actual image data and Telegram API interaction. The endpoint is implemented and ready for manual testing if needed.
 
+  - task: "Trading Journal — Screenshot Refactor (Resilient Upload Pattern with tj_screenshots collection)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/trading-journal/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          REFACTOR — Trading Journal Screenshot System (mirrors MIS Faktur resilient pattern):
+          
+          **NEW COLLECTION:** tj_screenshots with fields:
+          - id (UUID), filename, mime, size, width, height
+          - file_data (BSON Binary) — local fallback storage
+          - telegram_status ('pending', 'sent', 'failed')
+          - telegram_file_id, telegram_message_id, telegram_file_unique_id
+          - telegram_error, telegram_sent_at
+          - uploaded_by_id, uploaded_at
+          
+          **ENDPOINTS CHANGED:**
+          1. POST /api/tj/upload (multipart or JSON data_url):
+             - Inserts row into tj_screenshots with file_data (Binary) + status='pending' FIRST
+             - Then tries Telegram send (best-effort)
+             - On success: status='sent', telegram_file_id set, file_data unset (Telegram owns storage)
+             - On failure: status='failed', keeps file_data, sets telegram_error
+             - **CRITICAL:** Returns 200 in BOTH cases (resilient!)
+             - Response: {screenshot: {id, telegram_status, file_id?, message_id?, mime, filename, size, width?, height?, uploaded_at, telegram_error?}}
+          
+          2. GET /api/tj/photo/<key> (accepts ?token= query param for <img> tag auth):
+             - Resolves <key> as:
+               (a) tj_screenshots.id → if telegram_status='sent' → proxy from Telegram; else stream local file_data
+               (b) BWC fallback: raw Telegram file_id → proxy from Telegram (for old trades)
+             - Returns image bytes with Content-Type: image/*
+          
+          3. POST /api/tj/photo/<id>/retry (NEW):
+             - Retries Telegram send for failed screenshots (status='failed' or 'pending')
+             - Requires file_data still present
+             - On success: updates status='sent', file_id, unsets file_data
+             - Returns: {ok, screenshot, telegram: {message_id, file_id} | {error}}
+          
+          **VALIDATION:**
+          - Max size: 12 MB (returns 413 if exceeded)
+          - Accepts multipart (field "photo") or JSON {data_url, filename}
+          
+          **BWC (Backward Compatibility):**
+          - Old trades with just file_id (no screenshot id) can still view photos via GET /api/tj/photo/<file_id>
+          
+          **AUTH:**
+          - All endpoints owner-only (user.role === 'owner')
+          - GET /api/tj/photo/<key> accepts ?token=<...> query param for <img> tag auth
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 7 TEST SCENARIOS PASSED (100%) - Trading Journal Screenshot Refactor FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for TJ screenshot refactor (resilient upload pattern)
+          **TEST FILES:** 
+          - /app/backend_test_tj_screenshots.py (main test suite)
+          - /app/backend_test_tj_screenshots_extended.py (real PNG + Telegram success + cleanup)
+          **TEST METHOD:** Python requests library with real API calls + MongoDB verification
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **CREDENTIALS:** owner / owner123 (owner-only endpoints)
+          **TEST DATE:** 2026-09-30T04:10:30Z
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: AUTH GUARDS (4/4 passed)
+             - No token → GET /api/tj/photo/test-id → 401 ✓
+             - Owner login (owner/owner123) → 200 with token ✓
+             - Non-owner login (cindy/cindy123) → 200 with token ✓
+             - Non-owner tries POST /api/tj/upload → 403 (owner-only enforced) ✓
+             - ?token= query param works for <img> tag auth ✓
+          
+          ✅ TEST 2: UPLOAD HAPPY PATH (multipart PNG) (8/8 passed)
+             - POST /api/tj/upload with 200-byte PNG → 200 ✓
+             - Response has 'screenshot' key with all required fields ✓
+             - screenshot.id: UUID present ✓
+             - telegram_status: 'failed' (tiny test PNG rejected by Telegram: IMAGE_PROCESS_FAILED) ✓
+             - mime: 'image/png' ✓
+             - filename: 'test_screenshot.png' ✓
+             - size: 200 ✓
+             - uploaded_at: ISO timestamp ✓
+             - **CRITICAL SUCCESS:** Upload returned 200 even though Telegram failed (resilient!) ✓
+          
+          ✅ TEST 3: PHOTO GET BY SCREENSHOT ID (2/2 passed)
+             - GET /api/tj/photo/{screenshot_id} with Bearer token → 200 ✓
+             - Content-Type: image/png ✓
+             - Body size: 200 bytes (matches upload) ✓
+             - GET /api/tj/photo/{screenshot_id}?token={owner_token} → 200 ✓
+             - **CRITICAL SUCCESS:** ?token= query param works (for <img> tag) ✓
+             - **CRITICAL SUCCESS:** Photo served from local file_data fallback (Telegram failed) ✓
+          
+          ✅ TEST 4: PHOTO GET BWC BY RAW TELEGRAM FILE_ID (1/1 passed)
+             - Uploaded real 10x10 red PNG (75 bytes) → Telegram SUCCESS ✓
+             - telegram_status: 'sent' ✓
+             - file_id: AgACAgUAAyEGAATsiGpbAAOparyL21g5PFZxFyr8tgG9YxGTSZ4AApIQaxv9sOBV2u_8c7qVJCYBAAMCAANtAAM9BA ✓
+             - width: 10, height: 10 ✓
+             - GET /api/tj/photo/{file_id} (raw Telegram file_id) → 200 with 288 bytes ✓
+             - **CRITICAL SUCCESS:** BWC works (old trades with just file_id can view photos) ✓
+          
+          ✅ TEST 5: RETRY ENDPOINT (2/2 passed)
+             - POST /api/tj/photo/{screenshot_id}/retry (failed upload) → 200 ✓
+             - Response: {ok: false, screenshot: {telegram_status: 'failed'}, telegram: {error: 'Bad Request: IMAGE_PROCESS_FAILED'}} ✓
+             - **CRITICAL SUCCESS:** Retry returns 200 even if still fails (resilient) ✓
+             - POST /api/tj/photo/{screenshot_id}/retry (already sent) → 200 ✓
+             - Response: {ok: true, screenshot: {telegram_status: 'sent'}} ✓
+             - **CRITICAL SUCCESS:** Retry on already-sent screenshot is idempotent ✓
+          
+          ✅ TEST 6: JSON DATA_URL UPLOAD (2/2 passed)
+             - POST /api/tj/upload with JSON {data_url: "data:image/png;base64,...", filename: "test_dataurl.png"} → 200 ✓
+             - screenshot.id: UUID present ✓
+             - telegram_status: 'failed' (tiny test PNG) ✓
+             - GET /api/tj/photo/{screenshot2_id} → 200 with image bytes ✓
+             - **CRITICAL SUCCESS:** JSON data_url upload works ✓
+          
+          ✅ TEST 7: SIZE CAP (13MB rejection) (1/1 passed)
+             - POST /api/tj/upload with 13MB dummy buffer → 413 ✓
+             - Error message: "Ukuran gambar melebihi 12MB" ✓
+             - **CRITICAL SUCCESS:** Size cap enforced (max 12 MB) ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Auth Guards (VERIFIED):**
+             - No token → 401 (unauthorized)
+             - Owner token → 200 (allowed)
+             - Non-owner (cindy) → 403 on /api/tj/* (owner-only enforced)
+             - ?token= query param works for GET /api/tj/photo/<key> (for <img> tag auth)
+          
+          2. **Upload Happy Path (VERIFIED):**
+             - POST /api/tj/upload accepts multipart (field "photo") and JSON {data_url, filename}
+             - Returns 200 with screenshot object containing: id, telegram_status, file_id?, message_id?, mime, filename, size, width?, height?, uploaded_at, telegram_error?
+             - **RESILIENT PATTERN:** Returns 200 even when Telegram fails (status='failed', keeps file_data)
+             - When Telegram succeeds (real PNG): status='sent', file_id set, file_data unset
+          
+          3. **Photo GET by Screenshot ID (VERIFIED):**
+             - GET /api/tj/photo/{screenshot_id} returns image bytes with Content-Type: image/*
+             - When telegram_status='sent' → proxies from Telegram
+             - When telegram_status='failed' → streams from local file_data (fallback)
+             - ?token= query param works (for <img> tag auth without Bearer header)
+          
+          4. **Photo GET BWC by Raw File_ID (VERIFIED):**
+             - GET /api/tj/photo/{file_id} (raw Telegram file_id) works
+             - Backward compatible with old trades that stored just file_id (no screenshot id)
+             - Proxies from Telegram successfully
+          
+          5. **Retry Endpoint (VERIFIED):**
+             - POST /api/tj/photo/{screenshot_id}/retry retries Telegram send
+             - Returns {ok, screenshot, telegram}
+             - ok=false if still fails (keeps status='failed', telegram_error updated)
+             - ok=true if succeeds (status='sent', file_id set, file_data unset)
+             - Idempotent: retry on already-sent screenshot returns ok=true
+          
+          6. **JSON Data_URL Upload (VERIFIED):**
+             - POST /api/tj/upload with JSON {data_url: "data:image/png;base64,...", filename: "..."}
+             - Same success shape as multipart upload
+             - Photo GET works for JSON-uploaded screenshots
+          
+          7. **Size Cap (VERIFIED):**
+             - POST /api/tj/upload with 13MB buffer → 413 with error "Ukuran gambar melebihi 12MB"
+             - Max size: 12 MB (enforced)
+          
+          **TELEGRAM STATUS:**
+          - ✅ Telegram env configured and working (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID present in .env)
+          - ✅ Real PNG (10x10 red, 75 bytes) successfully uploaded to Telegram with status='sent'
+          - ⚠️  Tiny test PNG (200 bytes) rejected by Telegram with IMAGE_PROCESS_FAILED (expected)
+          - ✅ Resilient pattern working: upload returns 200 even when Telegram fails, stores file_data locally
+          
+          **CLEANUP:**
+          - ✅ All 3 test screenshots deleted from tj_screenshots collection via MongoDB
+          - No production data affected
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ POST /api/tj/upload returns 200 in BOTH success and failure cases (resilient)
+          ✅ Response includes screenshot object with id, telegram_status, file_id?, mime, filename, size, uploaded_at
+          ✅ GET /api/tj/photo/<id> works for both Telegram success (proxy) and failure (local fallback)
+          ✅ GET /api/tj/photo/<file_id> works for BWC (old trades with just file_id)
+          ✅ POST /api/tj/photo/<id>/retry works (retries Telegram send, idempotent)
+          ✅ JSON data_url upload works
+          ✅ Size cap enforced (13MB → 413)
+          ✅ ?token= query param works for <img> tag auth
+          ✅ Owner-only access enforced (non-owner → 403)
+          ✅ New collection tj_screenshots with BSON Binary file_data storage
+          ✅ Telegram success: file_data unset, photo proxied from Telegram
+          ✅ Telegram failure: file_data kept, photo streamed from local MongoDB
+          
+          **CONCLUSION:**
+          The Trading Journal Screenshot Refactor is FULLY WORKING. All 7 test scenarios passed:
+          1. ✅ Auth guards (no token → 401, non-owner → 403, ?token= works)
+          2. ✅ Upload happy path (multipart PNG → 200 with screenshot object, resilient on Telegram failure)
+          3. ✅ Photo GET by screenshot id (works for both Telegram success and failure)
+          4. ✅ Photo GET BWC by raw file_id (old trades compatibility)
+          5. ✅ Retry endpoint (retries Telegram send, idempotent)
+          6. ✅ JSON data_url upload (works)
+          7. ✅ Size cap (13MB → 413)
+          
+          **RESILIENT PATTERN VERIFIED:**
+          - Upload inserts tj_screenshots row with file_data (Binary) BEFORE Telegram send
+          - On Telegram success: status='sent', file_id set, file_data unset (Telegram owns storage)
+          - On Telegram failure: status='failed', keeps file_data, sets telegram_error
+          - Upload ALWAYS returns 200 (never 502 on Telegram failure)
+          - Photo GET serves from Telegram (if sent) or local file_data (if failed)
+          - Retry endpoint allows manual retry of failed uploads
+          
+          Test files: /app/backend_test_tj_screenshots.py, /app/backend_test_tj_screenshots_extended.py
+          All 7 test scenarios passed (100%). Refactor is production-ready.
 
 
 frontend:
@@ -15327,7 +15534,7 @@ metadata:
 
 test_plan:
   current_focus:
-    - "Payroll — Training flag per karyawan (per periode)"
+    - "Trading Journal — Screenshot Refactor (Resilient Upload Pattern)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -15372,3 +15579,34 @@ agent_communication:
       - Cross-user isolation verified (only flagged user affected)
       
       NO ISSUES FOUND. Backend implementation is correct and fully functional.
+  - agent: "testing"
+    message: |
+      ✅ TRADING JOURNAL SCREENSHOT REFACTOR TESTING COMPLETE - ALL 7 SCENARIOS PASSED (100%)
+      
+      Tested TJ screenshot refactor (resilient upload pattern) comprehensively via:
+      - /app/backend_test_tj_screenshots.py (main test suite)
+      - /app/backend_test_tj_screenshots_extended.py (real PNG + Telegram success + cleanup)
+      
+      **VERIFIED WORKING:**
+      1. Auth guards: no token → 401, non-owner (cindy) → 403, ?token= query param works ✓
+      2. Upload happy path (multipart): Returns 200 with screenshot object (id, telegram_status, file_id?, mime, filename, size, uploaded_at) ✓
+      3. Photo GET by screenshot id: Works for both Telegram success (proxy) and failure (local fallback) ✓
+      4. Photo GET BWC by raw file_id: Works (old trades compatibility) ✓
+      5. Retry endpoint: POST /api/tj/photo/<id>/retry works (idempotent) ✓
+      6. JSON data_url upload: Works ✓
+      7. Size cap: 13MB upload → 413 ✓
+      
+      **CRITICAL SUCCESS:**
+      - Upload returns 200 even when Telegram fails (resilient pattern)
+      - New collection tj_screenshots with BSON Binary file_data storage
+      - Telegram success: file_data unset, photo proxied from Telegram
+      - Telegram failure: file_data kept, photo streamed from local MongoDB
+      - Retry endpoint allows manual retry of failed uploads
+      - BWC: old trades with just file_id can still view photos
+      
+      **TELEGRAM STATUS:**
+      - ✅ Telegram env configured and working (real 10x10 PNG uploaded successfully)
+      - ⚠️  Tiny test PNG (200 bytes) rejected by Telegram (IMAGE_PROCESS_FAILED) — expected
+      - ✅ Resilient pattern working: upload returns 200, stores file_data locally
+      
+      NO ISSUES FOUND. Screenshot refactor is production-ready.

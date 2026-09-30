@@ -36,9 +36,22 @@ async function tjApi(path, opts = {}) {
   if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
-function photoUrl(file_id) {
+function photoUrl(idOrFileId) {
+  if (!idOrFileId) return null;
   const base = process.env.NEXT_PUBLIC_BASE_URL || '';
-  return `${base}/api/tj/photo/${encodeURIComponent(file_id)}`;
+  // `<img>` tags cannot send Authorization headers — appending `?token=`
+  // uses the same session token pathway that OM PDF viewer uses. Router
+  // (`getUserFromRequest`) already accepts `?token=` as fallback.
+  const token = typeof window !== 'undefined' ? localStorage.getItem('cc_token') : null;
+  const q = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${base}/api/tj/photo/${encodeURIComponent(idOrFileId)}${q}`;
+}
+
+// Prefer local screenshot id (resilient: served from MongoDB fallback or
+// proxied to Telegram). BWC: bila trade lama hanya punya file_id, tetap
+// pakai file_id.
+function screenshotKey(sc) {
+  return sc?.id || sc?.file_id || null;
 }
 
 export default function TradingJournalModule({ user, initialView = 'tj:journal' }) {
@@ -199,8 +212,8 @@ function JournalView() {
 // ---- Screenshot picker (paste / upload) ----
 function ScreenshotPicker({ value, onChange, label }) {
   const [uploading, setUploading] = useState(false);
-  const [preview, setPreview] = useState(value?.file_id ? photoUrl(value.file_id) : null);
-  useEffect(() => { setPreview(value?.file_id ? photoUrl(value.file_id) : null); }, [value]);
+  const [preview, setPreview] = useState(screenshotKey(value) ? photoUrl(screenshotKey(value)) : null);
+  useEffect(() => { setPreview(screenshotKey(value) ? photoUrl(screenshotKey(value)) : null); }, [value]);
 
   const doUpload = async (blob, filename, mime) => {
     setUploading(true);
@@ -214,9 +227,14 @@ function ScreenshotPicker({ value, onChange, label }) {
       const d = await tjApi('upload', { method: 'POST', body: fd });
       onChange(d.screenshot);
       URL.revokeObjectURL(localUrl);
-      setPreview(photoUrl(d.screenshot.file_id));
-      toast.success('Screenshot terunggah ke Telegram');
-    } catch (e) { toast.error(e.message); setPreview(value?.file_id ? photoUrl(value.file_id) : null); }
+      const key = screenshotKey(d.screenshot);
+      setPreview(key ? photoUrl(key) : null);
+      if (d.screenshot?.telegram_status === 'failed') {
+        toast.warning('Screenshot disimpan lokal (Telegram gagal) — bisa retry nanti');
+      } else {
+        toast.success('Screenshot terunggah');
+      }
+    } catch (e) { toast.error(e.message); setPreview(screenshotKey(value) ? photoUrl(screenshotKey(value)) : null); }
     finally { setUploading(false); }
   };
 
@@ -437,8 +455,8 @@ function TradeDetail({ open, trade, onClose, onEdit }) {
         {trade.reason && <div className="mt-3"><div className="text-[10px] uppercase text-muted-foreground mb-1">Alasan Entry</div><div className="text-xs whitespace-pre-wrap">{trade.reason}</div></div>}
         {trade.evaluasi && <div className="mt-3"><div className="text-[10px] uppercase text-muted-foreground mb-1">Evaluasi</div><div className="text-xs whitespace-pre-wrap">{trade.evaluasi}</div></div>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
-          {trade.entry_screenshot?.file_id && <div><div className="text-[10px] uppercase text-muted-foreground mb-1">Screenshot Entry</div><img src={photoUrl(trade.entry_screenshot.file_id)} className="rounded border border-white/10 w-full" /></div>}
-          {trade.close_screenshot?.file_id && <div><div className="text-[10px] uppercase text-muted-foreground mb-1">Screenshot Close</div><img src={photoUrl(trade.close_screenshot.file_id)} className="rounded border border-white/10 w-full" /></div>}
+          {screenshotKey(trade.entry_screenshot) && <div><div className="text-[10px] uppercase text-muted-foreground mb-1">Screenshot Entry</div><a href={photoUrl(screenshotKey(trade.entry_screenshot))} target="_blank" rel="noreferrer"><img src={photoUrl(screenshotKey(trade.entry_screenshot))} className="rounded border border-white/10 w-full hover:opacity-90 transition" /></a></div>}
+          {screenshotKey(trade.close_screenshot) && <div><div className="text-[10px] uppercase text-muted-foreground mb-1">Screenshot Close</div><a href={photoUrl(screenshotKey(trade.close_screenshot))} target="_blank" rel="noreferrer"><img src={photoUrl(screenshotKey(trade.close_screenshot))} className="rounded border border-white/10 w-full hover:opacity-90 transition" /></a></div>}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Tutup</Button>
