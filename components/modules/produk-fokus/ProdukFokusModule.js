@@ -571,7 +571,14 @@ function PengajuanView({ periodKey, range, isOwner, user }) {
                       </td>
                       <td>{it.submitted_by_name || it.submitted_by}</td>
                       <td className="font-mono">{it.kode}</td>
-                      <td className="font-medium">{it.nama}</td>
+                      <td>
+                        <div className="font-medium">{it.nama}</div>
+                        {it.alasan && (
+                          <div className="text-[10px] text-muted-foreground italic whitespace-pre-wrap max-w-[260px] mt-0.5" title={it.alasan}>
+                            Alasan: {it.alasan}
+                          </div>
+                        )}
+                      </td>
                       <td className="text-right tabular-nums">{it.jumlah} {it.satuan}</td>
                       <td>{statusBadge(it.status)}</td>
                       <td className="text-right whitespace-nowrap">
@@ -617,11 +624,13 @@ function PengajuanEditor({ open, periodKey, onClose, onSaved }) {
   const [nama, setNama] = useState('');
   const [jumlah, setJumlah] = useState('');
   const [satuan, setSatuan] = useState('pcs');
+  const [alasan, setAlasan] = useState('');
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
     if (!kode.trim() || !nama.trim()) { toast.error('Kode dan Nama wajib'); return; }
     if (!(Number(jumlah) > 0)) { toast.error('Jumlah harus > 0'); return; }
+    if (!alasan.trim()) { toast.error('Alasan wajib diisi'); return; }
     setSaving(true);
     try {
       await pfApi('pengajuan', {
@@ -632,6 +641,7 @@ function PengajuanEditor({ open, periodKey, onClose, onSaved }) {
           nama: nama.trim(),
           jumlah: Math.floor(Number(jumlah)),
           satuan: satuan.trim() || 'pcs',
+          alasan: alasan.trim(),
         }),
       });
       toast.success('Pengajuan terkirim');
@@ -665,6 +675,17 @@ function PengajuanEditor({ open, periodKey, onClose, onSaved }) {
           <div>
             <Label className="text-xs">Jumlah</Label>
             <Input type="number" min={1} step={1} value={jumlah} onChange={(e) => setJumlah(e.target.value)} className="h-8" />
+          </div>
+          <div>
+            <Label className="text-xs">Alasan <span className="text-rose-400">*</span></Label>
+            <Textarea
+              value={alasan}
+              onChange={(e) => setAlasan(e.target.value)}
+              className="text-sm min-h-[80px]"
+              maxLength={500}
+              placeholder="Jelaskan alasan pengajuan (mis. permintaan pelanggan, stok fast-moving, promo, dll.)"
+            />
+            <div className="text-[10px] text-muted-foreground mt-1 text-right">{alasan.length}/500</div>
           </div>
         </div>
         <DialogFooter className="gap-2">
@@ -1334,7 +1355,14 @@ function HistoriView({ periodKey, range }) {
                 <tr key={p.id} className="border-b border-white/5 [&>td]:py-1 [&>td]:px-2">
                   <td>{p.submitted_by_name}</td>
                   <td className="font-mono">{p.kode}</td>
-                  <td>{p.nama}</td>
+                  <td>
+                    <div>{p.nama}</div>
+                    {p.alasan && (
+                      <div className="text-[10px] text-muted-foreground italic whitespace-pre-wrap max-w-[260px] mt-0.5" title={p.alasan}>
+                        Alasan: {p.alasan}
+                      </div>
+                    )}
+                  </td>
                   <td className="text-right tabular-nums">{p.jumlah} {p.satuan}</td>
                   <td className="text-[11px]">{p.status}</td>
                 </tr>
