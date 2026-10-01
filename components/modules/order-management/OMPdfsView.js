@@ -1288,34 +1288,49 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
             (e.g. "3/8") so the operator sees at a glance how many resi in
             this PDF have already been input to KETOKO. Clicking triggers
             the (unchanged) dynamic PIN verification. On correct PIN, the
-            KetokoResiPanel opens with the resi list. */}
+            KetokoResiPanel opens with the resi list.
+            MINIMAL PATCH — tombol di-disable bila PDF belum PRINTED (seluruh
+            resi di PDF ini otomatis terkunci sampai dicetak). Per-resi
+            "Scan Cetak Resi" di-gate di dalam KetokoResiPanel. */}
         <button
           type="button"
-          onClick={() => { if (pin === null) openPinPanel(); }}
-          disabled={pin !== null || resiTotal === 0}
+          onClick={() => {
+            if (!printed) {
+              toast.error('Resi belum dicetak. Silakan print resi terlebih dahulu.');
+              return;
+            }
+            if (pin === null) openPinPanel();
+          }}
+          disabled={pin !== null || resiTotal === 0 || !printed}
           className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors shrink-0 select-none text-left ${
             pin !== null
               ? 'border-amber-400/60 bg-amber-500/15 text-amber-200 cursor-wait'
-              : ketokoChecked
-                ? 'border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
-                : ketokoPartial
-                  ? 'border-amber-500/30 bg-amber-500/5 text-amber-300/90 hover:bg-amber-500/10'
-                  : resiTotal === 0
-                    ? 'border-white/10 text-muted-foreground/50 cursor-not-allowed'
-                    : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground hover:text-white'
+              : !printed
+                ? 'border-rose-500/30 bg-rose-500/[0.04] text-rose-300/70 cursor-not-allowed'
+                : ketokoChecked
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15'
+                  : ketokoPartial
+                    ? 'border-amber-500/30 bg-amber-500/5 text-amber-300/90 hover:bg-amber-500/10'
+                    : resiTotal === 0
+                      ? 'border-white/10 text-muted-foreground/50 cursor-not-allowed'
+                      : 'border-white/10 hover:bg-white/[0.04] text-muted-foreground hover:text-white'
           }`}
           title={
-            resiTotal === 0
-              ? 'Belum ada resi terdeteksi di PDF ini'
-              : ketokoChecked
-                ? `Semua ${resiTotal} resi sudah diinput ke KETOKO`
-                : 'Klik untuk buka daftar resi + input ke KETOKO'
+            !printed
+              ? 'Resi belum dicetak. Silakan print resi terlebih dahulu.'
+              : resiTotal === 0
+                ? 'Belum ada resi terdeteksi di PDF ini'
+                : ketokoChecked
+                  ? `Semua ${resiTotal} resi sudah diinput ke KETOKO`
+                  : 'Klik untuk buka daftar resi + input ke KETOKO'
           }
         >
           <Store className="w-3.5 h-3.5" />
           <div className="text-xs leading-tight">
             <div className="font-medium">POS KETOKO</div>
-            {resiTotal === 0 ? (
+            {!printed ? (
+              <div className="text-[10px] opacity-80">terkunci — belum dicetak</div>
+            ) : resiTotal === 0 ? (
               <div className="text-[10px] opacity-70">— resi belum terdeteksi</div>
             ) : (
               <div className="text-[10px] opacity-80 tabular-nums">
@@ -2021,23 +2036,45 @@ function KetokoResiPanel({ initialItem, user, onClose, onChanged }) {
               const currentText = draftText[draftKey] !== undefined
                 ? draftText[draftKey]
                 : (r.note_text || '');
+              // MINIMAL PATCH — gating Input KETOKO berbasis status Resi.
+              // Centang hanya diizinkan bila: PDF sudah dicetak (printed_at)
+              // DAN resi sudah "Scan Cetak Resi" (scan_cetak_at). Jika syarat
+              // belum terpenuhi, checkbox di-disable + alasan ditampilkan.
+              // Uncheck tetap diizinkan.
+              const pdfPrinted = !!item?.printed_at;
+              const resiScanCetak = !!r?.scan_cetak_at;
+              const canInput = pdfPrinted && resiScanCetak;
+              const blockReason = !pdfPrinted
+                ? 'Resi belum dicetak. Silakan print resi terlebih dahulu.'
+                : (!resiScanCetak
+                    ? 'Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu.'
+                    : null);
+              // Hanya block saat mencentang (checked=false → disabled).
+              // Jika sudah checked, biarkan uncheck tetap bisa.
+              const disableCheckbox = isSaving || (!r.checked && !canInput);
               return (
                 <div
                   key={r.tracking_number}
                   className={`p-3 rounded-md border transition-colors ${
                     r.checked
                       ? 'border-emerald-500/30 bg-emerald-500/[0.05]'
-                      : 'border-white/10 bg-white/[0.02]'
+                      : (!canInput ? 'border-rose-500/20 bg-rose-500/[0.03]' : 'border-white/10 bg-white/[0.02]')
                   } ${isSaving ? 'opacity-60' : ''}`}
                 >
                   <div className="flex items-start gap-3">
                     <input
                       type="checkbox"
                       checked={r.checked}
-                      disabled={isSaving}
-                      onChange={(e) => updateResi(r.tracking_number, { checked: e.target.checked })}
-                      className="w-5 h-5 accent-emerald-500 cursor-pointer mt-0.5 shrink-0"
-                      title={r.checked ? 'Sudah input KETOKO' : 'Belum input KETOKO'}
+                      disabled={disableCheckbox}
+                      onChange={(e) => {
+                        if (e.target.checked && !canInput) {
+                          toast.error(blockReason || 'Input KETOKO belum diizinkan');
+                          return;
+                        }
+                        updateResi(r.tracking_number, { checked: e.target.checked });
+                      }}
+                      className={`w-5 h-5 accent-emerald-500 mt-0.5 shrink-0 ${disableCheckbox ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                      title={r.checked ? 'Sudah input KETOKO' : (blockReason || 'Belum input KETOKO')}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -2045,6 +2082,10 @@ function KetokoResiPanel({ initialItem, user, onClose, onChanged }) {
                         {r.checked ? (
                           <Badge variant="outline" className="border-emerald-500/40 text-emerald-400 text-[9px]">
                             ✓ Sudah Input
+                          </Badge>
+                        ) : !canInput ? (
+                          <Badge variant="outline" className="border-rose-500/40 text-rose-300 text-[9px]">
+                            Terkunci
                           </Badge>
                         ) : (
                           <Badge variant="outline" className="border-amber-500/30 text-amber-300/80 text-[9px]">
@@ -2055,6 +2096,11 @@ function KetokoResiPanel({ initialItem, user, onClose, onChanged }) {
                           <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
                         )}
                       </div>
+                      {!r.checked && blockReason && (
+                        <div className="text-[10px] text-rose-300/90 italic mt-1">
+                          {blockReason}
+                        </div>
+                      )}
                       {r.checked && r.checked_by_name && (
                         <div className="text-[10px] text-muted-foreground mt-0.5">
                           oleh {r.checked_by_name} · {fmtDate(r.checked_at)}

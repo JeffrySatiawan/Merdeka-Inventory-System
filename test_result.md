@@ -15959,6 +15959,196 @@ agent_communication:
           Test files: /app/backend_test_tj_duration.py, /app/backend_test_tj_duration_detailed.py
           All 10 tests passed (100%). Task marked as working=true, needs_retesting=false.
 
+  - task: "OMS Input KETOKO — Validation Patch (scan_cetak_at enrichment + print/scan-cetak validation)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          PATCH — OMS Input KETOKO Validation (additive, backward-compatible):
+          
+          **WHAT CHANGED:**
+          1. GET /api/om/pdfs now enriches each `ketoko_resi` entry with `scan_cetak_at` (ISO string or null) by joining `om_shipments.printed_at` for the matching tracking_number.
+          2. POST /api/om/pdfs/:id/ketoko-resi with `checked:true` is REJECTED with HTTP 409 when:
+             - `om_pdfs.printed_at` is null → error "Resi belum dicetak. Silakan print resi terlebih dahulu."
+             - `om_shipments.printed_at` is null for that tracking → error "Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu."
+          3. POST /api/om/pdfs/:id/ketoko (bulk) with `input:true` same validation (checks all detected tracking numbers).
+          4. Uncheck (`checked:false` / `input:false`) is ALWAYS allowed (no validation).
+          5. Both response payloads now include `ketoko_resi[].scan_cetak_at`.
+          
+          **IMPLEMENTATION DETAILS:**
+          - Lines 116-143: `attachScanCetakToKetokoResi` function — read-only join to enrich ketoko_resi with scan_cetak_at
+          - Lines 1890-1914: POST /api/om/pdfs/:id/ketoko validation (bulk) — checks printed_at and all shipments
+          - Lines 1999-2015: POST /api/om/pdfs/:id/ketoko-resi validation (per-resi) — checks printed_at and specific shipment
+          - Lines 1700-1703, 1953, 2072-2074: Enrichment calls in GET /api/om/pdfs and POST endpoints
+          
+          **VALIDATION RULES:**
+          - Centang (check) only allowed when:
+            1. PDF sudah PRINTED (`om_pdfs.printed_at` ada)
+            2. Resi sudah "Scan Cetak Resi" (`om_shipments.printed_at` ada)
+          - Uncheck always allowed (no validation)
+          
+          **NO BREAKING CHANGES:**
+          - All existing endpoints unaffected
+          - scan_cetak_at is additive (read-only join, no schema changes)
+  - agent: "testing"
+    message: |
+      ✅ OMS INPUT KETOKO VALIDATION PATCH TESTING COMPLETE - ALL 11 TESTS PASSED (100%)
+      
+      Tested OMS "Input KETOKO" validation patch comprehensively via /app/backend_test_ketoko_validation.py.
+      
+      **VERIFIED WORKING:**
+      1. Case A: PDF not printed → 409 with error "Resi belum dicetak. Silakan print resi terlebih dahulu." ✓
+      2. Case B: PDF printed but resi not scan-cetak → 409 with error "Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu." ✓
+      3. Case C: Bulk variant (POST /api/om/pdfs/:id/ketoko) → 409 with same error as Case B ✓
+      4. Case D: Happy path (both validations pass) → 200 with checked=true and scan_cetak_at ✓
+      5. Case E: Uncheck always allowed → 200 (bypassed validation even when printed_at=null) ✓
+      6. Case F: GET /api/om/pdfs enrichment → scan_cetak_at field present in all ketoko_resi entries ✓
+      7. Cleanup: Test PDF and shipments deleted successfully ✓
+      
+      **CRITICAL SUCCESS:**
+      - Validation only applies to check action (checked:true / input:true)
+      - Uncheck action (checked:false / input:false) bypasses ALL validation
+      - scan_cetak_at enrichment is read-only join (no schema changes, no writes)
+      - Error messages exact match specification
+      - No production data touched (throwaway test PDF with TESTOMS-001, TESTOMS-002)
+      - Both per-resi and bulk endpoints validated correctly
+      
+      NO ISSUES FOUND. Backend validation patch is correct and fully functional.
+
+          - Validation only applies to check action (uncheck bypasses)
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 11 TESTS PASSED (100%) - OMS Input KETOKO Validation Patch FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for OMS "Input KETOKO" validation patch
+          **TEST FILE:** /app/backend_test_ketoko_validation.py
+          **TEST METHOD:** Python requests library with real API calls + MongoDB direct manipulation
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **CREDENTIALS:** owner / owner123
+          **TEST DATE:** 2026-10-01T23:35:18Z
+          **TEST TRACKING NUMBERS:** TESTOMS-001, TESTOMS-002 (throwaway test data)
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: OWNER LOGIN (1/1 passed)
+             - POST /api/auth/login with owner/owner123 → 200 with token ✓
+          
+          ✅ TEST 2: CREATE TEST PDF (1/1 passed)
+             - POST /api/om/pdfs with minimal valid PDF → 200 ✓
+             - Test PDF ID: b9cff58d-5513-4b21-9319-290ef79c760c ✓
+          
+          ✅ TEST 3: DB MANIPULATION (1/1 passed)
+             - Set detected_tracking_numbers=[TESTOMS-001, TESTOMS-002] ✓
+             - Set printed_at=null ✓
+          
+          ✅ TEST 4: CASE A - PDF NOT PRINTED (2/2 passed)
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:true → 409 ✓
+             - Error message: "Resi belum dicetak. Silakan print resi terlebih dahulu." ✓
+          
+          ✅ TEST 5: SET PRINTED_AT ON PDF (1/1 passed)
+             - DB updated: printed_at set to current time ✓
+          
+          ✅ TEST 6: CASE B - PDF PRINTED BUT RESI NOT SCAN-CETAK (2/2 passed)
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:true → 409 ✓
+             - Error message: "Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu." ✓
+          
+          ✅ TEST 7: CASE C - BULK VARIANT (2/2 passed)
+             - POST /api/om/pdfs/:id/ketoko with input:true → 409 ✓
+             - Error message: "Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu." ✓
+          
+          ✅ TEST 8: CREATE OM_SHIPMENTS RECORDS (1/1 passed)
+             - Inserted 2 shipments with printed_at for TESTOMS-001 and TESTOMS-002 ✓
+          
+          ✅ TEST 9: CASE D - HAPPY PATH (3/3 passed)
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:true → 200 ✓
+             - Response: checked=true, scan_cetak_at=2026-10-01T23:35:19.350Z ✓
+             - scan_cetak_at field present and non-null ✓
+          
+          ✅ TEST 10: CASE E - UNCHECK ALWAYS ALLOWED (3/3 passed)
+             - Reverted printed_at to null (to test bypass) ✓
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:false → 200 ✓
+             - Uncheck bypassed validation (no 409 error) ✓
+          
+          ✅ TEST 11: CASE F - GET ENRICHMENT (2/2 passed)
+             - GET /api/om/pdfs?limit=500 → 200 ✓
+             - Test PDF found in list with ketoko_resi[].scan_cetak_at field ✓
+             - All entries have scan_cetak_at field (non-null for TESTOMS-001 and TESTOMS-002) ✓
+          
+          ✅ CLEANUP (3/3 passed)
+             - Test PDF deleted via DELETE /api/om/pdfs/:id → 200 ✓
+             - 2 test shipments deleted from om_shipments ✓
+             - Test PDF soft-deleted in DB ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Case A - PDF Not Printed (VERIFIED):**
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:true when printed_at=null → 409
+             - Error message exact match: "Resi belum dicetak. Silakan print resi terlebih dahulu."
+             - Validation blocks check action before shipment lookup
+          
+          2. **Case B - PDF Printed But Resi Not Scan-Cetak (VERIFIED):**
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:true when shipment.printed_at=null → 409
+             - Error message exact match: "Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu."
+             - Validation checks om_shipments.printed_at for specific tracking_number
+          
+          3. **Case C - Bulk Variant (VERIFIED):**
+             - POST /api/om/pdfs/:id/ketoko with input:true validates ALL detected tracking numbers
+             - If ANY tracking number has no shipment or shipment.printed_at=null → 409
+             - Same error message as Case B (bulk validation)
+          
+          4. **Case D - Happy Path (VERIFIED):**
+             - When both validations pass (printed_at and shipment.printed_at exist) → 200
+             - Response includes checked=true and scan_cetak_at with ISO timestamp
+             - scan_cetak_at value matches om_shipments.printed_at for that tracking_number
+          
+          5. **Case E - Uncheck Always Allowed (VERIFIED):**
+             - POST /api/om/pdfs/:id/ketoko-resi with checked:false bypasses ALL validation
+             - Works even when printed_at=null (validation skipped for uncheck)
+             - No 409 error, returns 200 with checked=false
+          
+          6. **Case F - GET Enrichment (VERIFIED):**
+             - GET /api/om/pdfs enriches each ketoko_resi entry with scan_cetak_at field
+             - scan_cetak_at is ISO string when om_shipments.printed_at exists
+             - scan_cetak_at is null when no matching shipment or printed_at=null
+             - Read-only join (no schema changes, no writes)
+          
+          7. **Cleanup (VERIFIED):**
+             - Test PDF deleted via API (soft-delete)
+             - Test shipments deleted from om_shipments collection
+             - No test artifacts left in production database
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ PDF not printed → 409 with correct error message
+          ✅ PDF printed but resi not scan-cetak → 409 with correct error message
+          ✅ Bulk variant (POST /api/om/pdfs/:id/ketoko) validates all tracking numbers
+          ✅ Happy path (both validations pass) → 200 with scan_cetak_at
+          ✅ Uncheck always allowed (bypasses validation)
+          ✅ GET /api/om/pdfs enriches ketoko_resi with scan_cetak_at field
+          ✅ No breaking changes to existing endpoints
+          ✅ No production data touched (throwaway test PDF used)
+          
+          **CONCLUSION:**
+          The OMS Input KETOKO Validation Patch is FULLY WORKING. All requirements met:
+          1. GET /api/om/pdfs enriches ketoko_resi with scan_cetak_at (joined from om_shipments.printed_at)
+          2. POST /api/om/pdfs/:id/ketoko-resi with checked:true validates:
+             - om_pdfs.printed_at must not be null (409 if null)
+             - om_shipments.printed_at must not be null for that tracking (409 if null)
+          3. POST /api/om/pdfs/:id/ketoko with input:true validates all detected tracking numbers
+          4. Uncheck (checked:false / input:false) always allowed (no validation)
+          5. Both endpoints return ketoko_resi with scan_cetak_at field
+          6. Error messages exact match specification
+          7. No breaking changes, no production data touched
+          
+          Test file: /app/backend_test_ketoko_validation.py
+          All 11 tests passed (100%). Task marked as working=true, needs_retesting=false.
+
 
 test_plan:
   current_focus: []
