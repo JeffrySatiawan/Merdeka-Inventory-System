@@ -20,6 +20,29 @@ import { toast } from 'sonner';
 
 const fmtIDR = (v) => Number(v || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 });
 const fmtNum = (v, d = 2) => Number(v || 0).toLocaleString('id-ID', { maximumFractionDigits: d });
+// Format durasi ke "1 hari 4 jam 15 menit" (BWC: pakai `duration_label` dari
+// backend bila tersedia; else re-derive lokal dari `duration_minutes`).
+function fmtDuration(trade) {
+  if (trade?.duration_label) return trade.duration_label;
+  const mins = trade?.duration_minutes;
+  if (mins == null || !Number.isFinite(mins)) return '—';
+  const sign = mins < 0 ? '-' : '';
+  const t = Math.abs(Math.round(mins));
+  const d = Math.floor(t / (24 * 60));
+  const h = Math.floor((t - d * 24 * 60) / 60);
+  const m = t - d * 24 * 60 - h * 60;
+  const parts = [];
+  if (d > 0) parts.push(`${d} hari`);
+  if (h > 0) parts.push(`${h} jam`);
+  if (m > 0) parts.push(`${m} menit`);
+  return sign + (parts.length ? parts.join(' ') : '0 menit');
+}
+function fmtTanggalID(iso) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
+  const [y, m, d] = iso.split('-').map(Number);
+  const MO = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+  return `${d} ${MO[m - 1]} ${y}`;
+}
 
 async function tjApi(path, opts = {}) {
   const base = process.env.NEXT_PUBLIC_BASE_URL || '';
@@ -185,7 +208,7 @@ function JournalView() {
                       <td>{t.hasil ? <Badge className={t.hasil === 'TP' ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-rose-500/15 text-rose-300 border-rose-500/30'}>{t.hasil}</Badge> : <span className="text-muted-foreground">—</span>}</td>
                       <td className={`text-right tabular-nums ${Number(t.hasil_trade) > 0 ? 'text-emerald-300' : Number(t.hasil_trade) < 0 ? 'text-rose-300' : ''}`}>{t.hasil_trade != null ? fmtIDR(t.hasil_trade) : '—'}</td>
                       <td className="text-right tabular-nums">{t.actual_r != null ? fmtNum(t.actual_r, 2) : '—'}</td>
-                      <td className="text-right tabular-nums text-[11px]">{t.duration_minutes != null ? `${Math.floor(t.duration_minutes / 60)}j ${t.duration_minutes % 60}m` : '—'}</td>
+                      <td className="text-right tabular-nums text-[11px]">{fmtDuration(t)}</td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditing(t)}><Pencil className="w-3.5 h-3.5" /></Button>
                         <Button size="icon" variant="ghost" className="h-7 w-7 text-rose-400" onClick={async () => {
@@ -304,6 +327,9 @@ function TradeEditor({ open, initial, masters, onClose, onSaved }) {
     entry_screenshot: initial?.entry_screenshot || null,
     hasil: initial?.hasil || '',
     close_price: initial?.close_price ?? '', jam_close: initial?.jam_close || '',
+    // Tanggal Close terpisah dari Tanggal Entry — mendukung trade lintas-hari.
+    // BWC: trade lama tanpa `tanggal_close` → default ke `tanggal`.
+    tanggal_close: initial?.tanggal_close || initial?.tanggal || new Date().toISOString().slice(0, 10),
     hasil_trade: initial?.hasil_trade ?? '',
     close_screenshot: initial?.close_screenshot || null,
     evaluasi: initial?.evaluasi || '',
@@ -316,6 +342,16 @@ function TradeEditor({ open, initial, masters, onClose, onSaved }) {
   const reward = f.position === 'BUY' ? Number(f.tp_price) - Number(f.entry_price) : Number(f.entry_price) - Number(f.tp_price);
   const rr = risk !== 0 && !isNaN(risk) ? reward / risk : 0;
   const actualR = Number(f.sl_money) !== 0 && !isNaN(f.sl_money) ? Number(f.hasil_trade || 0) / Number(f.sl_money) : 0;
+  // Live Durasi: hitung dari (tanggal + jam_entry) → (tanggal_close + jam_close).
+  const liveDurationLabel = (() => {
+    const parseHM = (v) => { const m = /^(\d{1,2}):(\d{2})$/.exec(v || ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+    const parseYMD = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : null; };
+    const a = parseHM(f.jam_entry), b = parseHM(f.jam_close);
+    const dA = parseYMD(f.tanggal), dB = parseYMD(f.tanggal_close || f.tanggal);
+    if (a == null || b == null || dA == null || dB == null) return '—';
+    const diff = Math.round(((dB + b * 60000) - (dA + a * 60000)) / 60000);
+    return fmtDuration({ duration_minutes: diff });
+  })();
 
   const save = async () => {
     if (!f.pair || !f.tf || !f.metode) { toast.error('Pair, TF, Metode wajib'); return; }
@@ -352,7 +388,13 @@ function TradeEditor({ open, initial, masters, onClose, onSaved }) {
           <div className="border border-white/10 rounded-lg p-3 space-y-3">
             <div className="text-xs font-semibold uppercase tracking-wider text-cyan-300">Entry</div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div><Label className="text-xs">Tanggal</Label><Input type="date" value={f.tanggal} onChange={(e) => set('tanggal', e.target.value)} className="h-8" /></div>
+              <div><Label className="text-xs">Tanggal Entry</Label><Input type="date" value={f.tanggal} onChange={(e) => {
+                const v = e.target.value;
+                // Auto-sinkron Tanggal Close saat masih sama dengan Tanggal
+                // Entry sebelumnya (ux: default same-day). User tetap bisa
+                // override Tanggal Close secara manual di section Close.
+                setF((p) => ({ ...p, tanggal: v, tanggal_close: (p.tanggal_close === p.tanggal || !p.tanggal_close) ? v : p.tanggal_close }));
+              }} className="h-8" /></div>
               <div><Label className="text-xs">Pair</Label>
                 <Select value={f.pair} onValueChange={(v) => set('pair', v)}><SelectTrigger className="h-8"><SelectValue placeholder="—" /></SelectTrigger><SelectContent>{masters.pair.map((m) => <SelectItem key={m.id} value={m.nama}>{m.nama}</SelectItem>)}</SelectContent></Select>
               </div>
@@ -394,11 +436,16 @@ function TradeEditor({ open, initial, masters, onClose, onSaved }) {
                 </Select>
               </div>
               <div><Label className="text-xs">Harga Close</Label><Input type="number" step="any" value={f.close_price} onChange={(e) => set('close_price', e.target.value)} className="h-8" /></div>
+              <div><Label className="text-xs">Tanggal Close</Label><Input type="date" value={f.tanggal_close} min={f.tanggal || undefined} onChange={(e) => set('tanggal_close', e.target.value)} className="h-8" /></div>
               <div><Label className="text-xs">Jam Close</Label><Input type="time" value={f.jam_close} onChange={(e) => set('jam_close', e.target.value)} className="h-8" /></div>
               <div><Label className="text-xs">Hasil Trade ($)</Label><Input type="number" step="any" value={f.hasil_trade} onChange={(e) => set('hasil_trade', e.target.value)} className="h-8" placeholder="+/-" /></div>
               <div>
                 <Label className="text-xs">Actual R (live)</Label>
                 <div className="h-8 flex items-center px-2 rounded border border-white/10 bg-white/[0.03] text-sm tabular-nums">{isFinite(actualR) ? actualR.toFixed(2) : '—'}</div>
+              </div>
+              <div className="col-span-2">
+                <Label className="text-xs">Durasi (live)</Label>
+                <div className="h-8 flex items-center px-2 rounded border border-white/10 bg-white/[0.03] text-sm tabular-nums">{liveDurationLabel}</div>
               </div>
             </div>
             <div><Label className="text-xs">Evaluasi Hasil Trade</Label><Textarea value={f.evaluasi} onChange={(e) => set('evaluasi', e.target.value)} rows={2} maxLength={2000} /></div>
@@ -432,15 +479,17 @@ function TradeDetail({ open, trade, onClose, onEdit }) {
         </DialogHeader>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           {[
+            ['Tanggal Entry', fmtTanggalID(trade.tanggal)],
+            ['Jam Entry', trade.jam_entry || '—'],
+            ['Tanggal Close', fmtTanggalID(trade.tanggal_close || trade.tanggal)],
+            ['Jam Close', trade.jam_close || '—'],
+            ['Durasi', fmtDuration(trade)],
             ['Entry', fmtNum(trade.entry_price, 5)],
             ['SL', fmtNum(trade.sl_price, 5)],
             ['TP', fmtNum(trade.tp_price, 5)],
             ['R:R', fmtNum(trade.rr, 2)],
             ['SL ($)', fmtIDR(trade.sl_money)],
             ['TP ($)', fmtIDR(trade.tp_money)],
-            ['Jam Entry', trade.jam_entry || '—'],
-            ['Jam Close', trade.jam_close || '—'],
-            ['Durasi', trade.duration_minutes != null ? `${Math.floor(trade.duration_minutes / 60)}j ${trade.duration_minutes % 60}m` : '—'],
             ['Close', trade.close_price != null ? fmtNum(trade.close_price, 5) : '—'],
             ['Hasil Trade', trade.hasil_trade != null ? fmtIDR(trade.hasil_trade) : '—'],
             ['Actual R', trade.actual_r != null ? fmtNum(trade.actual_r, 2) : '—'],

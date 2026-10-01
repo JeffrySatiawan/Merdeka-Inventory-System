@@ -15755,3 +15755,244 @@ agent_communication:
       - ✅ Resilient pattern working: upload returns 200, stores file_data locally
       
       NO ISSUES FOUND. Screenshot refactor is production-ready.
+
+  - task: "Trading Journal — Duration Recomputation (tanggal_close field + cross-day duration)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/trading-journal/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          PATCH — Trading Journal Duration Recomputation (additive, backward-compatible):
+          
+          **WHAT CHANGED:**
+          - `computeTradeMetrics` now computes `duration_minutes` as `DateTime(tanggal_close, jam_close) - DateTime(tanggal, jam_entry)`.
+          - New field `tanggal_close` (YYYY-MM-DD) accepted on POST and PATCH `/api/tj/trades`. Defaults to `tanggal` entry if not sent.
+          - New field `duration_label` returned on every trade serialization: human-friendly "1 hari 4 jam 15 menit" / "28 jam 15 menit" / "45 menit".
+          - BWC: if `tanggal_close` missing on legacy trades, fallback to same-day with existing wrap logic (`jam_close < jam_entry` → +24h) so old durations remain correct.
+          
+          **IMPLEMENTATION DETAILS:**
+          - Lines 99-144: `computeTradeMetrics` function updated with cross-day duration calculation
+          - Lines 145-159: `formatDurationID` function for human-friendly duration labels
+          - Lines 281-284: POST /api/tj/trades accepts `tanggal_close` with validation and fallback to `tanggal`
+          - Lines 305-306: PATCH /api/tj/trades accepts `tanggal_close` updates
+          - Lines 668-675: Export endpoints include `tanggal_close` and `duration_label` fields
+          
+          **NO BREAKING CHANGES:**
+          - Legacy trades without `tanggal_close` continue to work with BWC fallback
+          - All existing endpoints unaffected
+          - Export CSV/JSON now include new fields
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 10 TESTS PASSED (100%) - Trading Journal Duration Recomputation FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for Trading Journal duration recomputation changes
+          **TEST FILES:** 
+          - /app/backend_test_tj_duration.py (comprehensive test suite)
+          - /app/backend_test_tj_duration_detailed.py (detailed report with response bodies)
+          **TEST METHOD:** Python requests library with real API calls + MongoDB direct manipulation for BWC testing
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **CREDENTIALS:** owner / owner123
+          **TEST DATE:** 2026-10-01T01:48:15Z
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: POST TRADE WITH EXPLICIT TANGGAL_CLOSE CROSS-DAY (4 HOURS)
+             - POST /api/tj/trades with tanggal='2026-09-29', jam_entry='23:00', tanggal_close='2026-09-30', jam_close='03:00' → 200
+             - Response body verified:
+               * duration_minutes: 240 (4 hours) ✓
+               * duration_label: "4 jam" ✓
+               * tanggal_close: "2026-09-30" ✓
+             - Cross-day calculation working correctly
+          
+          ✅ TEST 2: POST TRADE LONGER CROSS-DAY (28H15M = 1 DAY 4H 15M)
+             - POST /api/tj/trades with tanggal='2026-09-29', jam_entry='14:30', tanggal_close='2026-09-30', jam_close='18:45' → 200
+             - Response body verified:
+               * duration_minutes: 1695 (28*60+15) ✓
+               * duration_label: "1 hari 4 jam 15 menit" ✓
+             - Multi-day duration calculation working correctly
+          
+          ✅ TEST 3: POST TRADE SAME-DAY WITHOUT TANGGAL_CLOSE
+             - POST /api/tj/trades with tanggal='2026-09-30', jam_entry='09:00', jam_close='10:30', no tanggal_close → 200
+             - Response body verified:
+               * tanggal_close: "2026-09-30" (defaulted to tanggal) ✓
+               * duration_minutes: 90 (1.5 hours) ✓
+               * duration_label: "1 jam 30 menit" ✓
+             - Default tanggal_close working correctly
+          
+          ✅ TEST 4: BWC LEGACY TRADE (MISSING TANGGAL_CLOSE)
+             - Created trade, then unset tanggal_close via MongoDB to simulate legacy trade
+             - GET /api/tj/trades/{id} with tanggal='2026-09-30', jam_entry='23:00', jam_close='03:00', no tanggal_close → 200
+             - Response body verified:
+               * tanggal_close: None (missing in DB) ✓
+               * duration_minutes: 240 (BWC +24h fallback applied) ✓
+               * duration_label: "4 jam" ✓
+             - BWC fallback logic working: jam_close < jam_entry → add 24h
+          
+          ✅ TEST 5: PATCH TANGGAL_CLOSE
+             - Created same-day trade with initial duration_minutes=240
+             - PATCH /api/tj/trades/{id} with tanggal_close='2026-10-01' (next day) → 200
+             - Response body verified:
+               * tanggal_close: "2026-10-01" ✓
+               * duration_minutes: 1680 (240 + 24*60) ✓
+               * duration_label: "1 hari 4 jam" ✓
+             - Duration increased by exactly 24*60 minutes as expected
+          
+          ✅ TEST 6: INVALID TANGGAL_CLOSE
+             - POST /api/tj/trades with tanggal_close='invalid' → 200 (no 400 error)
+             - Response body verified:
+               * tanggal_close: "2026-09-30" (defaulted to tanggal) ✓
+               * duration_minutes: 120 ✓
+             - Invalid tanggal_close gracefully handled with fallback
+          
+          ✅ TEST 7A: EXPORT JSON
+             - GET /api/tj/export?format=json → 200
+             - Response body verified:
+               * trades[0] has "tanggal_close" key ✓
+               * trades[0] has "duration_label" key ✓
+               * Example values: tanggal_close="2026-09-30", duration_label="1 hari 4 jam 15 menit" ✓
+          
+          ✅ TEST 7B: EXPORT CSV
+             - GET /api/tj/export?format=csv → 200
+             - CSV headers verified:
+               * "tanggal_close" in header row ✓
+               * "duration_label" in header row ✓
+             - Full header: nama,tanggal,tanggal_close,pair,time_frame,metode,position,entry_price,sl_price,tp_price,sl_money,tp_money,rr,actual_r,jam_entry,jam_close,duration_minutes,duration_label,hasil,close_price,hasil_trade,emosi,reason,evaluasi,entry_screenshot_file_id,close_screenshot_file_id
+          
+          ✅ TEST 8: GET TRADES LIST
+             - GET /api/tj/trades → 200
+             - Response body verified:
+               * items[0] has "tanggal_close" key ✓
+               * items[0] has "duration_label" key ✓
+             - All trades in list include new fields
+          
+          ✅ TEST 9: CLEANUP
+             - Deleted all 6 test trades via DELETE /api/tj/trades/{id} → 200 ✓
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Cross-day duration calculation working (tanggal_close != tanggal)
+          ✅ Same-day duration calculation working (tanggal_close defaults to tanggal)
+          ✅ BWC fallback working for legacy trades without tanggal_close
+          ✅ duration_label human-friendly format working ("1 hari 4 jam 15 menit")
+          ✅ PATCH tanggal_close updates duration correctly
+          ✅ Invalid tanggal_close gracefully handled with fallback
+          ✅ Export JSON includes tanggal_close and duration_label
+          ✅ Export CSV includes tanggal_close and duration_label headers
+          ✅ GET trades list includes tanggal_close and duration_label
+          ✅ No breaking changes to existing endpoints
+          
+          **DETAILED RESPONSE BODIES (CRITICAL SCENARIOS):**
+          
+          **SCENARIO 1 - Cross-day 4 hours:**
+          ```json
+          {
+            "item": {
+              "id": "ab0bcd83-79e4-4282-a5aa-9b1fcbac86d2",
+              "nama": "EURUSD 29 September 2026",
+              "tanggal": "2026-09-29",
+              "jam_entry": "23:00",
+              "tanggal_close": "2026-09-30",
+              "jam_close": "03:00",
+              "duration_minutes": 240,
+              "duration_label": "4 jam",
+              "rr": 2,
+              "actual_r": 2
+            }
+          }
+          ```
+          
+          **SCENARIO 2 - Cross-day 28h15m:**
+          ```json
+          {
+            "item": {
+              "id": "a148cbe3-757d-4433-920a-18011a88f915",
+              "nama": "GBPUSD 29 September 2026",
+              "tanggal": "2026-09-29",
+              "jam_entry": "14:30",
+              "tanggal_close": "2026-09-30",
+              "jam_close": "18:45",
+              "duration_minutes": 1695,
+              "duration_label": "1 hari 4 jam 15 menit",
+              "rr": 2,
+              "actual_r": 2
+            }
+          }
+          ```
+          
+          **SCENARIO 4 - BWC legacy trade:**
+          ```json
+          {
+            "item": {
+              "id": "7da94a16-4101-45ad-99d9-3f8d0fea555a",
+              "nama": "AUDUSD 30 September 2026",
+              "tanggal": "2026-09-30",
+              "jam_entry": "23:00",
+              "jam_close": "03:00",
+              "duration_minutes": 240,
+              "duration_label": "4 jam"
+            }
+          }
+          ```
+          Note: tanggal_close field is missing (None) in DB, but duration_minutes correctly calculated as 240 with BWC +24h fallback.
+          
+          **SCENARIO 7 - Export CSV headers:**
+          ```
+          nama,tanggal,tanggal_close,pair,time_frame,metode,position,entry_price,sl_price,tp_price,sl_money,tp_money,rr,actual_r,jam_entry,jam_close,duration_minutes,duration_label,hasil,close_price,hasil_trade,emosi,reason,evaluasi,entry_screenshot_file_id,close_screenshot_file_id
+          ```
+          
+          **CONCLUSION:**
+          The Trading Journal Duration Recomputation patch is FULLY WORKING. All requirements met:
+          1. New field `tanggal_close` accepted on POST and PATCH, defaults to `tanggal` if not sent
+          2. `duration_minutes` correctly calculated as DateTime(tanggal_close, jam_close) - DateTime(tanggal, jam_entry)
+          3. New field `duration_label` returned with human-friendly format
+          4. BWC: legacy trades without `tanggal_close` use fallback logic (jam_close < jam_entry → +24h)
+          5. Export CSV/JSON include new fields
+          6. GET trades list includes new fields
+          7. Invalid tanggal_close gracefully handled
+          8. No breaking changes to existing endpoints
+          
+          Test files: /app/backend_test_tj_duration.py, /app/backend_test_tj_duration_detailed.py
+          All 10 tests passed (100%). Task marked as working=true, needs_retesting=false.
+
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      ✅ TRADING JOURNAL DURATION RECOMPUTATION TESTING COMPLETE - ALL 10 TESTS PASSED (100%)
+      
+      Tested Trading Journal duration recomputation changes comprehensively via:
+      - /app/backend_test_tj_duration.py (comprehensive test suite)
+      - /app/backend_test_tj_duration_detailed.py (detailed report with response bodies)
+      
+      **VERIFIED WORKING:**
+      1. POST trade with explicit tanggal_close cross-day (4 hours): duration_minutes=240, duration_label="4 jam" ✓
+      2. POST trade longer cross-day (28h15m): duration_minutes=1695, duration_label="1 hari 4 jam 15 menit" ✓
+      3. POST trade same-day without tanggal_close: tanggal_close defaults to tanggal, duration_minutes=90 ✓
+      4. BWC legacy trade (missing tanggal_close): duration_minutes=240 with +24h fallback ✓
+      5. PATCH tanggal_close: duration increased by 24*60 minutes ✓
+      6. Invalid tanggal_close: gracefully handled with fallback to tanggal ✓
+      7. Export JSON: includes tanggal_close and duration_label fields ✓
+      8. Export CSV: includes tanggal_close and duration_label headers ✓
+      9. GET trades list: includes tanggal_close and duration_label in all items ✓
+      10. Cleanup: all test trades deleted successfully ✓
+      
+      **CRITICAL SUCCESS:**
+      - Cross-day duration calculation working correctly (DateTime(tanggal_close, jam_close) - DateTime(tanggal, jam_entry))
+      - Human-friendly duration_label format working ("1 hari 4 jam 15 menit" / "4 jam" / "1 jam 30 menit")
+      - BWC fallback working for legacy trades without tanggal_close (jam_close < jam_entry → +24h)
+      - tanggal_close field accepted on POST and PATCH, defaults to tanggal if not sent or invalid
+      - Export endpoints include new fields
+      - No breaking changes to existing endpoints
+      
+      NO ISSUES FOUND. Backend implementation is correct and fully functional.
