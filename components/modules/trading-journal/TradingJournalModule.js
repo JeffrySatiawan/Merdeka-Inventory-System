@@ -337,6 +337,42 @@ function TradeEditor({ open, initial, masters, onClose, onSaved }) {
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const [saving, setSaving] = useState(false);
 
+  // MINIMAL PATCH — Risk % thd Modal (read-only).
+  // Modal Sebelum Trade:
+  //   - Trade existing yg sudah close → `initial.modal_sebelum` dari server
+  //     (ekuitas sebelum trade ini sesuai chain compounding).
+  //   - Trade baru (atau existing belum close) → modal real-time saat ini
+  //     (`modal_saat_ini` dari /api/tj/compounding) → ekuitas setelah semua
+  //     trade yg sudah close.
+  // Risk % = sl_money ÷ modal_sebelum × 100. Live mengikuti input SL.
+  const [compInfo, setCompInfo] = useState({ modal_saat_ini: null, modal_awal: null });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await tjApi('compounding');
+        if (!cancelled) setCompInfo({
+          modal_saat_ini: Number(r?.modal_saat_ini || 0),
+          modal_awal: Number(r?.config?.modal_awal || 0),
+        });
+      } catch { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+  const modalSebelum = (() => {
+    // Trade existing dgn hasil final → pakai modal_sebelum dari server
+    // (hitungan chain closed). Ini stabil & konsisten antar reload.
+    if (initial?.modal_sebelum != null && initial.hasil && ['TP', 'SL'].includes(String(initial.hasil))) {
+      return Number(initial.modal_sebelum);
+    }
+    // Belum close / trade baru → ekuitas saat ini.
+    return compInfo.modal_saat_ini;
+  })();
+  const slMoneyNum = Number(f.sl_money || 0);
+  const riskPct = (modalSebelum != null && modalSebelum > 0 && slMoneyNum > 0)
+    ? (slMoneyNum / modalSebelum) * 100
+    : null;
+
   // Live R & Actual R.
   const risk = f.position === 'BUY' ? Number(f.entry_price) - Number(f.sl_price) : Number(f.sl_price) - Number(f.entry_price);
   const reward = f.position === 'BUY' ? Number(f.tp_price) - Number(f.entry_price) : Number(f.entry_price) - Number(f.tp_price);
@@ -418,8 +454,14 @@ function TradeEditor({ open, initial, masters, onClose, onSaved }) {
                 <div className="h-8 flex items-center px-2 rounded border border-white/10 bg-white/[0.03] text-sm tabular-nums">{isFinite(rr) ? rr.toFixed(2) : '—'}</div>
               </div>
               <div><Label className="text-xs">Nilai uang SL ($)</Label><Input type="number" step="any" value={f.sl_money} onChange={(e) => set('sl_money', e.target.value)} className="h-8" /></div>
+              <div>
+                <Label className="text-xs" title="Risk % = Nilai Uang SL ÷ Modal Sebelum Trade × 100">Risk thd Modal (%)</Label>
+                <div className="h-8 flex items-center px-2 rounded border border-white/10 bg-white/[0.03] text-sm tabular-nums" title={modalSebelum != null ? `Modal Sebelum Trade: ${fmtIDR(modalSebelum)}` : 'Belum ada modal awal / trade sebelumnya'}>
+                  {riskPct != null && isFinite(riskPct) ? `${riskPct.toFixed(2)}%` : '—'}
+                </div>
+              </div>
               <div><Label className="text-xs">Nilai uang TP ($)</Label><Input type="number" step="any" value={f.tp_money} onChange={(e) => set('tp_money', e.target.value)} className="h-8" /></div>
-              <div></div><div></div>
+              <div></div>
             </div>
             <div><Label className="text-xs">Alasan Entry</Label><Textarea value={f.reason} onChange={(e) => set('reason', e.target.value)} rows={2} maxLength={2000} /></div>
             <ScreenshotPicker label="Screenshot Entry" value={f.entry_screenshot} onChange={(v) => set('entry_screenshot', v)} />
@@ -490,6 +532,8 @@ function TradeDetail({ open, trade, onClose, onEdit }) {
             ['R:R', fmtNum(trade.rr, 2)],
             ['SL ($)', fmtIDR(trade.sl_money)],
             ['TP ($)', fmtIDR(trade.tp_money)],
+            ['Modal Sebelum', trade.modal_sebelum != null ? fmtIDR(trade.modal_sebelum) : '—'],
+            ['Risk thd Modal', trade.risk_pct != null ? `${fmtNum(trade.risk_pct, 2)}%` : '—'],
             ['Close', trade.close_price != null ? fmtNum(trade.close_price, 5) : '—'],
             ['Hasil Trade', trade.hasil_trade != null ? fmtIDR(trade.hasil_trade) : '—'],
             ['Actual R', trade.actual_r != null ? fmtNum(trade.actual_r, 2) : '—'],
@@ -621,15 +665,23 @@ function CompoundingView() {
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead><tr className="text-left border-b border-white/10 [&>th]:py-2 [&>th]:px-2 [&>th]:text-[10px] [&>th]:uppercase [&>th]:text-muted-foreground">
-                <th>#</th><th>Tgl</th><th>Nama Trade</th><th className="text-right">Modal Sebelum</th><th className="text-right">Hasil</th><th className="text-right">%</th><th className="text-right">Modal Setelah</th>
+                <th>#</th><th>Tgl</th><th>Nama Trade</th>
+                <th className="text-right">Modal Sebelum</th>
+                <th className="text-right" title="Nilai Uang SL ($)">SL ($)</th>
+                <th className="text-right" title="Risk % = SL ÷ Modal Sebelum × 100">Risk %</th>
+                <th className="text-right">Hasil</th>
+                <th className="text-right">%</th>
+                <th className="text-right">Modal Setelah</th>
               </tr></thead>
               <tbody>
-                {data.rows.length === 0 ? <tr><td colSpan={7} className="py-4 text-center text-muted-foreground">Belum ada trade selesai.</td></tr> : data.rows.map((r) => (
+                {data.rows.length === 0 ? <tr><td colSpan={9} className="py-4 text-center text-muted-foreground">Belum ada trade selesai.</td></tr> : data.rows.map((r) => (
                   <tr key={r.trade_id} className="border-b border-white/5 [&>td]:py-1.5 [&>td]:px-2">
                     <td className="tabular-nums">{r.no}</td>
                     <td>{r.tanggal}</td>
                     <td className="font-medium">{r.nama}</td>
                     <td className="text-right tabular-nums">{fmtIDR(r.modal_sebelum)}</td>
+                    <td className="text-right tabular-nums text-muted-foreground">{r.sl_money ? fmtIDR(r.sl_money) : '—'}</td>
+                    <td className="text-right tabular-nums text-amber-300">{r.risk_pct != null ? `${fmtNum(r.risk_pct, 2)}%` : '—'}</td>
                     <td className={`text-right tabular-nums ${r.hasil_trade >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{fmtIDR(r.hasil_trade)}</td>
                     <td className={`text-right tabular-nums ${r.pct >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{fmtNum(r.pct, 2)}%</td>
                     <td className="text-right tabular-nums font-semibold">{fmtIDR(r.modal_setelah)}</td>
