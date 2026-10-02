@@ -1735,6 +1735,7 @@ function OMReportsView({ user }) {
     operator_id: '',
     expedition_id: '',
     status: '',
+    scan_cetak: '',
     q: '',
   });
   const [expeditions, setExpeditions] = useState([]);
@@ -1809,6 +1810,7 @@ function OMReportsView({ user }) {
           ['Total Resi Diserahkan', String(s.delivered || 0)],
           ['Selisih', String(s.difference || 0)],
           ['Success Rate', `${s.success_rate || 0}%`],
+          ['Scan Cetak Sudah / Belum', `${s.scan_cetak_done || 0} / ${s.scan_cetak_pending || 0}`],
         ],
         theme: 'grid',
         headStyles: { fillColor: [37, 99, 235] },
@@ -1819,6 +1821,7 @@ function OMReportsView({ user }) {
       const byExp = {};
       const byOp = {};
       (data.items || []).forEach((it) => {
+        if (it._virtual) return; // skip virtual rows (belum scan cetak)
         const ek = it.expedition_name || '-';
         if (!byExp[ek]) byExp[ek] = { packed: 0, delivered: 0 };
         byExp[ek].packed++;
@@ -1845,8 +1848,8 @@ function OMReportsView({ user }) {
         styles: { fontSize: 9 },
       });
 
-      // Belum diserahkan
-      const belum = (data.items || []).filter((x) => x.status === 'packed');
+      // Belum diserahkan (packed status only — tidak termasuk virtual belum scan cetak).
+      const belum = (data.items || []).filter((x) => !x._virtual && x.status === 'packed');
       if (belum.length > 0) {
         doc.addPage();
         doc.setFillColor(239, 68, 68);
@@ -1862,10 +1865,30 @@ function OMReportsView({ user }) {
             b.tracking_number,
             b.expedition_name,
             b.packed_by_name,
-            new Date(b.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }),
+            b.packed_at ? new Date(b.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '—',
           ]),
           theme: 'grid',
           headStyles: { fillColor: [239, 68, 68] },
+          styles: { fontSize: 8 },
+        });
+      }
+
+      // Belum Scan Cetak (virtual rows yang perlu ditindaklanjuti).
+      const belumScan = (data.items || []).filter((x) => x.scan_cetak_status === 'belum');
+      if (belumScan.length > 0) {
+        doc.addPage();
+        doc.setFillColor(244, 63, 94);
+        doc.rect(0, 0, 210, 14, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(12);
+        doc.text(`DAFTAR RESI BELUM SCAN CETAK (${belumScan.length})`, 14, 10);
+        doc.setTextColor(0, 0, 0);
+        autoTable(doc, {
+          startY: 20,
+          head: [['No. Resi', 'PDF Sumber']],
+          body: belumScan.map((b) => [b.tracking_number, b.ketoko_pdf_filename || '-']),
+          theme: 'grid',
+          headStyles: { fillColor: [244, 63, 94] },
           styles: { fontSize: 8 },
         });
       }
@@ -1878,15 +1901,16 @@ function OMReportsView({ user }) {
         doc.text(`Detail Transaksi (${items.length}${(data.items || []).length > 200 ? ' dari ' + data.items.length : ''})`, 14, 14);
         autoTable(doc, {
           startY: 20,
-          head: [['No. Resi', 'Ekspedisi', 'Operator', 'SKU', 'Item', 'Status', 'Packing']],
+          head: [['No. Resi', 'Scan Cetak', 'Ekspedisi', 'Operator', 'SKU', 'Item', 'Status', 'Packing']],
           body: items.map((x) => [
             x.tracking_number,
-            x.expedition_name,
-            x.packed_by_name,
-            x.sku_count,
-            x.item_count,
-            x.status === 'delivered' ? 'Diserahkan' : 'Menunggu Pickup',
-            new Date(x.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }),
+            x.scan_cetak_status === 'sudah' ? 'Sudah' : 'Belum',
+            x.expedition_name || '-',
+            x.packed_by_name || '-',
+            x._virtual ? '-' : x.sku_count,
+            x._virtual ? '-' : x.item_count,
+            x._virtual ? 'Perlu Scan Cetak' : (x.status === 'delivered' ? 'Diserahkan' : 'Menunggu Pickup'),
+            x.packed_at ? new Date(x.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '—',
           ]),
           theme: 'grid',
           headStyles: { fillColor: [37, 99, 235] },
@@ -1918,7 +1942,7 @@ function OMReportsView({ user }) {
       {/* Filters */}
       <Card className="border-white/10 bg-white/[0.02]">
         <CardContent className="pt-5">
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
             <div><Label className="text-xs">Dari</Label><Input type="date" value={filters.date_from} onChange={(e) => setFilters({ ...filters, date_from: e.target.value })} className="h-9" /></div>
             <div><Label className="text-xs">Sampai</Label><Input type="date" value={filters.date_to} onChange={(e) => setFilters({ ...filters, date_to: e.target.value })} className="h-9" /></div>
             <div><Label className="text-xs">Operator</Label>
@@ -1949,6 +1973,16 @@ function OMReportsView({ user }) {
                 </SelectContent>
               </Select>
             </div>
+            <div><Label className="text-xs">Scan Cetak</Label>
+              <Select value={filters.scan_cetak || 'all'} onValueChange={(v) => setFilters({ ...filters, scan_cetak: v === 'all' ? '' : v })}>
+                <SelectTrigger className="h-9"><SelectValue placeholder="Semua" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Semua</SelectItem>
+                  <SelectItem value="sudah">Sudah Scan Cetak</SelectItem>
+                  <SelectItem value="belum">Belum Scan Cetak</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="col-span-2 md:col-span-1 flex items-end">
               <Button onClick={apply} disabled={loading} className="w-full gap-2 h-9">
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Filter className="w-4 h-4" />} Terapkan
@@ -1960,11 +1994,16 @@ function OMReportsView({ user }) {
 
       {/* Summary */}
       {data?.summary && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
           <StatCard label="Total Dipacking" value={data.summary.packed} tone="blue" />
           <StatCard label="Diserahkan" value={data.summary.delivered} tone="emerald" />
           <StatCard label="Selisih" value={data.summary.difference} tone={data.summary.difference > 0 ? 'rose' : 'emerald'} />
           <StatCard label="Success Rate" value={`${data.summary.success_rate}%`} tone={data.summary.success_rate === 100 ? 'emerald' : 'amber'} />
+          <StatCard
+            label="Scan Cetak"
+            value={`${data.summary.scan_cetak_done || 0}/${data.summary.scan_cetak_done + data.summary.scan_cetak_pending || 0}`}
+            tone={(data.summary.scan_cetak_pending || 0) === 0 ? 'emerald' : 'rose'}
+          />
           <StatCard
             label="POS KETOKO"
             value={data.summary.ketoko_progress || `${data.summary.ketoko_done || 0}/${data.summary.ketoko_total || 0}`}
@@ -1990,6 +2029,7 @@ function OMReportsView({ user }) {
                 <thead className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
                   <tr className="border-b border-white/10">
                     <th className="py-2 pr-3">No. Resi</th>
+                    <th className="py-2 pr-3">Scan Cetak</th>
                     <th className="py-2 pr-3">Ekspedisi</th>
                     <th className="py-2 pr-3">Operator</th>
                     <th className="py-2 pr-3 text-right">SKU/Item</th>
@@ -2002,13 +2042,22 @@ function OMReportsView({ user }) {
                 </thead>
                 <tbody>
                   {(data.items || []).map((x) => (
-                    <tr key={x.id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                    <tr key={x.id} className={`border-b border-white/5 hover:bg-white/[0.02] ${x._virtual ? 'bg-rose-500/[0.03]' : ''}`}>
                       <td className="py-2 pr-3 font-mono">{x.tracking_number}</td>
-                      <td className="py-2 pr-3">{x.expedition_name}</td>
-                      <td className="py-2 pr-3">{x.packed_by_name}</td>
-                      <td className="py-2 pr-3 text-right tabular-nums">{x.sku_count}/{x.item_count}</td>
                       <td className="py-2 pr-3">
-                        {x.status === 'delivered' ? (
+                        {x.scan_cetak_status === 'sudah' ? (
+                          <Badge variant="outline" className="border-emerald-500/40 text-emerald-400 text-[9px]">✓ Sudah</Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-rose-500/40 text-rose-300 text-[9px]">Belum</Badge>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">{x.expedition_name || <span className="text-muted-foreground/50">—</span>}</td>
+                      <td className="py-2 pr-3">{x.packed_by_name || <span className="text-muted-foreground/50">—</span>}</td>
+                      <td className="py-2 pr-3 text-right tabular-nums">{x._virtual ? <span className="text-muted-foreground/50">—</span> : `${x.sku_count}/${x.item_count}`}</td>
+                      <td className="py-2 pr-3">
+                        {x._virtual ? (
+                          <Badge variant="outline" className="border-rose-500/30 text-rose-300/80 text-[9px]">Perlu Scan Cetak</Badge>
+                        ) : x.status === 'delivered' ? (
                           <Badge variant="outline" className="border-emerald-500/40 text-emerald-400 text-[9px]">Diserahkan</Badge>
                         ) : (
                           <Badge variant="outline" className="border-amber-500/40 text-amber-400 text-[9px]">Menunggu Pickup</Badge>
@@ -2047,12 +2096,14 @@ function OMReportsView({ user }) {
                           <span className="text-[10px] text-muted-foreground/50">—</span>
                         )}
                       </td>
-                      <td className="py-2 pr-3 text-muted-foreground">{new Date(x.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}</td>
+                      <td className="py-2 pr-3 text-muted-foreground">{x.packed_at ? new Date(x.packed_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '—'}</td>
                       <td className="py-2 pr-3 text-muted-foreground">
                         {x.delivered_at ? new Date(x.delivered_at).toLocaleString('id-ID', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '—'}
                       </td>
                       <td className="py-2 pr-3">
-                        {!x.photo_deleted ? (
+                        {x._virtual ? (
+                          <span className="text-muted-foreground/50">—</span>
+                        ) : !x.photo_deleted ? (
                           <a href={getPhotoUrl(x.id)} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline text-[10px]">Lihat</a>
                         ) : (
                           <ImageOff className="w-3.5 h-3.5 text-muted-foreground" />
