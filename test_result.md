@@ -1001,6 +1001,159 @@ backend:
           Test file: /app/backend_test_pdfs_limit_500.py
           All 5 tests passed (100%). Task marked as working=true, needs_retesting=false.
 
+  - task: "OM PDF Resi — GET /api/om/pdfs/:id/status endpoint for cross-device POS KETOKO"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          NEW ENDPOINT — GET /api/om/pdfs/:id/status for cross-device POS KETOKO:
+          
+          **PURPOSE:** Lightweight status endpoint for cross-device synchronization. Allows Device B to check if a PDF has been printed (on Device A) before enabling POS KETOKO input, without fetching the entire PDF list.
+          
+          **RESPONSE SHAPE:**
+          - Returns `{ item, server_time }`
+          - `item` includes: `id`, `filename`, `printed_at`, `scanned_at`, `detected_tracking_numbers`, `ketoko_resi` (with each entry having `scan_cetak_at` joined from `om_shipments.printed_at`), `ketoko_checked_count`, `ketoko_total_count`
+          - Projection excludes `_id`, `file_path`, `file_data` for lightweight response
+          
+          **IMPLEMENTATION:**
+          - Lines 1795-1816 in service.js
+          - Uses existing `hydrateKetokoResi()` and `attachScanCetakToKetokoResi()` helpers
+          - Auth: standard OM access (owner + staff with OM permission)
+          - Returns 404 if PDF not found
+          
+          **USE CASE:**
+          - Device A prints PDF → `printed_at` set
+          - Device B polls `/api/om/pdfs/:id/status` → sees `printed_at` populated → enables POS KETOKO button
+          - Each `ketoko_resi` entry shows `scan_cetak_at` (from `om_shipments.printed_at`) to indicate which tracking numbers have passed "Scan Cetak Resi" step
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 8 TEST CASES PASSED (100%) - GET /api/om/pdfs/:id/status endpoint FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for GET /api/om/pdfs/:id/status endpoint
+          **TEST FILE:** /app/backend_test_pdf_status.py
+          **TEST METHOD:** Python requests library with real API calls + MongoDB direct manipulation
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-10-02T01:16:50Z
+          **CREDENTIALS:** Owner owner/owner123, Staff cindy/cindy123
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: SETUP (3/3 passed)
+             - Created test PDF via POST /api/om/pdfs → 200 with id ✓
+             - Updated detected_tracking_numbers=['TESTST-A', 'TESTST-B'] via direct DB ✓
+             - Created ONE om_shipments for TESTST-A with printed_at=now() ✓
+          
+          ✅ TEST 2: CASE A - Not printed, response shape (12/12 checks passed)
+             - GET /api/om/pdfs/:id/status as Owner → 200 ✓
+             - item.id matches uploaded PDF id ✓
+             - item.printed_at is null (not yet printed) ✓
+             - item.ketoko_resi is array len 2 (TESTST-A, TESTST-B) ✓
+             - TESTST-A entry has scan_cetak_at populated (ISO string from om_shipments.printed_at) ✓
+             - TESTST-B entry has scan_cetak_at null (no shipment record) ✓
+             - No file_data key in response ✓
+             - No file_path key in response ✓
+             - No _id key in response ✓
+             - server_time is ISO string ✓
+          
+          ✅ TEST 3: CASE B - After print (1/1 passed)
+             - POST /api/om/pdfs/:id/mark-printed → 200 ✓
+             - GET /api/om/pdfs/:id/status → item.printed_at now populated (2026-10-02T01:16:53.463Z) ✓
+          
+          ✅ TEST 4: CASE C - 404 for nonexistent PDF (1/1 passed)
+             - GET /api/om/pdfs/nonexistent-id-12345/status → 404 ✓
+             - Error message: "PDF tidak ditemukan" ✓
+          
+          ✅ TEST 5: CASE D - Auth checks (2/2 passed)
+             - No token → 401 (unauthorized) ✓
+             - Staff token (cindy without OM module) → 403 (module guard working) ✓
+          
+          ✅ TEST 6: CASE E - Lightweight response (1/1 passed)
+             - Response payload size: 1248 bytes (< 10KB) ✓
+             - Verified lightweight even with 2 detected tracking numbers ✓
+          
+          ✅ TEST 7: CASE F - No side effects (2/2 passed)
+             - Called status endpoint 3× consecutively ✓
+             - item.ketoko_resi content identical across all 3 calls (no mutation) ✓
+             - DB check: No unexpected fields added to om_pdfs collection ✓
+          
+          ✅ TEST 8: CLEANUP (2/2 passed)
+             - Deleted test shipment (TESTST-A) via MongoDB ✓
+             - Deleted test PDF via DELETE /api/om/pdfs/:id → 200 ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Response Shape (VERIFIED):**
+             - Returns { item, server_time } structure
+             - item includes all required fields: id, filename, printed_at, scanned_at, detected_tracking_numbers, ketoko_resi, ketoko_checked_count, ketoko_total_count
+             - Excludes _id, file_path, file_data (lightweight projection)
+             - server_time is ISO 8601 timestamp
+          
+          2. **ketoko_resi Array (VERIFIED):**
+             - Array length matches detected_tracking_numbers length (2 items)
+             - Each entry has tracking_number field
+             - scan_cetak_at field populated from om_shipments.printed_at (joined via attachScanCetakToKetokoResi)
+             - TESTST-A has scan_cetak_at (shipment exists with printed_at)
+             - TESTST-B has scan_cetak_at=null (no shipment record)
+          
+          3. **printed_at Field (VERIFIED):**
+             - Initially null (before mark-printed)
+             - Populated after POST /api/om/pdfs/:id/mark-printed
+             - ISO 8601 timestamp format
+          
+          4. **Auth & Access Control (VERIFIED):**
+             - No token → 401 (unauthorized)
+             - Staff without order_management module → 403 (module guard)
+             - Owner token → 200 (allowed)
+             - Standard OM access control working correctly
+          
+          5. **Lightweight Response (VERIFIED):**
+             - Response size 1248 bytes (< 10KB)
+             - No file_data or file_path in response
+             - Suitable for polling/cross-device sync
+          
+          6. **No Side Effects (VERIFIED):**
+             - 3 consecutive calls return identical ketoko_resi content
+             - No mutations to database (verified via MongoDB query)
+             - Read-only endpoint as designed
+          
+          7. **Error Handling (VERIFIED):**
+             - 404 for nonexistent PDF with clear error message
+             - 401 for missing authentication
+             - 403 for missing module access
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Returns { item, server_time } structure
+          ✅ item includes all required fields (id, filename, printed_at, ketoko_resi, etc.)
+          ✅ ketoko_resi array has scan_cetak_at joined from om_shipments.printed_at
+          ✅ Projection excludes _id, file_path, file_data (lightweight)
+          ✅ printed_at reflects mark-printed status
+          ✅ 404 for nonexistent PDF
+          ✅ Auth guards working (401 no token, 403 no module)
+          ✅ Response size < 10KB (lightweight)
+          ✅ No side effects (read-only, no DB mutations)
+          
+          **CONCLUSION:**
+          The GET /api/om/pdfs/:id/status endpoint is FULLY WORKING. All 8 test cases passed:
+          1. ✅ Setup: Created test PDF, updated detected_tracking_numbers, created shipment
+          2. ✅ Case A: Not printed, response shape (12 checks)
+          3. ✅ Case B: After print, printed_at populated
+          4. ✅ Case C: 404 for nonexistent PDF
+          5. ✅ Case D: Auth checks (no token, staff without module)
+          6. ✅ Case E: Lightweight response (< 10KB)
+          7. ✅ Case F: No side effects (3× calls identical)
+          8. ✅ Cleanup: Deleted test data
+          
+          Test file: /app/backend_test_pdf_status.py
+          All 8 test cases passed (100%). Endpoint is production-ready for cross-device POS KETOKO synchronization.
+
+
 
   - task: "OM INSTAN/REGULER — service_type field + expedition selection moved to Serah Terima Kurir"
     implemented: true

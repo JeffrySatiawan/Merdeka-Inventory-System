@@ -1063,6 +1063,16 @@ export default function OMPdfsView({ user }) {
                   onDelete={() => del(it.id, it.filename)}
                   onOpenKetokoPanel={() => setKetokoResiTarget(it)}
                   onRescan={() => runAutoScan(it.id)}
+                  // Fetch fresh server status for this PDF (used before POS
+                  // KETOKO to avoid dependency on the device that printed).
+                  onRefreshStatus={async () => {
+                    const r = await omApi(`pdfs/${it.id}/status`);
+                    const fresh = r?.item;
+                    if (fresh?.id) {
+                      setItems((prev) => prev.map((x) => (x.id === fresh.id ? { ...x, ...fresh } : x)));
+                    }
+                    return fresh;
+                  }}
                 />
               ))}
             </div>
@@ -1100,7 +1110,7 @@ export default function OMPdfsView({ user }) {
 }
 
 // ---------- Row (with inline detected tracking numbers on the right) ----------
-function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKetokoPanel, onRescan }) {
+function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKetokoPanel, onRescan, onRefreshStatus }) {
   const detected = item.detected_tracking_numbers || [];
   const hasScan = !!item.scanned_at;
   const printed = !!item.printed_at;
@@ -1289,19 +1299,43 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
             this PDF have already been input to KETOKO. Clicking triggers
             the (unchanged) dynamic PIN verification. On correct PIN, the
             KetokoResiPanel opens with the resi list.
-            MINIMAL PATCH — tombol di-disable bila PDF belum PRINTED (seluruh
-            resi di PDF ini otomatis terkunci sampai dicetak). Per-resi
-            "Scan Cetak Resi" di-gate di dalam KetokoResiPanel. */}
+            MINIMAL PATCH — gate murni berbasis status SERVER (`printed_at`
+            + `scan_cetak_at` per resi). Agar POS KETOKO dapat diakses dari
+            SEMUA komputer/perangkat (tidak hanya yang Print), on click kita
+            fetch status terbaru dari server lebih dulu. Jika Komputer B
+            punya cache lama (printed_at masih null di local state), server
+            akan mengembalikan status sebenarnya dan tombol tetap dapat
+            dilanjutkan tanpa harus refresh seluruh list. */}
         <button
           type="button"
-          onClick={() => {
-            if (!printed) {
+          onClick={async () => {
+            if (pin !== null) return;
+            if (resiTotal === 0) {
+              toast.error('Belum ada resi terdeteksi di PDF ini');
+              return;
+            }
+            // Fetch fresh status dari server (lightweight single-doc GET).
+            // Ini membuat tombol POS KETOKO dapat dipakai dari SEMUA perangkat
+            // tanpa harus refresh seluruh list — status printed_at dibaca
+            // langsung dari server, bukan dari local cache.
+            let fresh = item;
+            try {
+              if (typeof onRefreshStatus === 'function') {
+                const r = await onRefreshStatus();
+                if (r && r.id) fresh = r;
+              }
+            } catch (_) { /* non-fatal — fallback ke local */ }
+            if (!fresh.printed_at) {
               toast.error('Resi belum dicetak. Silakan print resi terlebih dahulu.');
               return;
             }
-            if (pin === null) openPinPanel();
+            const freshResi = Array.isArray(fresh.ketoko_resi) ? fresh.ketoko_resi : [];
+            if (freshResi.length > 0 && freshResi.every((r) => !r?.scan_cetak_at)) {
+              toast.warning('Resi belum Scan Cetak Resi. Silakan lakukan Scan Cetak Resi terlebih dahulu.');
+            }
+            openPinPanel();
           }}
-          disabled={pin !== null || resiTotal === 0 || !printed}
+          disabled={pin !== null || resiTotal === 0}
           className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors shrink-0 select-none text-left ${
             pin !== null
               ? 'border-amber-400/60 bg-amber-500/15 text-amber-200 cursor-wait'
@@ -1317,7 +1351,7 @@ function PdfRow({ item, isOwner, isScanning, isNew, onOpen, onDelete, onOpenKeto
           }`}
           title={
             !printed
-              ? 'Resi belum dicetak. Silakan print resi terlebih dahulu.'
+              ? 'Klik untuk cek status terbaru (POS KETOKO dapat dilakukan dari perangkat mana pun bila PDF sudah dicetak + resi sudah scan cetak)'
               : resiTotal === 0
                 ? 'Belum ada resi terdeteksi di PDF ini'
                 : ketokoChecked
