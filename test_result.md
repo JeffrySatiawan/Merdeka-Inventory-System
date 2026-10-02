@@ -1153,6 +1153,170 @@ backend:
           Test file: /app/backend_test_pdf_status.py
           All 8 test cases passed (100%). Endpoint is production-ready for cross-device POS KETOKO synchronization.
 
+  - task: "OM PDF Resi — POST /api/om/pdfs/:id/scan-result barcode cap (1 label = max 1 barcode)"
+    implemented: true
+    working: true
+    file: "/app/lib/modules/order-management/service.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          PATCH — Barcode Cap (1 label = max 1 barcode):
+          
+          **BUSINESS RULE:** When barcode scanner detects multiple tracking numbers from a single-page PDF label, 
+          server now caps detected_tracking_numbers to pages_count (1 page = max 1 tracking number).
+          
+          **IMPLEMENTATION:**
+          - Lines 1999-2013 in service.js
+          - POST /api/om/pdfs/:id/scan-result now applies cap: if detected_via !== 'qr' AND pages_count > 0 AND 
+            trackingNumbers.length > pages_count, slice to first pages_count items
+          - QR path (detected_via === 'qr') is NOT capped (intentional — spec says don't touch QR logic)
+          - Cap only applies when pages_count is finite number > 0
+          - Existing dedup+trim+slice(200) safety cap stays unchanged
+          - Legacy stored PDFs are NOT re-processed; cap only applies to new scan-result POSTs
+          
+          **LOGIC:**
+          ```javascript
+          if (detectedVia !== 'qr' && Number.isFinite(pagesCount) && pagesCount > 0 && trackingNumbers.length > pagesCount) {
+            trackingNumbers = trackingNumbers.slice(0, pagesCount);
+          }
+          ```
+          
+          **BACKWARD COMPATIBILITY:**
+          - QR scan path unchanged (detected_via === 'qr' bypasses cap)
+          - When pages_count missing/0/invalid, no cap applied
+          - When detected_via missing, treated as non-qr (cap applies)
+          - Existing PDFs in DB not modified (cap only on new POSTs)
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 9 TESTS PASSED (100%) - Barcode cap feature FULLY WORKING.
+          
+          **TEST SCOPE:** Comprehensive backend testing for POST /api/om/pdfs/:id/scan-result barcode cap
+          **TEST FILE:** /app/backend_test_barcode_cap.py
+          **TEST METHOD:** Python requests library with real API calls
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **TEST DATE:** 2026-02-26T02:58:27Z
+          **CREDENTIALS:** owner / owner123
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: Cap applied when barcode path sends >pages_count (1/1 passed)
+             - POST scan-result with tracking_numbers=['261002HCA8T564','CM75550944558'], pages_count=1, detected_via='barcode'
+             - Expected: detected_tracking_numbers length === 1, value === ['261002HCA8T564'] (first wins)
+             - Response: detected_tracking_numbers=['261002HCA8T564'], pages_count=1, detected_via='barcode'
+             - ✅ Cap applied correctly (2 TNs → 1 TN, first wins)
+          
+          ✅ TEST 2: No-cap when within pages_count (1/1 passed)
+             - POST scan-result with tracking_numbers=['AAA111','BBB222'], pages_count=2, detected_via='barcode'
+             - Expected: detected_tracking_numbers length === 2 (both preserved)
+             - Response: detected_tracking_numbers=['AAA111', 'BBB222']
+             - ✅ No cap applied (2 TNs within pages_count=2)
+          
+          ✅ TEST 3: No-cap for QR path (1/1 passed)
+             - POST scan-result with tracking_numbers=['QRA','QRB','QRC'], pages_count=1, detected_via='qr'
+             - Expected: detected_tracking_numbers length === 3 (QR not capped)
+             - Response: detected_tracking_numbers=['QRA', 'QRB', 'QRC'], detected_via='qr'
+             - ✅ QR path not capped (3 TNs with pages_count=1)
+          
+          ✅ TEST 4a: No-cap when pages_count=0 (1/1 passed)
+             - POST scan-result with tracking_numbers=['X','Y'], pages_count=0, detected_via='barcode'
+             - Expected: detected_tracking_numbers length === 2 (cap only applies when pages_count > 0)
+             - Response: detected_tracking_numbers=['X', 'Y']
+             - ✅ No cap when pages_count=0
+          
+          ✅ TEST 4b: No-cap when pages_count missing (1/1 passed)
+             - POST scan-result with tracking_numbers=['Z1','Z2'], detected_via='barcode' (no pages_count key)
+             - Expected: detected_tracking_numbers length === 2
+             - Response: detected_tracking_numbers=['Z1', 'Z2']
+             - ✅ No cap when pages_count missing
+          
+          ✅ TEST 5: Dedup still works (1/1 passed)
+             - POST scan-result with tracking_numbers=['DUPX','DUPX','OTHR'], pages_count=5, detected_via='barcode'
+             - Expected: detected_tracking_numbers length === 2, order ['DUPX','OTHR']
+             - Response: detected_tracking_numbers=['DUPX', 'OTHR']
+             - ✅ Dedup working (3 TNs with 1 dup → 2 unique TNs)
+          
+          ✅ TEST 6: Idempotency/Persistence (1/1 passed)
+             - Re-run TEST 1 scenario, then GET /api/om/pdfs to verify persistence
+             - GET response: detected_tracking_numbers=['261002HCA8T564']
+             - ✅ Persistence verified (GET returns capped value)
+          
+          ✅ TEST 7: Null detected_via (1/1 passed)
+             - POST scan-result with tracking_numbers=['Z1','Z2'], pages_count=1 (no detected_via)
+             - Expected: treated as non-qr → cap applied → length === 1
+             - Response: detected_tracking_numbers=['Z1']
+             - ✅ Cap applied when detected_via missing (treated as non-qr)
+          
+          ✅ TEST 8: Cleanup (1/1 passed)
+             - DELETE /api/om/pdfs/{id} → 200
+             - ✅ Test PDF deleted successfully
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Cap Applied (VERIFIED):**
+             - When detected_via='barcode' AND pages_count=1 AND 2 TNs sent → only 1 TN stored
+             - First tracking number wins (slice(0, pages_count))
+             - Cap enforced at persistence layer (not just UI)
+          
+          2. **No Cap Within Limit (VERIFIED):**
+             - When pages_count=2 AND 2 TNs sent → both TNs stored
+             - No unnecessary capping when within limit
+          
+          3. **QR Path Bypass (VERIFIED):**
+             - When detected_via='qr' AND pages_count=1 AND 3 TNs sent → all 3 TNs stored
+             - QR logic intentionally NOT touched (spec requirement)
+             - 1 label can contain >1 QR (e.g., shipment QR + marketplace QR)
+          
+          4. **Edge Cases (VERIFIED):**
+             - pages_count=0 → no cap applied (cap only when pages_count > 0)
+             - pages_count missing → no cap applied (Number.isFinite check fails)
+             - detected_via missing → cap applied (treated as non-qr)
+          
+          5. **Dedup Preserved (VERIFIED):**
+             - Existing dedup logic still works (3 TNs with 1 dup → 2 unique TNs)
+             - Dedup happens before cap (Set deduplication, then slice)
+          
+          6. **Persistence (VERIFIED):**
+             - Capped value persists in database
+             - GET /api/om/pdfs returns capped value (no augmentation on read)
+             - Idempotent: re-POSTing same data produces same result
+          
+          7. **Backward Compatibility (VERIFIED):**
+             - QR path unchanged (detected_via='qr' bypasses cap)
+             - Missing pages_count → no cap (backward compatible)
+             - Missing detected_via → cap applied (safe default)
+             - Existing PDFs not modified (cap only on new POSTs)
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Cap applied when detected_via !== 'qr' AND pages_count > 0 AND TNs > pages_count
+          ✅ QR path (detected_via='qr') NOT capped (intentional)
+          ✅ No cap when pages_count=0 or missing
+          ✅ No cap when detected_via missing (treated as non-qr, cap applies)
+          ✅ Dedup still works (before cap)
+          ✅ Persistence verified (GET returns capped value)
+          ✅ First N tracking numbers win (slice(0, pages_count))
+          ✅ Backward compatible (QR unchanged, missing fields handled)
+          
+          **CONCLUSION:**
+          The barcode cap feature (1 label = max 1 barcode) is FULLY WORKING. All 9 tests passed:
+          1. ✅ Cap applied when barcode path sends >pages_count
+          2. ✅ No-cap when within pages_count
+          3. ✅ No-cap for QR path (detected_via='qr')
+          4. ✅ No-cap when pages_count=0
+          5. ✅ No-cap when pages_count missing
+          6. ✅ Dedup still works
+          7. ✅ Idempotency/Persistence verified
+          8. ✅ Null detected_via (cap applied)
+          9. ✅ Cleanup successful
+          
+          Test file: /app/backend_test_barcode_cap.py
+          All 9 tests passed (100%). Feature is production-ready.
+
+
 
 
   - task: "OM INSTAN/REGULER — service_type field + expedition selection moved to Serah Terima Kurir"
@@ -16605,6 +16769,35 @@ agent_communication:
       - Virtual rows suppressed when operator_id/expedition_id/status filters are set
       - Summary includes scan_cetak_done, scan_cetak_pending, scan_cetak_progress
       - No breaking changes to existing endpoints
+      
+      NO ISSUES FOUND. Backend implementation is correct and fully functional.
+
+  - agent: "testing"
+    message: |
+      ✅ OM PDF RESI BARCODE CAP TESTING COMPLETE - ALL 9 TESTS PASSED (100%)
+      
+      Tested POST /api/om/pdfs/:id/scan-result barcode cap feature (1 label = max 1 barcode) comprehensively via:
+      - /app/backend_test_barcode_cap.py (comprehensive test suite, 9 test scenarios)
+      
+      **VERIFIED WORKING:**
+      1. Cap applied when barcode path sends >pages_count (2 TNs → 1 TN, first wins) ✓
+      2. No-cap when within pages_count (2 TNs with pages_count=2 → both preserved) ✓
+      3. No-cap for QR path (3 TNs with pages_count=1, detected_via='qr' → all 3 preserved) ✓
+      4. No-cap when pages_count=0 (2 TNs → both preserved) ✓
+      5. No-cap when pages_count missing (2 TNs → both preserved) ✓
+      6. Dedup still works (3 TNs with 1 dup → 2 unique TNs) ✓
+      7. Idempotency/Persistence verified (GET returns capped value) ✓
+      8. Null detected_via (cap applied, treated as non-qr) ✓
+      9. Cleanup successful (test PDF deleted) ✓
+      
+      **CRITICAL SUCCESS:**
+      - Cap logic: if detected_via !== 'qr' AND pages_count > 0 AND TNs > pages_count → slice to first pages_count items
+      - QR path (detected_via='qr') intentionally NOT capped (spec requirement)
+      - Cap only applies when pages_count is finite number > 0
+      - Missing detected_via treated as non-qr (cap applies)
+      - Existing dedup+trim+slice(200) safety cap preserved
+      - Persistence verified: capped value stored in DB, GET returns capped value
+      - Backward compatible: QR unchanged, missing fields handled gracefully
       
       NO ISSUES FOUND. Backend implementation is correct and fully functional.
 
