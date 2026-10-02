@@ -340,12 +340,21 @@ async function scanQrFromPdfDoc(pdfDoc) {
         .map((it) => (typeof it?.str === 'string' ? it.str : ''))
         .join(' ')
         .replace(/\s+/g, ' ');
-      // Match labeled tracking numbers
+      // Match labeled tracking numbers.
+      // MINIMAL PATCH — HANYA ambil 1 match pertama per halaman/label. Bila
+      // 1 label (= 1 halaman PDF) memiliki >1 barcode berlabel yg cocok dgn
+      // regex, kita cukup pakai yg pertama. Mencegah 1 label menghasilkan
+      // 2 nomor resi. QR logic (Pass 1) & Pass 2b 1D barcode TIDAK diubah.
+      // BWC: PDF lama yg sudah tersimpan `detected_tracking_numbers` di DB
+      // tidak di-reprocess otomatis — patch ini hanya memengaruhi scan baru.
       let m;
       TRACKING_LABEL_RX.lastIndex = 0;
       while ((m = TRACKING_LABEL_RX.exec(text)) !== null) {
         const candidate = String(m[1] || '').trim().toUpperCase();
-        if (candidate && CANDIDATE_RX.test(candidate)) foundText.add(candidate);
+        if (candidate && CANDIDATE_RX.test(candidate)) {
+          foundText.add(candidate);
+          break; // 1 label → 1 hasil
+        }
       }
     } catch (_e) {
       /* per-page text extraction failure — continue */
