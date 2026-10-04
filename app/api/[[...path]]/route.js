@@ -12,12 +12,33 @@ import { handleTradingJournalRequest } from '@/lib/modules/trading-journal/servi
 
 // ---------- Mongo ----------
 let cachedClient = null;
+let _authIndexesEnsured = false;
+async function ensureAuthIndexes(db) {
+  // Idempotent — createIndex is a no-op bila index dgn key yg sama sudah ada.
+  // Cached per-process agar tidak dieksekusi tiap request. Fokus HANYA pada
+  // index yg dipakai saat login (lookup user by username + validasi session
+  // token). Index pre-existing lain TIDAK disentuh.
+  if (_authIndexesEnsured) return;
+  try { await db.collection('employees').createIndex({ username: 1 }, { unique: true }); } catch { /* idempotent */ }
+  try { await db.collection('sessions').createIndex({ token: 1 }, { unique: true }); } catch { /* idempotent */ }
+  _authIndexesEnsured = true;
+}
 async function getDb() {
   if (!cachedClient) {
-    cachedClient = new MongoClient(process.env.MONGO_URL);
+    // MINIMAL PRODUCTION FIX — explicit timeouts supaya koneksi lambat gagal
+    // cepat (bukan menggantung sampai 30 detik → menyebabkan HTTP 524 di
+    // ingress saat login). Nilai konservatif sesuai best-practice MongoDB
+    // Atlas / Node driver: 10s utk pemilihan server, 10s utk TCP connect.
+    cachedClient = new MongoClient(process.env.MONGO_URL, {
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+    });
     await cachedClient.connect();
   }
-  return cachedClient.db(process.env.DB_NAME || 'cycle_count');
+  const db = cachedClient.db(process.env.DB_NAME || 'cycle_count');
+  // Ensure login-critical indexes exist. Idempotent + cached per-process.
+  await ensureAuthIndexes(db);
+  return db;
 }
 
 // ---------- Helpers ----------
@@ -286,7 +307,14 @@ const SEED_PRODUCTS = [
   ['PRD00050', 'Risperidone 2mg', 'SLOW'],
 ];
 
+// MINIMAL PRODUCTION FIX — seed/migration hanya dijalankan SATU KALI per
+// cold boot. Setelah `_meta.seed.done === true` terdeteksi (atau seeding
+// baru selesai), request berikut skip semua DB-read di `ensureSeeded`.
+// Mencegah 2 query (`_meta.findOne` + `employees.find({modules exists:false})`)
+// pada setiap request yang bisa memperlambat login saat cold DB.
+let _seedChecked = false;
 async function ensureSeeded(db) {
+  if (_seedChecked) return;
   // Migration: convert old per_month fields to interval_days if needed
   const existing = await db.collection('cycle_settings').findOne({ id: 'default' });
   if (existing && existing.fast_per_month !== undefined && existing.fast_interval_days === undefined) {
@@ -316,7 +344,7 @@ async function ensureSeeded(db) {
     await db.collection('employees').updateOne({ id: e.id }, { $set: { modules: defaults } });
   }
 
-  if (meta?.done) return;
+  if (meta?.done) { _seedChecked = true; return; }
 
   // Employees
   const empDocs = SEED_EMPLOYEES.map((e) => ({
@@ -360,6 +388,7 @@ async function ensureSeeded(db) {
   await db.collection('sessions').createIndex({ token: 1 }, { unique: true });
 
   await db.collection('_meta').insertOne({ id: 'seed', done: true, at: new Date() });
+  _seedChecked = true;
 }
 
 // ---------- Task Generation ----------
