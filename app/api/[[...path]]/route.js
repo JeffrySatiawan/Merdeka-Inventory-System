@@ -665,6 +665,11 @@ async function handleRequest(req, path, method) {
   if (path === 'admin/backup/telegram' && (method === 'GET' || method === 'POST')) {
     const user = await getUserFromRequest(req);
     if (!user || user.role !== 'owner') return err('unauthorized — owner only', 401);
+    // Legacy backup selesai (switched 2026-10-06). Telegram lama sudah
+    // di-non-aktifkan. Endpoint ini tidak lagi beroperasi untuk mencegah
+    // WRITE/READ accidental ke storage lama.
+    return err('Backup legacy Telegram sudah selesai dan storage lama sudah di-non-aktifkan. Semua data baru otomatis masuk Telegram Baru.', 410);
+    // eslint-disable-next-line no-unreachable
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return err('TELEGRAM_BOT_TOKEN kosong di server', 500);
 
