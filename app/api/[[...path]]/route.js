@@ -668,77 +668,145 @@ async function handleRequest(req, path, method) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return err('TELEGRAM_BOT_TOKEN kosong di server', 500);
 
-    const tgGetFile = async (fileId) => {
-      const r = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
-      const j = await r.json();
-      if (!j.ok) throw new Error(`getFile gagal: ${j.description || JSON.stringify(j)}`);
-      if (!j.result?.file_path) throw new Error('getFile: file_path kosong');
-      return j.result;
-    };
-    const tgDownload = async (filePath) => {
-      const r = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
-      if (!r.ok) throw new Error(`download gagal HTTP ${r.status}`);
-      const ab = await r.arrayBuffer();
-      return Buffer.from(ab);
-    };
     const { Binary } = await import('mongodb');
-    const backupColl = async (collName, labelField) => {
-      const coll = db.collection(collName);
-      const total_telegram = await coll.countDocuments({ telegram_status: 'sent', telegram_file_id: { $ne: null } });
-      const already_backed = await coll.countDocuments({ telegram_status: 'sent', telegram_file_id: { $ne: null }, file_data: { $exists: true } });
-      const docs = await coll
-        .find(
-          { telegram_status: 'sent', telegram_file_id: { $ne: null }, file_data: { $exists: false } },
-          { projection: { _id: 0, id: 1, telegram_file_id: 1, mime: 1, filename: 1, [labelField]: 1 } }
-        )
-        .toArray();
-      let ok = 0, fail = 0;
-      const failures = [];
-      for (const d of docs) {
-        try {
-          const meta = await tgGetFile(d.telegram_file_id);
-          const buf = await tgDownload(meta.file_path);
-          await coll.updateOne(
-            { id: d.id },
-            {
-              $set: {
-                file_data: new Binary(buf),
-                backup_at: new Date(),
-                backup_source: 'telegram',
-                backup_size: buf.length,
-                backup_telegram_file_path: meta.file_path,
-              },
-            }
-          );
-          ok += 1;
-        } catch (e) {
-          fail += 1;
-          failures.push({ id: d.id, label: d[labelField] || d.filename || null, file_id: d.telegram_file_id, error: String(e?.message || e) });
-        }
-        await new Promise((r) => setTimeout(r, 60));
-      }
-      return { total_telegram, already_backed, attempted: docs.length, ok, fail, failures };
+    const jobs = db.collection('backup_jobs');
+
+    // Helper — serialize job for API response (drop internal _id).
+    const serJob = (j) => {
+      if (!j) return null;
+      const { _id, ...r } = j;
+      return r;
     };
 
-    const t0 = Date.now();
-    const faktur = await backupColl('mis_faktur', 'no_faktur');
-    const tj = await backupColl('tj_screenshots', 'filename');
-    const elapsed_sec = Number(((Date.now() - t0) / 1000).toFixed(1));
-    const total_ok = faktur.ok + tj.ok;
-    const total_fail = faktur.fail + tj.fail;
-    return json({
-      ok: total_fail === 0,
-      elapsed_sec,
+    // --- Background runner (fire-and-forget). Writes progress to DB. ---
+    const runJob = async (jobId) => {
+      const tgGetFile = async (fileId) => {
+        const r = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
+        const j = await r.json();
+        if (!j.ok) throw new Error(`getFile gagal: ${j.description || JSON.stringify(j)}`);
+        if (!j.result?.file_path) throw new Error('getFile: file_path kosong');
+        return j.result;
+      };
+      const tgDownload = async (filePath) => {
+        const r = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
+        if (!r.ok) throw new Error(`download gagal HTTP ${r.status}`);
+        const ab = await r.arrayBuffer();
+        return Buffer.from(ab);
+      };
+      const backupColl = async (collName, labelField, progressKey) => {
+        const coll = db.collection(collName);
+        const total_telegram = await coll.countDocuments({ telegram_status: 'sent', telegram_file_id: { $ne: null } });
+        const already_backed = await coll.countDocuments({ telegram_status: 'sent', telegram_file_id: { $ne: null }, file_data: { $exists: true } });
+        const docs = await coll.find(
+          { telegram_status: 'sent', telegram_file_id: { $ne: null }, file_data: { $exists: false } },
+          { projection: { _id: 0, id: 1, telegram_file_id: 1, mime: 1, filename: 1, [labelField]: 1 } }
+        ).toArray();
+        let ok = 0, fail = 0;
+        const failures = [];
+        // Init collection progress.
+        await jobs.updateOne({ id: jobId }, { $set: { [`summary.${progressKey}`]: { total_telegram, already_backed, attempted: docs.length, ok: 0, fail: 0, failures: [], processed: 0 }, updatedAt: new Date() } });
+        for (let i = 0; i < docs.length; i++) {
+          const d = docs[i];
+          try {
+            const meta = await tgGetFile(d.telegram_file_id);
+            const buf = await tgDownload(meta.file_path);
+            await coll.updateOne(
+              { id: d.id },
+              { $set: { file_data: new Binary(buf), backup_at: new Date(), backup_source: 'telegram', backup_size: buf.length, backup_telegram_file_path: meta.file_path } }
+            );
+            ok += 1;
+          } catch (e) {
+            fail += 1;
+            failures.push({ id: d.id, label: d[labelField] || d.filename || null, file_id: d.telegram_file_id, error: String(e?.message || e) });
+          }
+          // Update progress every file.
+          await jobs.updateOne({ id: jobId }, { $set: { [`summary.${progressKey}.ok`]: ok, [`summary.${progressKey}.fail`]: fail, [`summary.${progressKey}.failures`]: failures, [`summary.${progressKey}.processed`]: i + 1, updatedAt: new Date() } });
+          await new Promise((r) => setTimeout(r, 60));
+        }
+        return { total_telegram, already_backed, attempted: docs.length, ok, fail, failures };
+      };
+
+      const started = Date.now();
+      try {
+        await jobs.updateOne({ id: jobId }, { $set: { status: 'running', updatedAt: new Date() } });
+        const faktur = await backupColl('mis_faktur', 'no_faktur', 'mis_faktur');
+        const tj = await backupColl('tj_screenshots', 'filename', 'tj_screenshots');
+        const total_ok = faktur.ok + tj.ok;
+        const total_fail = faktur.fail + tj.fail;
+        const elapsed_sec = Number(((Date.now() - started) / 1000).toFixed(1));
+        await jobs.updateOne(
+          { id: jobId },
+          {
+            $set: {
+              status: total_fail === 0 ? 'done' : 'done_with_errors',
+              ok: total_ok === 0 && total_fail === 0 ? true : (total_fail === 0),
+              finished_at: new Date(),
+              elapsed_sec,
+              'summary.mis_faktur': { ...faktur, processed: faktur.attempted },
+              'summary.tj_screenshots': { ...tj, processed: tj.attempted },
+              'summary.total_berhasil': total_ok,
+              'summary.total_gagal': total_fail,
+              status_message: total_fail === 0
+                ? 'BACKUP SELESAI — seluruh file berhasil tersalin ke MongoDB server MIS.'
+                : 'BACKUP SELESAI DENGAN KEGAGALAN — lihat daftar failures di summary.',
+              updatedAt: new Date(),
+            },
+          }
+        );
+      } catch (e) {
+        await jobs.updateOne(
+          { id: jobId },
+          { $set: { status: 'failed', ok: false, finished_at: new Date(), status_message: 'Fatal: ' + String(e?.message || e), error: String(e?.message || e), updatedAt: new Date() } }
+        );
+      }
+    };
+
+    // --- GET: return specific job (?id=) or latest. ---
+    if (method === 'GET') {
+      const qid = url.searchParams.get('id');
+      let job = null;
+      if (qid) job = await jobs.findOne({ id: qid });
+      else job = await jobs.find({}).sort({ started_at: -1 }).limit(1).next();
+      return json({ job: serJob(job) });
+    }
+
+    // --- POST: start a new background job (idempotent: reuse running one). ---
+    // Safety: bila ada job 'running' > 30 menit (pod restart tengah job), mark
+    // sebagai 'failed(timeout)' lalu start baru.
+    const now = Date.now();
+    const existing = await jobs.find({ status: { $in: ['queued', 'running'] } }).sort({ started_at: -1 }).limit(1).next();
+    if (existing) {
+      const age = now - new Date(existing.started_at || existing.createdAt || now).getTime();
+      if (age < 30 * 60 * 1000) {
+        return json({ job: serJob(existing), status: 'already_running' });
+      }
+      await jobs.updateOne({ id: existing.id }, { $set: { status: 'failed', ok: false, finished_at: new Date(), status_message: 'Timeout — job berjalan >30 menit tanpa update (pod mungkin restart).', updatedAt: new Date() } });
+    }
+    const uuid = crypto.randomUUID();
+    const jobDoc = {
+      id: uuid,
+      type: 'telegram_to_mongo',
+      status: 'queued',
+      ok: null,
+      started_at: new Date(),
+      started_by: user.id,
+      started_by_name: user.name || user.username,
+      finished_at: null,
+      elapsed_sec: null,
+      status_message: 'Backup dimulai di background',
       summary: {
-        mis_faktur: faktur,
-        tj_screenshots: tj,
-        total_berhasil: total_ok,
-        total_gagal: total_fail,
+        mis_faktur: { total_telegram: null, already_backed: null, attempted: null, ok: 0, fail: 0, failures: [], processed: 0 },
+        tj_screenshots: { total_telegram: null, already_backed: null, attempted: null, ok: 0, fail: 0, failures: [], processed: 0 },
+        total_berhasil: 0,
+        total_gagal: 0,
       },
-      status: total_fail === 0
-        ? 'BACKUP SELESAI — seluruh file berhasil tersalin ke MongoDB server MIS.'
-        : 'BACKUP BELUM 100% SELESAI — lihat daftar failures di summary.',
-    });
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await jobs.insertOne(jobDoc);
+    // Fire-and-forget. Next.js long-lived container → background promise OK.
+    runJob(uuid).catch((e) => console.error('[backup] runJob fatal', e));
+    return json({ job: serJob(jobDoc), status: 'started' });
   }
 
   // ============================================================

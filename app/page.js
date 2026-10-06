@@ -723,25 +723,77 @@ function SidebarNav({ user, active, onNav, onLogout, onItemClick, onOpenPicker }
 }
 
 // Owner-only Backup Telegram button + inline progress dialog.
-// Memicu POST /api/admin/backup/telegram (logic backup existing). Idempotent:
-// aman dijalankan ulang; rekod yg sudah ter-backup di-skip.
+// Memicu POST /api/admin/backup/telegram (background job). Idempotent:
+// aman dijalankan ulang; rekod yg sudah ter-backup di-skip. Backup berjalan
+// di background server → tidak terkena HTTP 524 meskipun data banyak.
+// UI poll status job tiap 2 detik via GET /api/admin/backup/telegram?id=
 function BackupTelegramButton() {
   const [open, setOpen] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState(null);
+  const [job, setJob] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const [polling, setPolling] = useState(false);
   const [error, setError] = useState('');
+  const pollRef = useRef(null);
+
+  const isTerminal = (j) => j && ['done', 'done_with_errors', 'failed'].includes(j.status);
+
+  const stopPolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    setPolling(false);
+  };
+
+  const refreshStatus = async (jobId) => {
+    try {
+      const d = await api(`admin/backup/telegram?id=${encodeURIComponent(jobId)}`);
+      setJob(d.job || null);
+      if (isTerminal(d.job)) {
+        stopPolling();
+        const fails = d.job?.summary?.total_gagal || 0;
+        if (fails === 0) toast.success('Backup selesai');
+        else toast.warning(`Backup selesai dgn ${fails} gagal — lihat detail`);
+      }
+    } catch (e) {
+      // Non-fatal — lanjut polling.
+      console.warn('poll gagal', e.message);
+    }
+  };
+
+  const startPolling = (jobId) => {
+    stopPolling();
+    setPolling(true);
+    // immediate first fetch
+    refreshStatus(jobId);
+    pollRef.current = setInterval(() => refreshStatus(jobId), 2000);
+  };
+
+  // Saat dialog dibuka → cek apakah ada job yg masih running (dari sesi lain
+  // / tab lain / penutupan sebelumnya). Jika ya, tampilkan + resume polling.
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      try {
+        const d = await api('admin/backup/telegram');
+        if (d.job) {
+          setJob(d.job);
+          if (!isTerminal(d.job)) startPolling(d.job.id);
+        }
+      } catch { /* noop */ }
+    })();
+    return () => stopPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const run = async () => {
-    setRunning(true); setError(''); setResult(null);
+    setStarting(true); setError(''); setJob(null);
     try {
       const d = await api('admin/backup/telegram', { method: 'POST' });
-      setResult(d);
-      if ((d?.summary?.total_gagal || 0) === 0) toast.success('Backup selesai');
-      else toast.warning(`Backup selesai dgn ${d.summary.total_gagal} gagal — lihat detail`);
+      setJob(d.job);
+      toast.info(d.status === 'already_running' ? 'Backup sudah berjalan — melanjutkan monitor' : 'Backup dimulai di background');
+      startPolling(d.job.id);
     } catch (e) {
       setError(String(e.message || e));
-      toast.error('Backup gagal: ' + (e.message || e));
-    } finally { setRunning(false); }
+      toast.error('Gagal memulai backup: ' + (e.message || e));
+    } finally { setStarting(false); }
   };
 
   const Row = ({ k, v, tone }) => (
@@ -756,6 +808,7 @@ function BackupTelegramButton() {
       <Row k="Total di Telegram" v={data.total_telegram} />
       <Row k="Sudah ter-backup" v={data.already_backed} />
       <Row k="Diproses kali ini" v={data.attempted} />
+      <Row k="Sedang diproses" v={data.attempted != null ? `${data.processed || 0}/${data.attempted}` : (data.processed || 0)} tone="text-blue-300" />
       <Row k="Berhasil" v={data.ok} tone="text-emerald-300" />
       <Row k="Gagal" v={data.fail} tone={data.fail > 0 ? 'text-rose-300' : ''} />
       {data.failures?.length > 0 && (
@@ -766,6 +819,9 @@ function BackupTelegramButton() {
       )}
     </div>
   ) : null;
+
+  const running = job && !isTerminal(job);
+  const summary = job?.summary;
 
   return (
     <>
@@ -778,38 +834,51 @@ function BackupTelegramButton() {
         <Database className="w-4 h-4" />
         Backup Telegram
       </Button>
-      <Dialog open={open} onOpenChange={(o) => { if (!running) setOpen(o); }}>
+      <Dialog open={open} onOpenChange={(o) => setOpen(o)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Database className="w-4 h-4" /> Backup Telegram → MongoDB</DialogTitle>
-            <DialogDescription>Backup file MIS Faktur dan Trading Journal yang tersimpan di Telegram ke MongoDB server. Idempotent — aman dijalankan ulang.</DialogDescription>
+            <DialogDescription>Backup berjalan di background server. Boleh tutup jendela — proses tetap jalan. Idempotent, aman diulang.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            {!result && !error && (
+            {!job && !error && !starting && (
               <div className="text-sm text-muted-foreground">
-                Klik tombol di bawah untuk memulai. Proses dapat memakan waktu 1-2 menit untuk data yang banyak. Jendela ini tidak boleh ditutup selama proses berjalan.
+                Klik "Jalankan Backup" untuk memulai background job.
               </div>
             )}
+            {starting && <div className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Memulai…</div>}
             {error && <div className="p-3 rounded border border-rose-500/40 bg-rose-500/10 text-rose-200 text-sm">❌ {error}</div>}
-            {result && (
+            {job && (
               <div>
-                <div className={`px-3 py-2 rounded mb-3 text-sm font-semibold ${result.ok ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}>
-                  {result.ok ? '✅ ' : '⚠️ '}{result.status}
-                  <span className="text-xs font-normal ml-2 opacity-70">· {result.elapsed_sec}s</span>
+                <div className={`px-3 py-2 rounded mb-3 text-sm font-semibold flex items-center gap-2 ${
+                  running ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                  : job.status === 'done' ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                  : job.status === 'done_with_errors' ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                  : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                }`}>
+                  {running && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {job.status === 'done' && '✅ '}
+                  {job.status === 'done_with_errors' && '⚠️ '}
+                  {job.status === 'failed' && '❌ '}
+                  {job.status_message || `Status: ${job.status}`}
+                  {job.elapsed_sec != null && <span className="text-xs font-normal opacity-70">· {job.elapsed_sec}s</span>}
                 </div>
-                <Block title="MIS Faktur" data={result.summary?.mis_faktur} />
-                <Block title="Trading Journal Screenshots" data={result.summary?.tj_screenshots} />
+                <Block title="MIS Faktur" data={summary?.mis_faktur} />
+                <Block title="Trading Journal Screenshots" data={summary?.tj_screenshots} />
                 <div className="flex justify-between text-sm border-t border-white/10 pt-2 mt-1">
-                  <div><span className="text-muted-foreground">TOTAL BERHASIL</span> <b className="text-emerald-300 ml-1 tabular-nums">{result.summary?.total_berhasil}</b></div>
-                  <div><span className="text-muted-foreground">TOTAL GAGAL</span> <b className={`ml-1 tabular-nums ${result.summary?.total_gagal > 0 ? 'text-rose-300' : 'text-emerald-300'}`}>{result.summary?.total_gagal}</b></div>
+                  <div><span className="text-muted-foreground">TOTAL BERHASIL</span> <b className="text-emerald-300 ml-1 tabular-nums">{summary?.total_berhasil ?? 0}</b></div>
+                  <div><span className="text-muted-foreground">TOTAL GAGAL</span> <b className={`ml-1 tabular-nums ${(summary?.total_gagal || 0) > 0 ? 'text-rose-300' : 'text-emerald-300'}`}>{summary?.total_gagal ?? 0}</b></div>
                 </div>
+                {polling && <div className="text-[11px] text-muted-foreground mt-2 italic">Memperbarui status tiap 2 detik…</div>}
               </div>
             )}
           </div>
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={running}>Tutup</Button>
-            <Button onClick={run} disabled={running} className="gap-1">
-              {running ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Backup berjalan…</> : (result ? 'Jalankan Lagi' : 'Jalankan Backup')}
+            <Button variant="outline" onClick={() => setOpen(false)}>Tutup</Button>
+            <Button onClick={run} disabled={starting || running} className="gap-1">
+              {starting ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Memulai…</> :
+                running ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Backup berjalan…</> :
+                (job ? 'Jalankan Lagi' : 'Jalankan Backup')}
             </Button>
           </DialogFooter>
         </DialogContent>
