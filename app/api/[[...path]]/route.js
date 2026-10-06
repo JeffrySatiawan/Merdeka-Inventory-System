@@ -650,6 +650,98 @@ async function handleRequest(req, path, method) {
   }
 
   // ============================================================
+  // ADMIN BACKUP — Telegram → MongoDB (owner only, one-shot, idempotent).
+  // Logic persis sama dengan /app/scripts/backup_telegram_to_mongo.js:
+  //   - Enumerate mis_faktur + tj_screenshots dgn telegram_status='sent'
+  //     AND file_data MISSING.
+  //   - Download file dari Telegram → simpan ke MongoDB field `file_data`
+  //     (Binary) + metadata backup. Preserve semua field Telegram.
+  //   - Tidak ubah UI/workflow/schema/Telegram config.
+  //   - Idempotent: rerun aman — rekod yg sudah ter-backup di-skip.
+  // Dibuka sbg GET supaya mudah dipicu via paste URL di browser (Owner yg
+  // sudah login — session cookie di-attach otomatis). Rate-limit internal
+  // 60ms antar fetch ke Telegram.
+  // ============================================================
+  if (path === 'admin/backup/telegram' && (method === 'GET' || method === 'POST')) {
+    const user = await getUserFromRequest(req);
+    if (!user || user.role !== 'owner') return err('unauthorized — owner only', 401);
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return err('TELEGRAM_BOT_TOKEN kosong di server', 500);
+
+    const tgGetFile = async (fileId) => {
+      const r = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
+      const j = await r.json();
+      if (!j.ok) throw new Error(`getFile gagal: ${j.description || JSON.stringify(j)}`);
+      if (!j.result?.file_path) throw new Error('getFile: file_path kosong');
+      return j.result;
+    };
+    const tgDownload = async (filePath) => {
+      const r = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`);
+      if (!r.ok) throw new Error(`download gagal HTTP ${r.status}`);
+      const ab = await r.arrayBuffer();
+      return Buffer.from(ab);
+    };
+    const { Binary } = await import('mongodb');
+    const backupColl = async (collName, labelField) => {
+      const coll = db.collection(collName);
+      const total_telegram = await coll.countDocuments({ telegram_status: 'sent', telegram_file_id: { $ne: null } });
+      const already_backed = await coll.countDocuments({ telegram_status: 'sent', telegram_file_id: { $ne: null }, file_data: { $exists: true } });
+      const docs = await coll
+        .find(
+          { telegram_status: 'sent', telegram_file_id: { $ne: null }, file_data: { $exists: false } },
+          { projection: { _id: 0, id: 1, telegram_file_id: 1, mime: 1, filename: 1, [labelField]: 1 } }
+        )
+        .toArray();
+      let ok = 0, fail = 0;
+      const failures = [];
+      for (const d of docs) {
+        try {
+          const meta = await tgGetFile(d.telegram_file_id);
+          const buf = await tgDownload(meta.file_path);
+          await coll.updateOne(
+            { id: d.id },
+            {
+              $set: {
+                file_data: new Binary(buf),
+                backup_at: new Date(),
+                backup_source: 'telegram',
+                backup_size: buf.length,
+                backup_telegram_file_path: meta.file_path,
+              },
+            }
+          );
+          ok += 1;
+        } catch (e) {
+          fail += 1;
+          failures.push({ id: d.id, label: d[labelField] || d.filename || null, file_id: d.telegram_file_id, error: String(e?.message || e) });
+        }
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      return { total_telegram, already_backed, attempted: docs.length, ok, fail, failures };
+    };
+
+    const t0 = Date.now();
+    const faktur = await backupColl('mis_faktur', 'no_faktur');
+    const tj = await backupColl('tj_screenshots', 'filename');
+    const elapsed_sec = Number(((Date.now() - t0) / 1000).toFixed(1));
+    const total_ok = faktur.ok + tj.ok;
+    const total_fail = faktur.fail + tj.fail;
+    return json({
+      ok: total_fail === 0,
+      elapsed_sec,
+      summary: {
+        mis_faktur: faktur,
+        tj_screenshots: tj,
+        total_berhasil: total_ok,
+        total_gagal: total_fail,
+      },
+      status: total_fail === 0
+        ? 'BACKUP SELESAI — seluruh file berhasil tersalin ke MongoDB server MIS.'
+        : 'BACKUP BELUM 100% SELESAI — lihat daftar failures di summary.',
+    });
+  }
+
+  // ============================================================
   // Owner Self-Service (profile edit + password recovery) — APPEND-ONLY.
   // Staff auth / permissions / login-existing tidak disentuh.
   // In-memory rate limiter & recovery-token store (per-process, reset saat
