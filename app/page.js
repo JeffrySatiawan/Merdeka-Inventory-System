@@ -712,6 +712,7 @@ function SidebarNav({ user, active, onNav, onLogout, onItemClick, onOpenPicker }
             <div className="text-[10px] text-muted-foreground capitalize">{user.role}</div>
           </div>
         </div>
+        {user.role === 'owner' && <BackupTelegramButton />}
         <Button variant="ghost" onClick={onLogout} className="w-full justify-start gap-2 text-muted-foreground hover:text-white">
           <LogOut className="w-4 h-4" />
           Keluar
@@ -720,6 +721,103 @@ function SidebarNav({ user, active, onNav, onLogout, onItemClick, onOpenPicker }
     </div>
   );
 }
+
+// Owner-only Backup Telegram button + inline progress dialog.
+// Memicu POST /api/admin/backup/telegram (logic backup existing). Idempotent:
+// aman dijalankan ulang; rekod yg sudah ter-backup di-skip.
+function BackupTelegramButton() {
+  const [open, setOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  const run = async () => {
+    setRunning(true); setError(''); setResult(null);
+    try {
+      const d = await api('admin/backup/telegram', { method: 'POST' });
+      setResult(d);
+      if ((d?.summary?.total_gagal || 0) === 0) toast.success('Backup selesai');
+      else toast.warning(`Backup selesai dgn ${d.summary.total_gagal} gagal — lihat detail`);
+    } catch (e) {
+      setError(String(e.message || e));
+      toast.error('Backup gagal: ' + (e.message || e));
+    } finally { setRunning(false); }
+  };
+
+  const Row = ({ k, v, tone }) => (
+    <div className="flex justify-between py-0.5 text-[13px]">
+      <span className="text-muted-foreground">{k}</span>
+      <span className={`font-semibold tabular-nums ${tone || ''}`}>{v ?? '—'}</span>
+    </div>
+  );
+  const Block = ({ title, data }) => data ? (
+    <div className="rounded-md border border-white/10 bg-white/[0.03] p-3 mb-2">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-blue-300 mb-1">{title}</div>
+      <Row k="Total di Telegram" v={data.total_telegram} />
+      <Row k="Sudah ter-backup" v={data.already_backed} />
+      <Row k="Diproses kali ini" v={data.attempted} />
+      <Row k="Berhasil" v={data.ok} tone="text-emerald-300" />
+      <Row k="Gagal" v={data.fail} tone={data.fail > 0 ? 'text-rose-300' : ''} />
+      {data.failures?.length > 0 && (
+        <details className="mt-2">
+          <summary className="text-[11px] text-rose-300 cursor-pointer">Daftar kegagalan ({data.failures.length})</summary>
+          <pre className="mt-1 p-2 bg-black/40 text-[10px] text-rose-200 rounded max-h-40 overflow-auto">{JSON.stringify(data.failures, null, 2)}</pre>
+        </details>
+      )}
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        onClick={() => setOpen(true)}
+        className="w-full justify-start gap-2 text-muted-foreground hover:text-white mb-1"
+        title="Backup file MIS Faktur & Trading Journal dari Telegram ke MongoDB server"
+      >
+        <Database className="w-4 h-4" />
+        Backup Telegram
+      </Button>
+      <Dialog open={open} onOpenChange={(o) => { if (!running) setOpen(o); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Database className="w-4 h-4" /> Backup Telegram → MongoDB</DialogTitle>
+            <DialogDescription>Backup file MIS Faktur dan Trading Journal yang tersimpan di Telegram ke MongoDB server. Idempotent — aman dijalankan ulang.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {!result && !error && (
+              <div className="text-sm text-muted-foreground">
+                Klik tombol di bawah untuk memulai. Proses dapat memakan waktu 1-2 menit untuk data yang banyak. Jendela ini tidak boleh ditutup selama proses berjalan.
+              </div>
+            )}
+            {error && <div className="p-3 rounded border border-rose-500/40 bg-rose-500/10 text-rose-200 text-sm">❌ {error}</div>}
+            {result && (
+              <div>
+                <div className={`px-3 py-2 rounded mb-3 text-sm font-semibold ${result.ok ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}>
+                  {result.ok ? '✅ ' : '⚠️ '}{result.status}
+                  <span className="text-xs font-normal ml-2 opacity-70">· {result.elapsed_sec}s</span>
+                </div>
+                <Block title="MIS Faktur" data={result.summary?.mis_faktur} />
+                <Block title="Trading Journal Screenshots" data={result.summary?.tj_screenshots} />
+                <div className="flex justify-between text-sm border-t border-white/10 pt-2 mt-1">
+                  <div><span className="text-muted-foreground">TOTAL BERHASIL</span> <b className="text-emerald-300 ml-1 tabular-nums">{result.summary?.total_berhasil}</b></div>
+                  <div><span className="text-muted-foreground">TOTAL GAGAL</span> <b className={`ml-1 tabular-nums ${result.summary?.total_gagal > 0 ? 'text-rose-300' : 'text-emerald-300'}`}>{result.summary?.total_gagal}</b></div>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={running}>Tutup</Button>
+            <Button onClick={run} disabled={running} className="gap-1">
+              {running ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Backup berjalan…</> : (result ? 'Jalankan Lagi' : 'Jalankan Backup')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 
 function Sidebar(props) {
   return (

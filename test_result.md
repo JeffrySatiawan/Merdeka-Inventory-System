@@ -17144,3 +17144,216 @@ agent_communication:
       
       NO CRITICAL ISSUES FOUND. Page is production-ready.
 
+
+frontend:
+  - task: "Owner-only Backup Telegram button in sidebar footer"
+    implemented: true
+    working: true
+    file: "/app/app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ ALL 8 TESTS PASSED (100%) - Backup Telegram button in sidebar fully functional.
+          
+          **TEST SCOPE:** Comprehensive UI testing for BackupTelegramButton component in sidebar footer
+          **TEST METHOD:** Playwright browser automation with real user flows (desktop view)
+          **BASE URL:** https://absensi-foundation.preview.emergentagent.com
+          **CREDENTIALS:** Owner (owner/owner123), Staff (cindy/cindy123)
+          **TEST DATE:** 2026-10-06
+          **CONTEXT:** Feature migrated from standalone /backup-telegram page to sidebar button
+          
+          **TEST RESULTS:**
+          
+          ✅ TEST 1: STAFF DOES NOT SEE BUTTON (PASS)
+             - Login as cindy/cindy123 → staff role ✓
+             - Navigate to Cycle Count module → sidebar visible ✓
+             - Sidebar footer shows: "Ganti Module", "Refresh Aplikasi", user chip (Cindy/Staff), "Keluar" ✓
+             - "Backup Telegram" button NOT present in sidebar ✓
+             - Screenshot: test1_staff_sidebar_desktop.png ✓
+          
+          ✅ TEST 2: OWNER SEES BUTTON (PASS)
+             - Login as owner/owner123 → owner role ✓
+             - Navigate to Cycle Count module → sidebar visible ✓
+             - Sidebar footer shows: "Ganti Module", "Refresh Aplikasi", user chip (Owner/Owner), "Backup Telegram", "Keluar" ✓
+             - "Backup Telegram" button IS VISIBLE for owner ✓
+             - Database icon (svg) present in button ✓
+             - Button positioned ABOVE "Keluar" button (correct placement) ✓
+             - Screenshot: test2_owner_sidebar_desktop.png ✓
+          
+          ✅ TEST 3: DIALOG OPENS (PASS)
+             - Click "Backup Telegram" button → dialog opens ✓
+             - Dialog title: "Backup Telegram → MongoDB" ✓
+             - Description contains "Idempotent" keyword ✓
+             - "Tutup" button present ✓
+             - "Jalankan Backup" button present ✓
+             - Screenshot: test3_dialog_opened.png ✓
+          
+          ✅ TEST 4: BACKUP RUNS (PASS)
+             - Click "Jalankan Backup" → backup starts ✓
+             - Button becomes disabled with "Backup berjalan…" text ✓
+             - Backup completes successfully (within 60s timeout) ✓
+             - Status banner: "✅ BACKUP SELESAI — seluruh file berhasil tersalin ke MongoDB server MIS." ✓
+             - MIS Faktur block present with rows:
+               * Total di Telegram: 5 ✓
+               * Sudah ter-backup: 5 ✓
+               * Diproses kali ini: 0 ✓
+               * Berhasil: 0 ✓
+               * Gagal: 0 ✓
+             - Trading Journal Screenshots block present (all 0s) ✓
+             - Footer totals: "TOTAL BERHASIL: 0" and "TOTAL GAGAL: 0" ✓
+             - Button label changed to "Jalankan Lagi" ✓
+             - Screenshot: test4_backup_result.png ✓
+          
+          ✅ TEST 5: IDEMPOTENT RE-RUN (PASS)
+             - Click "Jalankan Lagi" → backup runs again ✓
+             - Backup completes successfully ✓
+             - Result area displayed with same structure ✓
+             - "Diproses kali ini: 0" confirms idempotency (everything already backed up) ✓
+             - Screenshot: test5_rerun_result.png ✓
+          
+          ✅ TEST 6: CLOSE DIALOG (PASS)
+             - Click "Tutup" button → dialog closes ✓
+             - Dialog no longer visible in DOM ✓
+             - User still logged in (Owner chip visible) ✓
+             - Can navigate normally ✓
+             - Screenshot: test6_dialog_closed.png ✓
+          
+          ✅ TEST 7: DOES NOT BREAK OTHER PAGES (PASS)
+             - Navigate to Payroll → page loads correctly ✓
+             - Navigate to MIS Faktur → page loads correctly ✓
+             - Navigate to Order Management → page loads correctly ✓
+             - All modules functional, no breaking changes ✓
+             - Screenshot: test7_other_pages_desktop.png ✓
+          
+          ✅ TEST 8: /backup-telegram PAGE DELETED (PASS)
+             - Navigate to /backup-telegram → HTTP 404 ✓
+             - Page shows "404 - This page could not be found." ✓
+             - Confirms standalone page was deleted as expected ✓
+             - Screenshot: test8_404_page.png ✓
+          
+          **VERIFICATION DETAILS:**
+          
+          1. **Role-Based Visibility (VERIFIED):**
+             - Staff (cindy): Button NOT visible in sidebar ✓
+             - Owner (owner): Button IS visible in sidebar ✓
+             - Conditional rendering: `{user.role === 'owner' && <BackupTelegramButton />}` working correctly ✓
+          
+          2. **Button Placement (VERIFIED):**
+             - Located in sidebar footer (line 715 in page.js) ✓
+             - Positioned ABOVE "Keluar" button (correct order) ✓
+             - Database icon present (from lucide-react) ✓
+             - Button text: "Backup Telegram" ✓
+          
+          3. **Dialog Functionality (VERIFIED):**
+             - Opens on button click ✓
+             - Title: "Backup Telegram → MongoDB" ✓
+             - Description mentions idempotency ✓
+             - Two buttons: "Tutup" (close) and "Jalankan Backup" (run) ✓
+             - Dialog cannot be closed while backup is running (disabled state) ✓
+          
+          4. **Backup Execution (VERIFIED):**
+             - Calls POST /api/admin/backup/telegram with Bearer auth ✓
+             - Uses existing api() helper (line 80-91 in page.js) ✓
+             - Button shows spinner and "Backup berjalan…" during execution ✓
+             - Result displayed inline with status banner ✓
+             - Two summary blocks: MIS Faktur + Trading Journal Screenshots ✓
+             - Each block shows: Total di Telegram, Sudah ter-backup, Diproses kali ini, Berhasil, Gagal ✓
+             - Footer shows: TOTAL BERHASIL and TOTAL GAGAL ✓
+             - "Daftar kegagalan" details shown if failures exist ✓
+          
+          5. **Idempotency (VERIFIED):**
+             - Re-run allowed via "Jalankan Lagi" button ✓
+             - Second run shows "Diproses kali ini: 0" (everything already backed up) ✓
+             - No errors on re-run ✓
+             - Safe to run multiple times ✓
+          
+          6. **Migration from Standalone Page (VERIFIED):**
+             - Old /backup-telegram page deleted (404 confirmed) ✓
+             - Functionality moved to sidebar button ✓
+             - Same backend endpoint used: POST /api/admin/backup/telegram ✓
+             - Same result structure and display ✓
+          
+          7. **No Breaking Changes (VERIFIED):**
+             - All other modules load correctly (Payroll, MIS Faktur, Order Management) ✓
+             - Sidebar navigation works normally ✓
+             - No interference with existing features ✓
+          
+          **CRITICAL SUCCESS CRITERIA (ALL MET):**
+          ✅ Staff does NOT see "Backup Telegram" button (role-based visibility)
+          ✅ Owner sees "Backup Telegram" button in sidebar footer
+          ✅ Button has Database icon and is positioned above "Keluar"
+          ✅ Dialog opens with title, description, and action buttons
+          ✅ Backup runs successfully with spinner and status updates
+          ✅ Result displays status banner, two summary blocks, and footer totals
+          ✅ Idempotent re-run works (attempted=0 on second run)
+          ✅ Dialog closes correctly, user remains logged in
+          ✅ Other pages load correctly (no breaking changes)
+          ✅ /backup-telegram page deleted (404)
+          
+          **BACKEND INTEGRATION (VERIFIED):**
+          - Endpoint: POST /api/admin/backup/telegram (lines 665-742 in route.js)
+          - Owner-only guard: `if (!user || user.role !== 'owner') return err('unauthorized — owner only', 401)`
+          - Response structure:
+            * ok: boolean (true if total_fail === 0)
+            * elapsed_sec: number
+            * summary: { mis_faktur, tj_screenshots, total_berhasil, total_gagal }
+            * status: string message
+          - Backup logic: Downloads files from Telegram via bot API, stores in MongoDB as Binary
+          - Idempotent: Skips files that already have file_data field
+          
+          **CONCLUSION:**
+          The BackupTelegramButton component in sidebar is FULLY WORKING and production-ready. All requirements met:
+          1. Staff does NOT see button (role-based visibility working)
+          2. Owner sees button with Database icon, positioned above "Keluar"
+          3. Dialog opens with all expected elements
+          4. Backup runs successfully with detailed result display
+          5. Idempotent re-run works correctly
+          6. Dialog closes properly, user remains logged in
+          7. No breaking changes to other pages
+          8. Old /backup-telegram page deleted (404)
+          
+          **SCREENSHOTS:**
+          - test1_staff_sidebar_desktop.png (staff sidebar without button)
+          - test2_owner_sidebar_desktop.png (owner sidebar with button)
+          - test3_dialog_opened.png (dialog with title and buttons)
+          - test4_backup_result.png (backup result with summary blocks)
+          - test5_rerun_result.png (idempotent re-run result)
+          - test6_dialog_closed.png (dialog closed, user still logged in)
+          - test7_other_pages_desktop.png (other pages working)
+          - test8_404_page.png (/backup-telegram returns 404)
+          
+          All tests passed. Task marked as working=true, needs_retesting=false.
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      ✅ BACKUP TELEGRAM BUTTON IN SIDEBAR TESTING COMPLETE - ALL 8 TESTS PASSED (100%)
+      
+      Tested BackupTelegramButton component in sidebar footer comprehensively via Playwright browser automation.
+      
+      **VERIFIED WORKING:**
+      1. Staff does NOT see button: Cindy (staff) → no "Backup Telegram" button in sidebar ✓
+      2. Owner sees button: Owner login → "Backup Telegram" button visible in sidebar footer, above "Keluar" ✓
+      3. Dialog opens: Click button → dialog with title, description, "Tutup", "Jalankan Backup" ✓
+      4. Backup runs: Click "Jalankan Backup" → spinner → result with status banner, MIS Faktur block (5 total, 5 backed, 0 attempted), Trading Journal Screenshots block (all 0s), footer totals ✓
+      5. Idempotent re-run: Click "Jalankan Lagi" → runs again → "Diproses kali ini: 0" ✓
+      6. Dialog closes: Click "Tutup" → dialog closes, user still logged in ✓
+      7. No breakage: Payroll, MIS Faktur, Order Management pages load correctly ✓
+      8. Old page deleted: /backup-telegram returns 404 ✓
+      
+      **CRITICAL SUCCESS:**
+      - Role-based visibility working correctly (staff denied, owner granted)
+      - Button positioned correctly in sidebar footer (above "Keluar")
+      - Database icon present
+      - Dialog functionality complete (open, run, close)
+      - Backup execution successful with detailed result display
+      - Idempotent re-run works (attempted=0 on second run)
+      - No breaking changes to other modules
+      - Migration from standalone page to sidebar button complete
+      
+      NO CRITICAL ISSUES FOUND. Feature is production-ready.
+
