@@ -11,32 +11,50 @@ import { handleProdukFokusRequest } from '@/lib/modules/produk-fokus/service';
 import { handleTradingJournalRequest } from '@/lib/modules/trading-journal/service';
 
 // ---------- Mongo ----------
-let cachedClient = null;
-let _authIndexesEnsured = false;
+// MINIMAL PRODUCTION FIX #2 — cache the MongoClient on `globalThis` instead of
+// a module-local `let`. In Next.js, server bundles can duplicate a module
+// across route chunks (especially after routing graph changes like adding
+// `/sw.js/route.js`). A module-local cache then exists PER CHUNK, so each
+// cold chunk re-establishes an Atlas connection (DNS SRV + TLS + topology →
+// 17-20s). globalThis is shared across all chunks within the same Node
+// process → single MongoClient reused by every route.
+//
+// Also pre-warm the pool (`minPoolSize: 1`) so the first request on a cold
+// pod doesn't pay the full handshake cost serially.
 async function ensureAuthIndexes(db) {
   // Idempotent — createIndex is a no-op bila index dgn key yg sama sudah ada.
-  // Cached per-process agar tidak dieksekusi tiap request. Fokus HANYA pada
-  // index yg dipakai saat login (lookup user by username + validasi session
-  // token). Index pre-existing lain TIDAK disentuh.
-  if (_authIndexesEnsured) return;
+  if (globalThis.__mis_auth_indexes_ensured) return;
   try { await db.collection('employees').createIndex({ username: 1 }, { unique: true }); } catch { /* idempotent */ }
   try { await db.collection('sessions').createIndex({ token: 1 }, { unique: true }); } catch { /* idempotent */ }
-  _authIndexesEnsured = true;
+  globalThis.__mis_auth_indexes_ensured = true;
 }
 async function getDb() {
-  if (!cachedClient) {
-    // MINIMAL PRODUCTION FIX — explicit timeouts supaya koneksi lambat gagal
-    // cepat (bukan menggantung sampai 30 detik → menyebabkan HTTP 524 di
-    // ingress saat login). Nilai konservatif sesuai best-practice MongoDB
-    // Atlas / Node driver: 10s utk pemilihan server, 10s utk TCP connect.
-    cachedClient = new MongoClient(process.env.MONGO_URL, {
-      serverSelectionTimeoutMS: 10000,
+  // Reuse a single MongoClient per Node process via globalThis — survives
+  // Next.js module re-chunking that would otherwise reset a `let` cache.
+  if (!globalThis.__mis_mongo_client) {
+    const client = new MongoClient(process.env.MONGO_URL, {
+      serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 10000,
+      // Keep at least 1 connection warm so cold-pod first request is fast.
+      minPoolSize: 1,
+      maxPoolSize: 10,
     });
-    await cachedClient.connect();
+    // Store the connect promise too so concurrent cold starts share the same
+    // handshake instead of each spawning its own MongoClient.
+    globalThis.__mis_mongo_client = client;
+    globalThis.__mis_mongo_connect = client.connect();
   }
-  const db = cachedClient.db(process.env.DB_NAME || 'cycle_count');
-  // Ensure login-critical indexes exist. Idempotent + cached per-process.
+  // Await the shared connect promise (resolves instantly once connected).
+  if (globalThis.__mis_mongo_connect) {
+    try { await globalThis.__mis_mongo_connect; }
+    catch (e) {
+      // On fatal connect error, clear cache so next request retries fresh.
+      globalThis.__mis_mongo_client = null;
+      globalThis.__mis_mongo_connect = null;
+      throw e;
+    }
+  }
+  const db = globalThis.__mis_mongo_client.db(process.env.DB_NAME || 'cycle_count');
   await ensureAuthIndexes(db);
   return db;
 }
