@@ -330,9 +330,14 @@ const SEED_PRODUCTS = [
 // baru selesai), request berikut skip semua DB-read di `ensureSeeded`.
 // Mencegah 2 query (`_meta.findOne` + `employees.find({modules exists:false})`)
 // pada setiap request yang bisa memperlambat login saat cold DB.
-let _seedChecked = false;
+//
+// FIX #3 (post-RCA regresi 2026-02): cache dipindah ke `globalThis` seperti
+// MongoClient. Alasan sama — Next.js dapat menduplikasi module di beberapa
+// route chunk sehingga `let _seedChecked` module-local = false di tiap
+// chunk, menyebabkan FULL employees scan dieksekusi ulang per cold chunk
+// (dan ini adalah query tanpa index → ~17-20s di Atlas).
 async function ensureSeeded(db) {
-  if (_seedChecked) return;
+  if (globalThis.__mis_seed_checked) return;
   // Migration: convert old per_month fields to interval_days if needed
   const existing = await db.collection('cycle_settings').findOne({ id: 'default' });
   if (existing && existing.fast_per_month !== undefined && existing.fast_interval_days === undefined) {
@@ -352,6 +357,13 @@ async function ensureSeeded(db) {
 
   const meta = await db.collection('_meta').findOne({ id: 'seed' });
 
+  // FIX #3 — fast-path: kalau seed sudah done, SKIP migration scan juga.
+  // Migration `employees.find({modules:$exists:false})` adalah full-scan
+  // (tidak ada index pada kondisi exists), ~17-20s di Atlas production bila
+  // dijalankan ulang per cold chunk. Setelah initial deploy, semua employee
+  // sudah punya `modules`, jadi scan ini redundant.
+  if (meta?.done) { globalThis.__mis_seed_checked = true; return; }
+
   // Migration: ensure every employee has `modules` array (backfill for existing installs)
   const empsNeedingMigration = await db
     .collection('employees')
@@ -361,8 +373,6 @@ async function ensureSeeded(db) {
     const defaults = e.role === 'owner' ? ['cycle_count', 'order_management'] : ['cycle_count'];
     await db.collection('employees').updateOne({ id: e.id }, { $set: { modules: defaults } });
   }
-
-  if (meta?.done) { _seedChecked = true; return; }
 
   // Employees
   const empDocs = SEED_EMPLOYEES.map((e) => ({
@@ -406,7 +416,7 @@ async function ensureSeeded(db) {
   await db.collection('sessions').createIndex({ token: 1 }, { unique: true });
 
   await db.collection('_meta').insertOne({ id: 'seed', done: true, at: new Date() });
-  _seedChecked = true;
+  globalThis.__mis_seed_checked = true;
 }
 
 // ---------- Task Generation ----------
