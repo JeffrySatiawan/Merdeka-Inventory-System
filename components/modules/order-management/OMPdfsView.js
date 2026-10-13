@@ -378,6 +378,76 @@ async function scanQrFromPdfDoc(pdfDoc) {
     };
   }
 
+  // ---- PASS 2a-fallback: DOMINANT TOKEN HEURISTIC ----
+  // Beberapa label expedisi (contoh: J&T COD label 2026) TIDAK mencetak
+  // keyword "No. Resi" / "AWB" / "Tracking Number" di PDF text stream —
+  // nomor resi hanya muncul sebagai token alphanumerik berdiri sendiri,
+  // DITULIS BERULANG di beberapa posisi (sisi kiri, sisi kanan, bawah
+  // barcode, dekat QR). Pola ini aman diambil heuristik: cari token
+  // alphanumerik yg frekuensinya >= 3 di text halaman — kandidat tracking
+  // number nyaris selalu ter-print >=3x; Order ID / Package ID biasanya 1-2x.
+  //
+  // Konstrain tambahan utk menghindari false positive:
+  //  - panjang 8..20 (nomor resi expedisi RI tipikal 10-16 char)
+  //  - WAJIB mengandung minimal 1 huruf (hindari phone number / numeric id)
+  //  - WAJIB mengandung minimal 1 digit (hindari kata umum di label)
+  //  - frekuensi minimum 3x di halaman tsb
+  // Jika ada ≥2 token ber-frekuensi sama tertinggi, pilih yg tertinggi
+  // jumlah hurufnya (biasanya prefix "JX"/"SPX"/"TKP" dsb — true tracking).
+  // Jika masih seri, pilih yg terpendek (nomor resi biasanya 10-14 char,
+  // Order ID marketplace biasanya 15-19 digit).
+  // BWC: Hanya aktif ketika Pass 2a regex kosong untuk halaman tsb.
+  const DOMINANT_TOKEN_RX = /\b([A-Z0-9]{8,20})\b/g;
+  for (let p = 1; p <= pdfDoc.numPages; p += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await pdfDoc.getPage(p);
+      // eslint-disable-next-line no-await-in-loop
+      const tc = await page.getTextContent();
+      const text = (tc?.items || [])
+        .map((it) => (typeof it?.str === 'string' ? it.str : ''))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+      const counts = new Map();
+      let mm;
+      DOMINANT_TOKEN_RX.lastIndex = 0;
+      while ((mm = DOMINANT_TOKEN_RX.exec(text)) !== null) {
+        const tok = mm[1];
+        // Must have at least one letter AND one digit — this filters out
+        // pure numeric Order IDs & Package IDs (which are usually 17-19 digit
+        // long) while keeping tracking numbers like JY1938022086, JX... etc.
+        if (!/[A-Z]/.test(tok)) continue;
+        if (!/[0-9]/.test(tok)) continue;
+        counts.set(tok, (counts.get(tok) || 0) + 1);
+      }
+      // Rank: highest frequency first, then most letters (prefers tracking
+      // prefixes), then shortest length (prefers tracking over long IDs).
+      const ranked = Array.from(counts.entries())
+        .filter(([, c]) => c >= 3)
+        .sort((a, b) => {
+          if (b[1] !== a[1]) return b[1] - a[1];
+          const la = (a[0].match(/[A-Z]/g) || []).length;
+          const lb = (b[0].match(/[A-Z]/g) || []).length;
+          if (lb !== la) return lb - la;
+          return a[0].length - b[0].length;
+        });
+      if (ranked.length > 0) {
+        const best = ranked[0][0];
+        if (CANDIDATE_RX.test(best)) foundText.add(best);
+      }
+    } catch (_e) {
+      /* per-page failure — continue */
+    }
+  }
+  if (foundText.size > 0) {
+    return {
+      trackingNumbers: Array.from(foundText),
+      pagesCount: pdfDoc.numPages,
+      detectedVia: 'barcode',
+    };
+  }
+
   // ---- PASS 2b: 1D BARCODE image decode (fires when text extraction
   //               didn't find anything either — labels with no embedded
   //               text or where text uses different keywords).
@@ -463,6 +533,47 @@ async function scanQrFromPdfDoc(pdfDoc) {
             canvas,
             0, canvas.height - cropH, canvas.width, cropH,
             0, 0, canvas.width, cropH
+          );
+          // eslint-disable-next-line no-await-in-loop
+          const result = await barcodeReader.decodeFromCanvas(scratch);
+          const text = result?.getText?.() || '';
+          if (text && text.trim()) {
+            foundBarcode.add(text.trim());
+            decodedThisPage = true;
+            continue;
+          }
+        } catch { /* still nothing — try middle strip next */ }
+
+        // Attempt 4: TIGHT MIDDLE HORIZONTAL STRIP (y ~45..70%, x ~8..93%).
+        // Rationale (audit 2026-02): untuk label expedisi dgn barcode di
+        // tengah (contoh J&T COD label) & text/garis padat di atas-bawah
+        // barcode, crop top-55% atau bottom-55% MASIH mengandung terlalu
+        // banyak noise untuk ZXing. Isolasi strip tengah yg hanya berisi
+        // barcode terbukti menaikkan tingkat decode (reproducible test
+        // menunjukkan tight crop berhasil, loose crop gagal pd PDF yg sama).
+        //
+        // Margin horizontal 7%/7% kritis — jika terlalu sempit (5%/5%)
+        // sisa teks vertikal di sisi label (banyak label expedisi mencetak
+        // nomor resi rotated 90° di sisi) ikut masuk & mengecoh decoder.
+        // Margin 8%/7% empirically balance antara "cukup lebar untuk muat
+        // barcode" dan "cukup sempit untuk buang teks vertikal di sisi".
+        //
+        // Konservatif: hanya aktif saat 3 attempt sebelumnya gagal.
+        try {
+          const scratch = document.createElement('canvas');
+          const xOff = Math.floor(canvas.width * 0.08);
+          const xEnd = Math.floor(canvas.width * 0.93);
+          const wSlice = Math.max(1, xEnd - xOff);
+          const yOff = Math.floor(canvas.height * 0.45);
+          const yEnd = Math.floor(canvas.height * 0.70);
+          const hSlice = Math.max(1, yEnd - yOff);
+          scratch.width = wSlice;
+          scratch.height = hSlice;
+          const sctx = scratch.getContext('2d');
+          sctx.drawImage(
+            canvas,
+            xOff, yOff, wSlice, hSlice,
+            0, 0, wSlice, hSlice
           );
           // eslint-disable-next-line no-await-in-loop
           const result = await barcodeReader.decodeFromCanvas(scratch);
