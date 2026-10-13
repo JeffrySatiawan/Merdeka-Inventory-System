@@ -326,7 +326,17 @@ async function scanQrFromPdfDoc(pdfDoc) {
   // TERDETEKSI" — from the operator's perspective this IS the barcode
   // number, just captured from the embedded text stream instead of by
   // decoding the raster bars.
-  const TRACKING_LABEL_RX = /(?:no\.?\s*pesanan|nomor?\s*(?:resi|pesanan|awb)|no\.?\s*resi|awb|tracking\s*number|order\s*(?:id|no|number)|shipping\s*id|receipt\s*no)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{6,29})/gi;
+  // FIX 2026-02 — Hilangkan keyword Order/Pesanan/Shipping dari regex.
+  // Audit sebelumnya menemukan: regex sebelum fix mencampur label tracking
+  // (resi/awb/tracking) dengan label order marketplace (order id/no pesanan/
+  // shipping id). Pada 5/6 pola label expedisi real, "Order ID" dicetak di
+  // atas "No. Resi" di PDF text stream → regex "first-match-wins" memilih
+  // Order ID sebagai nomor resi (SALAH).
+  // Setelah fix: Pass 2a HANYA cocokkan keyword tracking murni. Label
+  // tanpa keyword tracking jatuh ke Pass 2b (image barcode decode) yang
+  // membaca bar fisik = nomor resi expedisi (lebih akurat).
+  // BWC: PDF lama di DB tidak di-reprocess.
+  const TRACKING_LABEL_RX = /(?:no\.?\s*resi|nomor?\s*(?:resi|awb)|awb|tracking\s*number|receipt\s*no)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9\-]{6,29})/gi;
   const CANDIDATE_RX = /^[A-Z0-9][A-Z0-9\-]{7,29}$/;
   const foundText = new Set();
   for (let p = 1; p <= pdfDoc.numPages; p += 1) {
