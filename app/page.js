@@ -84,7 +84,30 @@ async function api(path, options = {}) {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {}),
   };
-  const res = await fetch(`/api/${path}`, { ...options, headers });
+  // HARDENING (regression guard): bound every API call with an explicit
+  // AbortController timeout so a slow/stuck backend never leaves the UI
+  // in an infinite loading state. 20s cover worst-case cold-pod handshake
+  // (~17-20s if MongoClient singleton accidentally regresses) and still
+  // beats the Cloudflare 524 edge (~100s), giving the user a clear error
+  // + retry affordance instead of an endless spinner.
+  // Caller may override via `options.timeoutMs` (e.g. file upload) or
+  // disable via `options.timeoutMs = 0`.
+  const timeoutMs = options.timeoutMs ?? 20000;
+  const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const timer = (ctrl && timeoutMs > 0)
+    ? setTimeout(() => ctrl.abort(), timeoutMs)
+    : null;
+  let res;
+  try {
+    res = await fetch(`/api/${path}`, { ...options, headers, signal: ctrl ? ctrl.signal : undefined });
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`Server tidak merespon dalam ${Math.round(timeoutMs/1000)}s. Coba lagi.`);
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
