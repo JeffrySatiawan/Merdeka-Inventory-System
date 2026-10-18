@@ -826,9 +826,15 @@ function fmtDuplicateMsg(prefix, dup) {
 // - Batch mode: pilih ekspedisi sekali, scan banyak resi
 // ============================================================
 function OMScanPrintView({ user }) {
-  // Ganti dari dropdown ekspedisi → toggle INSTAN / REGULER.
-  // Ekspedisi aktual dipilih di menu Scan Serah Terima Kurir.
-  const [serviceType, setServiceType] = useState('reguler');
+  // SESI SCANNING (patch 2026-02):
+  // - Masuk menu: `serviceType=null`, `confirmed=false` → kamera NONAKTIF
+  // - User pilih INSTAN/REGULER (preview highlight, kamera masih nonaktif)
+  // - Tombol "Ya, Lanjutkan" → `confirmed=true` → kamera AKTIF, kategori terkunci
+  // - Selama confirmed=true: user bisa scan banyak resi tanpa pilih ulang
+  // - Tombol "Selesai" → reset state → kembali ke pending
+  // - Pindah menu / refresh: unmount component → fresh state saat kembali
+  const [serviceType, setServiceType] = useState(null);
+  const [confirmed, setConfirmed] = useState(false);
   const [stats, setStats] = useState({ printed: 0, packed: 0, delivered: 0, diff_pack_deliver: 0 });
   const { items: queue, alert, add: addQueue } = useScanQueue(10);
   const processingRef = useRef(false);
@@ -846,13 +852,23 @@ function OMScanPrintView({ user }) {
     } catch {}
   }
 
+  function startSession() {
+    if (!serviceType) return;
+    setConfirmed(true);
+  }
+
+  function endSession() {
+    setConfirmed(false);
+    setServiceType(null);
+  }
+
   async function process(value) {
     if (processingRef.current) return;
     const v = String(value || '').trim();
     if (!v) return;
-    if (!serviceType) {
+    if (!serviceType || !confirmed) {
       feedback('warn');
-      addQueue({ type: 'warn', tracking: v, title: 'PILIH KATEGORI', message: 'Pilih INSTAN atau REGULER terlebih dahulu' });
+      addQueue({ type: 'warn', tracking: v, title: 'SESI BELUM DIMULAI', message: 'Pilih kategori & klik Ya, Lanjutkan terlebih dahulu' });
       return;
     }
     processingRef.current = true;
@@ -910,43 +926,94 @@ function OMScanPrintView({ user }) {
         { label: 'Selisih', value: stats.diff_pack_deliver || 0, tone: (stats.diff_pack_deliver || 0) > 0 ? 'rose' : 'emerald' },
       ]}
       onScanDecoded={(v) => process(v)}
-      disabled={!serviceType}
+      disabled={!confirmed}
       queue={queue}
       alert={alert}
     >
-      {/* Batch service_type selector — pilih sekali, scan banyak resi */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
-        <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
-          Jenis Pengiriman (pilih sekali, scan banyak resi)
-        </Label>
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => setServiceType('instan')}
-            className={`h-14 rounded-lg border font-bold text-base transition-colors ${
-              serviceType === 'instan'
-                ? 'border-orange-500/60 bg-orange-500/20 text-orange-200'
-                : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:text-white'
-            }`}
-          >
-            INSTAN
-          </button>
-          <button
-            type="button"
-            onClick={() => setServiceType('reguler')}
-            className={`h-14 rounded-lg border font-bold text-base transition-colors ${
-              serviceType === 'reguler'
-                ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
-                : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:text-white'
-            }`}
-          >
-            REGULER
-          </button>
+      {/* Dua fase UI:
+          A. PENDING (!confirmed): pilih kategori + konfirmasi "Ya, Lanjutkan"
+          B. ACTIVE (confirmed=true): kategori terkunci + tombol Selesai */}
+      {!confirmed ? (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-3">
+          <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            Pilih Jenis Pengiriman
+          </Label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setServiceType('instan')}
+              className={`h-14 rounded-lg border font-bold text-base transition-colors ${
+                serviceType === 'instan'
+                  ? 'border-orange-500/60 bg-orange-500/20 text-orange-200'
+                  : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:text-white'
+              }`}
+            >
+              INSTAN
+            </button>
+            <button
+              type="button"
+              onClick={() => setServiceType('reguler')}
+              className={`h-14 rounded-lg border font-bold text-base transition-colors ${
+                serviceType === 'reguler'
+                  ? 'border-indigo-500/60 bg-indigo-500/20 text-indigo-200'
+                  : 'border-white/10 bg-white/[0.02] text-muted-foreground hover:text-white'
+              }`}
+            >
+              REGULER
+            </button>
+          </div>
+          {serviceType ? (
+            <div className="space-y-2 pt-1">
+              <div className={`text-xs rounded-md px-3 py-2 border ${
+                serviceType === 'instan'
+                  ? 'border-orange-500/40 bg-orange-500/10 text-orange-200'
+                  : 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200'
+              }`}>
+                Anda memilih <strong>{serviceType.toUpperCase()}</strong>. Setelah dilanjutkan,
+                kategori terkunci sampai sesi selesai.
+              </div>
+              <button
+                type="button"
+                onClick={startSession}
+                className="w-full h-12 rounded-lg border border-emerald-500/60 bg-emerald-500/20 text-emerald-200 font-bold hover:bg-emerald-500/30 transition-colors"
+              >
+                Ya, Lanjutkan
+              </button>
+            </div>
+          ) : (
+            <div className="text-[10px] text-muted-foreground">
+              Kamera aktif setelah Anda memilih kategori & menekan Ya, Lanjutkan.
+            </div>
+          )}
         </div>
-        <div className="text-[10px] text-muted-foreground">
-          Ekspedisi aktual dipilih di menu Serah Terima Kurir.
+      ) : (
+        <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                Kategori Terkunci
+              </span>
+              <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                serviceType === 'instan'
+                  ? 'bg-orange-500/30 text-orange-100 border border-orange-500/40'
+                  : 'bg-indigo-500/30 text-indigo-100 border border-indigo-500/40'
+              }`}>
+                {String(serviceType).toUpperCase()}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={endSession}
+              className="h-9 px-3 rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-200 text-xs font-semibold hover:bg-rose-500/20 transition-colors"
+            >
+              Selesai
+            </button>
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            Scan banyak resi dalam sesi ini. Tekan <strong>Selesai</strong> untuk mengakhiri sesi atau ganti kategori.
+          </div>
         </div>
-      </div>
+      )}
     </ScannerShell>
   );
 }
