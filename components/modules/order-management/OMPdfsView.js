@@ -941,7 +941,7 @@ export default function OMPdfsView({ user }) {
       // Hanya instance yg visible yg boleh trigger popup.
       if (el.offsetParent === null) return;
       warningShownRef.current = true;
-      setWarningCountdown(5);
+      setWarningCountdown(15);
       setShowKetokoWarning(true);
     });
     return () => cancelAnimationFrame(raf);
@@ -1307,7 +1307,12 @@ export default function OMPdfsView({ user }) {
           if (!v && warningCountdown <= 0) setShowKetokoWarning(false);
         }}
       >
-        <DialogContent className="sm:max-w-md border-red-500/40 bg-zinc-900">
+        {/* `[&>button]:hidden` menyembunyikan tombol X bawaan Radix Dialog
+            yg di-render langsung sebagai anak <DialogContent>. Tombol kita
+            ("Lihat Resi Tertunda" & "Tutup") berada di dalam <div> jadi
+            tidak kena. Pengguna hanya boleh menutup via tombol Tutup setelah
+            countdown habis. */}
+        <DialogContent className="sm:max-w-md border-red-500/40 bg-zinc-900 [&>button]:hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-red-300">
               <span className="text-2xl">⚠️</span>
