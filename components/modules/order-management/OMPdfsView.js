@@ -888,11 +888,72 @@ export default function OMPdfsView({ user }) {
     }).length,
     [filteredItems]
   );
+  // WARNING POPUP SCOPE (patch 2026-02): popup HARUS pakai periode "Minggu Ini
+  // (7 hari)" + status "Sudah Diprint + Belum Input Ketoko", TERLEPAS dari apa
+  // yg user set di dropdown filter saat ini. Resi lebih lama dari 7 hari TIDAK
+  // boleh memicu warning.
+  const belumKetoko7dCount = useMemo(() => {
+    const now = Date.now();
+    const sevenDaysAgo = now - 7 * 86400000;
+    return items.filter((x) => {
+      const t = x.uploaded_at ? new Date(x.uploaded_at).getTime() : 0;
+      if (!t || t < sevenDaysAgo) return false;
+      const printed = !!x.printed_at;
+      const ketokoDone = !!x.ketoko_input_at || (x.ketoko_total_count > 0 && x.ketoko_checked_count >= x.ketoko_total_count);
+      return printed && !ketokoDone;
+    }).length;
+  }, [items]);
   const isOwner = user?.role === 'owner';
 
   // Item currently open in the per-resi KETOKO panel. Set after PIN is verified
   // (see PdfRow.submitPin), cleared when the panel is closed.
   const [ketokoResiTarget, setKetokoResiTarget] = useState(null);
+
+  // KETOKO WARNING POPUP (patch 2026-02):
+  // Saat halaman PDF Resi dibuka/di-refresh dan terdeteksi resi berstatus
+  // "Sudah Diprint + Belum Input Ketoko" dalam periode aktif, tampilkan
+  // popup peringatan sekali per sesi halaman. Memakai filter existing —
+  // tombol "Lihat Resi Tertunda" set statusFilter='printed_not_ketoko'.
+  // Guard `warningShownRef` mencegah pop-up muncul ulang pada sesi yg sama.
+  //
+  // DUAL-SHELL GUARD: aplikasi me-render OMPdfsView DUA KALI (desktop +
+  // mobile shell), hanya satu yg visible. Tanpa guard, kedua instance
+  // trigger Dialog → 2 overlay → tombol Tutup/Lihat hanya menutup 1 Dialog
+  // dan overlay kedua tetap menghalangi UI. Pakai self-visibility check
+  // via rootRef (identik pola `ScannerShell`): hanya instance yg visible
+  // (offsetParent !== null) yg boleh trigger popup.
+  const [showKetokoWarning, setShowKetokoWarning] = useState(false);
+  const [warningCountdown, setWarningCountdown] = useState(5);
+  const warningShownRef = useRef(false);
+  const rootRef = useRef(null);
+
+  // Trigger: setelah initial load selesai dan masih ada resi tertunda,
+  // DAN instance ini visible (bukan copy dari shell satunya).
+  useEffect(() => {
+    if (loading) return;
+    if (warningShownRef.current) return;
+    if (belumKetoko7dCount <= 0) return;
+    // Delay 1 frame agar layout settle, lalu cek visibility.
+    const raf = requestAnimationFrame(() => {
+      const el = rootRef.current;
+      if (!el) return;
+      // offsetParent === null → display:none atau di dalam ancestor hidden.
+      // Hanya instance yg visible yg boleh trigger popup.
+      if (el.offsetParent === null) return;
+      warningShownRef.current = true;
+      setWarningCountdown(5);
+      setShowKetokoWarning(true);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [loading, belumKetoko7dCount]);
+
+  // Countdown 5→0 saat popup tampil.
+  useEffect(() => {
+    if (!showKetokoWarning) return;
+    if (warningCountdown <= 0) return;
+    const t = setTimeout(() => setWarningCountdown((n) => Math.max(0, n - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [showKetokoWarning, warningCountdown]);
 
   async function toggleKetoko(item, next) {
     // Optimistic update
@@ -956,7 +1017,7 @@ export default function OMPdfsView({ user }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div ref={rootRef} className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">PDF Resi</h1>
@@ -1235,6 +1296,69 @@ export default function OMPdfsView({ user }) {
           }}
         />
       )}
+
+      {/* KETOKO WARNING POPUP — tampil sekali per sesi halaman jika terdeteksi
+          resi berstatus "Sudah Diprint + Belum Input Ketoko". Memakai filter
+          existing — tidak membuat filter/status baru. */}
+      <Dialog
+        open={showKetokoWarning}
+        onOpenChange={(v) => {
+          // Hanya izinkan tutup (via overlay/esc) setelah countdown habis.
+          if (!v && warningCountdown <= 0) setShowKetokoWarning(false);
+        }}
+      >
+        <DialogContent className="sm:max-w-md border-red-500/40 bg-zinc-900">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-300">
+              <span className="text-2xl">⚠️</span>
+              <span>Resi Belum Input Ketoko</span>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3">
+              <div className="text-xs uppercase tracking-widest text-red-300/70">
+                Jumlah resi tertunda (7 hari terakhir)
+              </div>
+              <div className="mt-1 text-3xl font-bold text-red-200">
+                {belumKetoko7dCount} <span className="text-base font-semibold">RESI</span>
+              </div>
+              <div className="mt-1 text-xs text-red-300/80">
+                Status: Sudah Diprint + Belum Input Ketoko · Periode: Minggu Ini (7 hari)
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Mohon segera lengkapi input POS Ketoko untuk resi yang sudah dicetak
+              agar laporan tetap akurat.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              <Button
+                variant="default"
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white"
+                onClick={() => {
+                  // "Lihat Resi Tertunda": aktifkan BOTH filter — periode
+                  // "Minggu Ini (7 hari)" + status "Sudah Diprint + Belum
+                  // Input Ketoko" — sehingga daftar tampil persis sesuai scope
+                  // warning. Jika user sebelumnya mengubah filter periode,
+                  // tombol ini membawanya kembali ke 7 hari.
+                  setPeriodFilter('week');
+                  setStatusFilter('printed_not_ketoko');
+                  setShowKetokoWarning(false);
+                }}
+              >
+                Lihat Resi Tertunda
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1"
+                disabled={warningCountdown > 0}
+                onClick={() => setShowKetokoWarning(false)}
+              >
+                {warningCountdown > 0 ? `Tutup (${warningCountdown}s)` : 'Tutup'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
