@@ -1155,13 +1155,14 @@ function Metric({ icon: Icon, label, value, tone = 'default' }) {
 //  Owner: Laporan Absensi (filter + tabel + export Excel)
 // ============================================================================
 function OwnerReportView() {
-  const todayIso = () => new Date().toISOString().slice(0, 10);
-  const firstOfMonthIso = () => {
-    const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
-  };
+  // PATCH 2026-02: periode laporan sekarang mengikuti SIKLUS Payroll
+  // (tanggal 26 bulan sebelumnya → 25 bulan berjalan), bukan date picker bebas.
+  // Reuse helper `listAbsPeriods` / `absPeriodRange` yang sudah ada.
+  const periodList = useMemo(() => listAbsPeriods(), []);
+  const defaultPeriodKey = periodList[0]?.period_key || absActivePeriodKey();
+  const [periodKey, setPeriodKey] = useState(defaultPeriodKey);
+  const periodRange = useMemo(() => absPeriodRange(periodKey) || { from: '', to: '' }, [periodKey]);
   const [filters, setFilters] = useState({
-    from: firstOfMonthIso(),
-    to: todayIso(),
     user_id: 'all',
     shift_key: 'all',
     status: 'all',
@@ -1182,8 +1183,11 @@ function OwnerReportView() {
 
   const buildQS = () => {
     const p = new URLSearchParams();
-    if (filters.from) p.set('from', filters.from);
-    if (filters.to) p.set('to', filters.to);
+    if (periodRange.from) p.set('from', periodRange.from);
+    if (periodRange.to) p.set('to', periodRange.to);
+    // PATCH 2026-02: kirim juga `period` key agar backend scope poin
+    // sesuai Live Point Board (reset per periode).
+    if (periodKey) p.set('period', periodKey);
     if (filters.user_id && filters.user_id !== 'all') p.set('user_id', filters.user_id);
     if (filters.shift_key && filters.shift_key !== 'all') p.set('shift_key', filters.shift_key);
     if (filters.status && filters.status !== 'all') p.set('status', filters.status);
@@ -1223,6 +1227,9 @@ function OwnerReportView() {
     load(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // PATCH 2026-02: auto-reload saat periode diganti.
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [periodKey]);
+
   const exportExcel = async () => {
     setExporting(true);
     try {
@@ -1238,7 +1245,7 @@ function OwnerReportView() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `laporan-absensi_${filters.from || 'all'}_${filters.to || 'all'}.xlsx`;
+      a.download = `laporan-absensi_${periodRange.from || 'all'}_${periodRange.to || 'all'}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -1257,13 +1264,24 @@ function OwnerReportView() {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div>
-              <Label className="text-xs">Dari</Label>
-              <Input type="date" value={filters.from} onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))} />
-            </div>
-            <div>
-              <Label className="text-xs">Sampai</Label>
-              <Input type="date" value={filters.to} onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))} />
+            {/* PATCH 2026-02: 2 date picker → 1 Select Periode (siklus 26→25) */}
+            <div className="md:col-span-2">
+              <Label className="text-xs">Periode</Label>
+              <Select value={periodKey} onValueChange={setPeriodKey}>
+                <SelectTrigger><SelectValue placeholder="Pilih periode" /></SelectTrigger>
+                <SelectContent>
+                  {periodList.map((p) => (
+                    <SelectItem key={p.period_key} value={p.period_key}>
+                      {fmtAbsPeriodLabel(p.from, p.to)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                {periodRange.from && periodRange.to
+                  ? `Rentang: ${periodRange.from} → ${periodRange.to}`
+                  : '—'}
+              </div>
             </div>
             <div>
               <Label className="text-xs">Staff</Label>
