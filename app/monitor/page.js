@@ -1,5 +1,10 @@
 'use client';
 
+// PATCH 2026-02: force-dynamic — mencegah Next.js mencoba prerender halaman
+// ini saat build (yang gagal dgn "Cannot find module for page: /monitor").
+// Halaman ini memang client-side only (fetch /api/monitor live).
+export const dynamic = 'force-dynamic';
+
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Clock, Activity, AlertCircle, CheckCircle2, Sparkles } from 'lucide-react';

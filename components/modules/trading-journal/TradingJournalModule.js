@@ -727,7 +727,10 @@ function AnalyticsView() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `trading_journal.${format === 'csv' ? 'csv' : 'json'}`;
+        // PATCH 2026-02: CSV di-ekspor sebagai ZIP (berisi CSV + folder
+        // screenshots/). PDF ekstensi .pdf. JSON tetap .json.
+        const ext = format === 'csv' ? 'zip' : format === 'pdf' ? 'pdf' : 'json';
+        a.download = `trading_journal.${ext}`;
         a.click();
         URL.revokeObjectURL(url);
       });
@@ -739,8 +742,9 @@ function AnalyticsView() {
         <CardHeader className="flex-row items-center justify-between">
           <div><CardTitle className="text-base">Analytics</CardTitle><CardDescription>Historical performance dari semua trade selesai.</CardDescription></div>
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => doExport('csv')} className="gap-1"><Download className="w-3.5 h-3.5" /> CSV</Button>
+            <Button size="sm" variant="outline" onClick={() => doExport('csv')} className="gap-1"><Download className="w-3.5 h-3.5" /> CSV+Gambar</Button>
             <Button size="sm" variant="outline" onClick={() => doExport('json')} className="gap-1"><Download className="w-3.5 h-3.5" /> JSON</Button>
+            <Button size="sm" variant="default" onClick={() => doExport('pdf')} className="gap-1"><Download className="w-3.5 h-3.5" /> PDF</Button>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
