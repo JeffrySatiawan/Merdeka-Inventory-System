@@ -1408,6 +1408,14 @@ async function handleRequest(req, path, method) {
     if (body.slow_interval_days !== undefined) upd.slow_interval_days = Math.max(1, Number(body.slow_interval_days));
     if (body.working_start) upd.working_start = body.working_start;
     if (body.working_end) upd.working_end = body.working_end;
+    // PATCH 2026-02 — Minimum Counting Time (detik). Owner-set, additive.
+    // 0 = fitur off (backward-compat). Tersimpan di cycle_settings collection
+    // existing. Perubahan hanya berlaku untuk tugas BARU yg start setelah
+    // simpan (tugas yg sedang berjalan pakai nilai yg sudah di-snapshot
+    // ke daily_tasks.min_duration_seconds saat start).
+    if (body.min_counting_seconds !== undefined) {
+      upd.min_counting_seconds = Math.max(0, Math.min(3600, Math.round(Number(body.min_counting_seconds) || 0)));
+    }
     upd.updatedAt = new Date();
     await db.collection('cycle_settings').updateOne({ id: 'default' }, { $set: upd }, { upsert: true });
     return json({ ok: true });
@@ -1440,12 +1448,30 @@ async function handleRequest(req, path, method) {
       .sort({ is_backlog: -1, category: 1, sku_code: 1 })
       .toArray();
     const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+    // PATCH 2026-02 — hitung remaining_seconds per task pakai server time
+    // supaya countdown Minimum Counting Time tahan refresh halaman, logout,
+    // dan manipulasi jam device. min_duration_seconds sudah di-snapshot per
+    // task saat start → owner yg ubah setting setelahnya tdk pengaruhi task
+    // yg sedang berjalan.
+    const serverNowMs = Date.now();
     return json({
-      tasks: tasks.map(({ _id, ...t }) => t),
+      tasks: tasks.map(({ _id, ...t }) => {
+        let remaining_seconds = 0;
+        if (t.started_at && !t.completed) {
+          const minSec = Number(t.min_duration_seconds || 0);
+          if (minSec > 0) {
+            const elapsed = Math.floor((serverNowMs - new Date(t.started_at).getTime()) / 1000);
+            remaining_seconds = Math.max(0, minSec - elapsed);
+          }
+        }
+        return { ...t, remaining_seconds };
+      }),
       date: today,
       time: getWitaTime(),
       is_closed: isSessionClosed(settings),
       working: { start: settings.working_start, end: settings.working_end },
+      server_time: new Date(serverNowMs).toISOString(),
+      min_counting_seconds: Number(settings?.min_counting_seconds || 0),
     });
   }
 
@@ -1602,6 +1628,49 @@ async function handleRequest(req, path, method) {
     });
   }
 
+  // PATCH 2026-02 — POST /api/tasks/:id/start
+  // Set started_at + snapshot min_duration_seconds dari cycle_settings
+  // saat ini. Idempoten: kalau sudah di-start, return nilai existing
+  // (supaya refresh / login ulang tidak reset countdown). Server-side
+  // timestamp — tidak bergantung jam device.
+  const taskStartMatch = path.match(/^tasks\/([^/]+)\/start$/);
+  if (taskStartMatch && method === 'POST') {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    if (!hasModule(user, 'cycle_count')) return err('Anda tidak memiliki akses ke module Cycle Count', 403);
+    const taskId = taskStartMatch[1];
+    const task = await db.collection('daily_tasks').findOne({ id: taskId });
+    if (!task) return err('task not found', 404);
+    if (task.employee_id !== user.id && user.role !== 'owner') return err('forbidden', 403);
+    if (task.completed) return err('task sudah selesai', 409);
+
+    const settings = await db.collection('cycle_settings').findOne({ id: 'default' });
+    if (isSessionClosed(settings)) {
+      return err(`Session ditutup. Jam kerja ${settings.working_start} - ${settings.working_end} WITA`, 423);
+    }
+
+    let startedAt = task.started_at ? new Date(task.started_at) : null;
+    let minDuration = Number(task.min_duration_seconds || 0);
+    if (!startedAt) {
+      startedAt = new Date();
+      minDuration = Number(settings?.min_counting_seconds || 0);
+      await db.collection('daily_tasks').updateOne(
+        { id: taskId },
+        { $set: { started_at: startedAt, min_duration_seconds: minDuration } },
+      );
+    }
+    const serverNowMs = Date.now();
+    const elapsed = Math.floor((serverNowMs - startedAt.getTime()) / 1000);
+    const remaining = Math.max(0, minDuration - elapsed);
+    return json({
+      ok: true,
+      started_at: startedAt.toISOString(),
+      min_duration_seconds: minDuration,
+      remaining_seconds: remaining,
+      server_time: new Date(serverNowMs).toISOString(),
+    });
+  }
+
   const taskActionMatch = path.match(/^tasks\/([^/]+)\/(complete|uncomplete)$/);
   if (taskActionMatch && method === 'POST') {
     const user = await getUserFromRequest(req);
@@ -1619,16 +1688,32 @@ async function handleRequest(req, path, method) {
         return err(`Session ditutup. Jam kerja ${settings.working_start} - ${settings.working_end} WITA`, 423);
       }
       const now = new Date();
+      // PATCH 2026-02 — Minimum Counting Time validation (server-side)
+      // Kalau task sudah distart dan punya min_duration_seconds > 0, cek
+      // elapsed wajib >= batas minimum. Tidak terpengaruh jam device.
+      // BWC: task lama (tanpa started_at) langsung lolos.
+      const minSec = Number(task.min_duration_seconds || 0);
+      let actualDurationSec = null;
+      if (task.started_at) {
+        actualDurationSec = Math.max(0, Math.floor((now.getTime() - new Date(task.started_at).getTime()) / 1000));
+        if (minSec > 0 && actualDurationSec < minSec) {
+          const remaining = minSec - actualDurationSec;
+          return err(`Minimum Counting Time belum terpenuhi. Sisa ${remaining} detik.`, 423);
+        }
+      } else if (minSec > 0) {
+        // Task belum distart tapi min>0 → harus start dulu
+        return err('SKU ini wajib ditekan "Mulai Hitung" terlebih dahulu.', 423);
+      }
       await db.collection('daily_tasks').updateOne(
         { id: taskId },
-        { $set: { completed: true, completed_at: now } }
+        { $set: { completed: true, completed_at: now, actual_duration_seconds: actualDurationSec } }
       );
       // Update product
       await db.collection('products').updateOne(
         { id: task.product_id },
         { $set: { last_counted_at: now }, $inc: { count_total: 1 } }
       );
-      // Add history
+      // Add history (sku_history existing — hanya tambah 3 field)
       await db.collection('sku_history').insertOne({
         id: uuidv4(),
         sku_code: task.sku_code,
@@ -1638,11 +1723,16 @@ async function handleRequest(req, path, method) {
         employee_name: user.name,
         counted_at: now,
         date: task.date,
+        started_at: task.started_at || null,
+        actual_duration_seconds: actualDurationSec,
+        min_duration_seconds: minSec,
       });
     } else {
       await db.collection('daily_tasks').updateOne(
         { id: taskId },
-        { $set: { completed: false, completed_at: null } }
+        // PATCH 2026-02 — reset timer agar uncomplete→recomplete tetap
+        // diwajibkan menjalani countdown ulang (konsisten dgn aturan).
+        { $set: { completed: false, completed_at: null, started_at: null, min_duration_seconds: 0, actual_duration_seconds: null } }
       );
       // Remove last history record for this task
       await db.collection('sku_history').deleteOne({

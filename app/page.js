@@ -2513,7 +2513,9 @@ function EmployeeForm({ open, onClose, editing, onSaved }) {
 // ---------- Settings ----------
 function SettingsView() {
   const [data, setData] = useState(null);
-  const [form, setForm] = useState({ fast_interval_days: 7, medium_interval_days: 15, slow_interval_days: 30, working_start: '07:00', working_end: '22:00' });
+  const [form, setForm] = useState({ fast_interval_days: 7, medium_interval_days: 15, slow_interval_days: 30, working_start: '07:00', working_end: '22:00', min_counting_seconds: 0 });
+  const [minCountUnit, setMinCountUnit] = useState('seconds');
+  const [minCountValue, setMinCountValue] = useState(0);
   const [saving, setSaving] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
 
@@ -2521,13 +2523,23 @@ function SettingsView() {
     try {
       const d = await api('settings');
       setData(d);
+      const mcs = Number(d.settings.min_counting_seconds || 0);
       setForm({
         fast_interval_days: d.settings.fast_interval_days || 7,
         medium_interval_days: d.settings.medium_interval_days || 15,
         slow_interval_days: d.settings.slow_interval_days || 30,
         working_start: d.settings.working_start,
         working_end: d.settings.working_end,
+        min_counting_seconds: mcs,
       });
+      // Auto-pick unit yg paling natural utk nilai yg tersimpan.
+      if (mcs > 0 && mcs % 60 === 0 && mcs >= 60) {
+        setMinCountUnit('minutes');
+        setMinCountValue(mcs / 60);
+      } else {
+        setMinCountUnit('seconds');
+        setMinCountValue(mcs);
+      }
     } catch (e) {
       toast.error(e.message);
     }
@@ -2551,7 +2563,9 @@ function SettingsView() {
   async function save() {
     setSaving(true);
     try {
-      await api('settings', { method: 'PUT', body: JSON.stringify(form) });
+      // Konversi unit → detik sebelum kirim ke backend.
+      const seconds = Math.max(0, Math.round((minCountUnit === 'minutes' ? Number(minCountValue) * 60 : Number(minCountValue)) || 0));
+      await api('settings', { method: 'PUT', body: JSON.stringify({ ...form, min_counting_seconds: seconds }) });
       toast.success('Setting disimpan');
       load();
     } catch (e) {
@@ -2618,6 +2632,55 @@ function SettingsView() {
               <div className="space-y-1.5">
                 <Label>Jam Selesai (WITA)</Label>
                 <Input value={form.working_end} onChange={(e) => setForm({ ...form, working_end: e.target.value })} />
+              </div>
+            </div>
+            <Separator />
+            {/* PATCH 2026-02 — Minimum Counting Time */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <Clock className="w-4 h-4" /> Minimum Counting Time
+              </Label>
+              <div className="text-xs text-muted-foreground">
+                Durasi minimum SKU harus dalam proses hitung sebelum tombol Selesai aktif. Nilai 0 = fitur dimatikan. Perubahan hanya berlaku untuk SKU yang baru dimulai setelah setting disimpan.
+              </div>
+              <div className="flex gap-2 items-center">
+                <Input
+                  type="number"
+                  min={0}
+                  max={minCountUnit === 'minutes' ? 60 : 3600}
+                  value={minCountValue}
+                  onChange={(e) => setMinCountValue(Number(e.target.value))}
+                  className="w-32"
+                />
+                <select
+                  value={minCountUnit}
+                  onChange={(e) => setMinCountUnit(e.target.value)}
+                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                >
+                  <option value="seconds">detik</option>
+                  <option value="minutes">menit</option>
+                </select>
+                <div className="flex gap-1.5 flex-wrap">
+                  {[
+                    { label: '30 dtk', sec: 30 },
+                    { label: '60 dtk', sec: 60 },
+                    { label: '90 dtk', sec: 90 },
+                    { label: '2 mnt', sec: 120 },
+                    { label: '3 mnt', sec: 180 },
+                  ].map((p) => (
+                    <Button
+                      key={p.sec}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (p.sec % 60 === 0) { setMinCountUnit('minutes'); setMinCountValue(p.sec / 60); }
+                        else { setMinCountUnit('seconds'); setMinCountValue(p.sec); }
+                      }}
+                      className="text-xs"
+                    >{p.label}</Button>
+                  ))}
+                </div>
               </div>
             </div>
             <div className="flex gap-2">
@@ -3077,11 +3140,18 @@ function StaffTasksView({ user }) {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(new Set());
   const [showHistory, setShowHistory] = useState(false);
+  // PATCH 2026-02 — tick/sec untuk re-render countdown Minimum Counting Time
+  const [, setTick] = useState(0);
 
   async function load(silent = false) {
     if (!silent) setLoading(true);
     try {
       const d = await api('tasks/mine');
+      // PATCH 2026-02 — drift antara server time & client time utk
+      // countdown tahan manipulasi jam device.
+      if (d?.server_time) {
+        d._server_drift_ms = new Date(d.server_time).getTime() - Date.now();
+      }
       setData(d);
     } catch (e) {
       toast.error(e.message);
@@ -3096,7 +3166,54 @@ function StaffTasksView({ user }) {
     return () => clearInterval(t);
   }, []);
 
+  // PATCH 2026-02 — tick tiap 1 detik hanya utk refresh countdown UI (ringan)
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // PATCH 2026-02 — hitung remaining countdown untuk sebuah task.
+  // Pakai drift server supaya tidak bisa dipalsukan via jam device.
+  function remainingFor(task) {
+    if (!task.started_at) return 0;
+    const min = Number(task.min_duration_seconds || 0);
+    if (min <= 0) return 0;
+    const drift = Number(data?._server_drift_ms || 0);
+    const serverNowMs = Date.now() + drift;
+    const elapsed = Math.floor((serverNowMs - new Date(task.started_at).getTime()) / 1000);
+    return Math.max(0, min - elapsed);
+  }
+
+  async function startTask(task) {
+    if (task.completed || task.started_at) return;
+    setPending((p) => new Set(p).add(task.id));
+    try {
+      const r = await api(`tasks/${task.id}/start`, { method: 'POST' });
+      setData((d) => ({
+        ...d,
+        tasks: d.tasks.map((t) => (t.id === task.id ? {
+          ...t,
+          started_at: r.started_at,
+          min_duration_seconds: r.min_duration_seconds,
+          remaining_seconds: r.remaining_seconds,
+        } : t)),
+      }));
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setPending((p) => { const n = new Set(p); n.delete(task.id); return n; });
+    }
+  }
+
   async function toggle(task) {
+    // Kalau belum completed TAPI belum started & setting active → start dulu.
+    if (!task.completed && !task.started_at) {
+      const min = Number(task.min_duration_seconds || data?.min_counting_seconds || 0);
+      if (min > 0) return startTask(task);
+    }
+    // Guard: lagi countdown → tombol Selesai disabled (UI sudah handle).
+    if (!task.completed && remainingFor(task) > 0) return;
+
     const action = task.completed ? 'uncomplete' : 'complete';
     setPending((p) => new Set(p).add(task.id));
     setData((d) => ({
@@ -3105,6 +3222,10 @@ function StaffTasksView({ user }) {
     }));
     try {
       await api(`tasks/${task.id}/${action}`, { method: 'POST' });
+      if (action === 'uncomplete') {
+        // Reset server-side started_at juga di-clear → refresh biar sync.
+        load(true);
+      }
     } catch (e) {
       toast.error(e.message);
       load(true);
@@ -3208,46 +3329,84 @@ function StaffTasksView({ user }) {
           <AnimatePresence>
             {tasks.map((t, idx) => {
               const busy = pending.has(t.id);
+              const remaining = remainingFor(t);
+              const isCountingDown = !t.completed && t.started_at && remaining > 0;
+              const canComplete = !t.completed && t.started_at && remaining === 0;
+              const settingMin = Number(t.min_duration_seconds || data?.min_counting_seconds || 0);
+              const needsStart = !t.completed && !t.started_at && settingMin > 0;
+              const fmtMMSS = (s) => `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
               return (
-                <motion.button
+                <motion.div
                   key={t.id}
-                  onClick={() => toggle(t)}
-                  disabled={busy}
                   initial={{ opacity: 0, y: 5 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
                   transition={{ delay: Math.min(idx * 0.02, 0.3) }}
-                  className={`w-full flex items-center gap-4 p-4 rounded-xl border transition ${
+                  className={`w-full rounded-xl border transition ${
                     t.completed
                       ? 'bg-emerald-500/5 border-emerald-500/20'
-                      : 'bg-white/[0.03] border-white/10 hover:bg-white/[0.06]'
+                      : isCountingDown
+                        ? 'bg-amber-500/5 border-amber-500/30'
+                        : canComplete
+                          ? 'bg-blue-500/5 border-blue-500/30'
+                          : 'bg-white/[0.03] border-white/10'
                   }`}
                 >
-                  <div className="shrink-0">
-                    {t.completed ? (
-                      <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}>
-                        <CheckCircle2 className="w-6 h-6 text-emerald-400" />
-                      </motion.div>
-                    ) : (
-                      <Circle className="w-6 h-6 text-muted-foreground" />
-                    )}
-                  </div>
-                  <div className="flex-1 text-left">
-                    <div className="flex items-center gap-2">
-                      <div className="font-mono text-xs text-muted-foreground">{t.sku_code}</div>
-                      {t.is_backlog && (
-                        <Badge variant="outline" className="border-rose-500/40 text-rose-400 text-[9px] py-0">
-                          BACKLOG
-                        </Badge>
+                  <button
+                    type="button"
+                    onClick={() => toggle(t)}
+                    disabled={busy || isCountingDown}
+                    className="w-full flex items-center gap-4 p-4 text-left disabled:cursor-not-allowed"
+                  >
+                    <div className="shrink-0">
+                      {t.completed ? (
+                        <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}>
+                          <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                        </motion.div>
+                      ) : isCountingDown ? (
+                        <Clock className="w-6 h-6 text-amber-400" />
+                      ) : (
+                        <Circle className="w-6 h-6 text-muted-foreground" />
                       )}
-                      <CategoryBadge cat={t.category} />
                     </div>
-                    <div className={`font-medium mt-0.5 ${t.completed ? 'line-through text-muted-foreground' : ''}`}>
-                      {t.product_name}
+                    <div className="flex-1 text-left">
+                      <div className="flex items-center gap-2">
+                        <div className="font-mono text-xs text-muted-foreground">{t.sku_code}</div>
+                        {t.is_backlog && (
+                          <Badge variant="outline" className="border-rose-500/40 text-rose-400 text-[9px] py-0">
+                            BACKLOG
+                          </Badge>
+                        )}
+                        <CategoryBadge cat={t.category} />
+                        {isCountingDown && (
+                          <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[9px] py-0 gap-1">
+                            <Clock className="w-2.5 h-2.5" /> {fmtMMSS(remaining)}
+                          </Badge>
+                        )}
+                        {canComplete && (
+                          <Badge variant="outline" className="border-blue-500/40 text-blue-300 text-[9px] py-0">
+                            SIAP SELESAI
+                          </Badge>
+                        )}
+                      </div>
+                      <div className={`font-medium mt-0.5 ${t.completed ? 'line-through text-muted-foreground' : ''}`}>
+                        {t.product_name}
+                      </div>
+                      {needsStart && (
+                        <div className="text-[10px] text-amber-300/80 mt-1">
+                          Minimum counting: {settingMin >= 60 && settingMin % 60 === 0 ? `${settingMin/60} menit` : `${settingMin} detik`}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  {busy && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
-                </motion.button>
+                    {busy && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+                    {needsStart && !busy && (
+                      <Badge className="bg-amber-500 text-black hover:bg-amber-600 shrink-0">Mulai Hitung</Badge>
+                    )}
+                    {canComplete && !busy && (
+                      <Badge className="bg-emerald-500 text-black hover:bg-emerald-600 shrink-0">Selesai ✓</Badge>
+                    )}
+                  </button>
+                </motion.div>
               );
             })}
           </AnimatePresence>
