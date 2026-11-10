@@ -8,6 +8,7 @@ import { handleFakturRequest } from '@/lib/modules/faktur/service';
 import { handleAbsensiRequest } from '@/lib/modules/absensi/service';
 import { handlePayrollRequest } from '@/lib/modules/payroll/service';
 import { handleProdukFokusRequest } from '@/lib/modules/produk-fokus/service';
+import { handleSinergiRequest } from '@/lib/modules/sinergi/service';
 import { handleTradingJournalRequest } from '@/lib/modules/trading-journal/service';
 
 // ---------- Mongo ----------
@@ -212,6 +213,13 @@ const AVAILABLE_MODULES = [
     name: 'Produk Fokus',
     description: 'Master produk fokus per periode, pengajuan tim ED, input penjualan, dan rekonsiliasi POS.',
     icon: 'Target',
+    status: 'active',
+  },
+  {
+    key: 'sinergi',
+    name: 'Pencatatan Operasional Sinergi',
+    description: 'Pencatatan Pengiriman Barang & Kas Tunai operasional. Dua submodul berdiri sendiri — tanpa sinkron otomatis.',
+    icon: 'ClipboardList',
     status: 'active',
   },
   {
@@ -617,6 +625,24 @@ async function handleRequest(req, path, method) {
     }
     const sub = path === 'pf' ? '' : path.slice('pf/'.length);
     const resp = await handleProdukFokusRequest(req, sub, method, { db, user });
+    if (resp) return resp;
+    return err('not found', 404);
+  }
+
+  // ============================================================
+  // Pencatatan Operasional Sinergi — isolated. Access via
+  // employees.modules array (owner always full). Submodules:
+  // Pengiriman Barang + Kas Tunai; keduanya berdiri sendiri tanpa
+  // sinkronisasi otomatis ke modul lain.
+  // ============================================================
+  if (path === 'sinergi' || path.startsWith('sinergi/')) {
+    const user = await getUserFromRequest(req);
+    if (!user) return err('unauthorized', 401);
+    if (!hasModule(user, 'sinergi')) {
+      return err('forbidden — module Sinergi belum diaktifkan untuk akun Anda', 403);
+    }
+    const sub = path === 'sinergi' ? '' : path.slice('sinergi/'.length);
+    const resp = await handleSinergiRequest(req, sub, method, { db, user });
     if (resp) return resp;
     return err('not found', 404);
   }

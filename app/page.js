@@ -8,6 +8,7 @@ import AbsensiModule from '@/components/modules/absensi/AbsensiModule';
 import PayrollModule from '@/components/modules/payroll/PayrollModule';
 import ProdukFokusModule from '@/components/modules/produk-fokus/ProdukFokusModule';
 import TradingJournalModule from '@/components/modules/trading-journal/TradingJournalModule';
+import SinergiModule from '@/components/modules/sinergi/SinergiModule';
 import { toast } from 'sonner';
 import {
   LayoutDashboard,
@@ -48,6 +49,7 @@ import {
   Truck,
   Receipt,
   Wallet,
+  ClipboardList,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -403,6 +405,7 @@ const MODULES_META = {
   payroll: { key: 'payroll', name: 'Payroll', icon: Wallet, status: 'active', ownerOnly: true },
   produk_fokus: { key: 'produk_fokus', name: 'Produk Fokus', icon: Target, status: 'active', color: 'text-orange-400' },
   trading_journal: { key: 'trading_journal', name: 'Personal Trading Journal', icon: LineChart, status: 'active', ownerOnly: true, color: 'text-cyan-400' },
+  sinergi: { key: 'sinergi', name: 'Pencatatan Operasional Sinergi', icon: ClipboardList, status: 'active', color: 'text-indigo-400' },
 };
 
 // Compute allowed module keys for a user (owner has all)
@@ -532,6 +535,16 @@ function buildNav(user) {
             { key: 'tj:master', label: 'Master Data', ownerOnly: true },
             { key: 'tj:compounding', label: 'Compounding', ownerOnly: true },
             { key: 'tj:analytics', label: 'Analytics & Export', ownerOnly: true },
+          ],
+        },
+        {
+          key: 'mod:sinergi',
+          label: 'Operasional Sinergi',
+          icon: ClipboardList,
+          module: 'sinergi',
+          children: [
+            { key: 'sin:shipments', label: 'Pengiriman Barang' },
+            { key: 'sin:cash', label: 'Kas Tunai' },
           ],
         },
       ],
@@ -929,6 +942,7 @@ function getActiveModule(view) {
   if (view.startsWith('pay:') || view === 'mod:payroll') return 'payroll';
   if (view.startsWith('pf:') || view === 'mod:produk_fokus') return 'produk_fokus';
   if (view.startsWith('tj:') || view === 'mod:trading_journal') return 'trading_journal';
+  if (view.startsWith('sin:') || view === 'mod:sinergi') return 'sinergi';
   return null;
 }
 
@@ -3791,6 +3805,21 @@ function ModulePickerScreen({ user, onPick, onLogout }) {
       stats: [],
     });
   }
+  if (mods.includes('sinergi')) {
+    cards.push({
+      key: 'sinergi',
+      name: 'Operasional Sinergi',
+      subtitle: 'Pengiriman Barang · Kas Tunai · Audit immutable',
+      icon: ClipboardList,
+      gradient: 'from-indigo-500/30 via-purple-500/20 to-transparent',
+      border: 'border-indigo-500/40 hover:border-indigo-500/70',
+      iconBg: 'bg-indigo-500/20 border-indigo-500/40',
+      iconColor: 'text-indigo-400',
+      accentText: 'text-indigo-300',
+      target: 'sin:shipments',
+      stats: [],
+    });
+  }
 
   const timeLabel = clock.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
   const dateLabel = clock.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -4095,6 +4124,9 @@ function App() {
           isOwner(user)
             ? <TradingJournalModule user={user} initialView={activeView === 'mod:trading_journal' ? 'tj:journal' : activeView} />
             : <div className="p-6 text-center text-rose-300 text-sm">Akses ditolak — halaman ini hanya untuk Owner.</div>
+        )}
+        {(activeView.startsWith('sin:') || activeView === 'mod:sinergi') && (
+          <SinergiModule user={user} initialView={activeView === 'mod:sinergi' ? 'sin:shipments' : activeView} />
         )}
         {activeView === 'rp:history' && <ReportsHistoryView />}
         {activeView === 'ad:users' && <EmployeesView />}
